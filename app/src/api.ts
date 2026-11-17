@@ -119,6 +119,8 @@ export interface UsageState {
   reading: UsageReading | null;
   stale: boolean;
   hookInstalled: boolean;
+  /** Both windows as they stand now, whole: the figure the brief and the treasury show too. Null when the treasury cannot be read. */
+  now?: { fiveHour: number | null; sevenDay: number | null } | null;
 }
 
 /**
@@ -176,6 +178,7 @@ const EVENT_TYPES = [
   'audit.ended',
   'brief.action',
   'milestone.reached',
+  'milestone.changed',
   // Phase 4: the school's training and its nets (the observatory opens while the nets train, Task 36).
   'train.started',
   'train.paused',

@@ -1,13 +1,15 @@
 import type { BudgetWindow, CreditEntry, FirmView, ReportView, SpendPeriod, TreasuryView } from '../../../shared/types';
+import { windowNowPct } from '../../../shared/market-rules';
 import { api, type EngineEvent } from '../api';
 import { placeHref, routeHref } from '../router';
-import { cleanText, githubUrl } from './board';
+import { cleanText, githubUrl, money } from './board';
 import { ago, button, checkRadio, createSheet, el, rovingRadios } from './controls';
 import { gauge, svgEl } from './firms';
 import { coalesce, keyedSlot, namesOf, outLink, refusal, secHead } from './pages';
 import { figure, shortDate } from './story';
-import { calibrationLine, pauseWords, reportBlocks, resetWords, runningWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
+import { calibrationLine, meterFigure, pauseWords, reportBlocks, resetWords, runningWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
 import { trainedLine } from './school-words';
+import { clock } from './time-words';
 import './market.css';
 
 export interface TreasuryScreen {
@@ -37,10 +39,6 @@ function pctOf(n: number): string {
   return `${Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1)}%`;
 }
 
-const hm = (ms: number): string => {
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
 
 function dayLabel(day: string): { short: string; date: string } {
   const [y, m, d] = day.split('-').map(Number);
@@ -215,7 +213,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const p = pauseWords(v.paused, v.reading, now);
     if (!p) {
       if (v.resumedUntil === null) return null;
-      const r = el('p', 'treasury-resumed', `Resumed on your say-so until ${hm(v.resumedUntil)}. With no fresh reading, the city counts your own Claude Code use from your transcripts and still stops at the hard stop.`);
+      const r = el('p', 'treasury-resumed', `Resumed on your say-so until ${clock(v.resumedUntil)}. With no fresh reading, the city counts your own Claude Code use from your transcripts and still stops at the hard stop.`);
       return r;
     }
     const box = el('div', `treasury-pause pause-${p.reason}`);
@@ -271,10 +269,10 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const box = el('div', 'meter');
     box.dataset.window = which;
     const fig = el('div', 'meter-fig');
-    const reset = w.resetsAt !== null && w.resetsAt * 1000 <= now;
-    fig.append(el('span', 'meter-name', name), el('span', `meter-used${reset || w.usedPct === null ? ' unread' : ''}`, w.usedPct === null ? 'unread' : pctOf(w.usedPct)));
-    const usedNote = w.usedPct === null ? 'No reading of this window yet.' : reset ? 'It reset after your last reading, and nothing has read it since.' : 'used, at your last reading';
-    fig.append(el('span', 'meter-used-note', usedNote));
+    // The figure the brief and Settings show for the same moment (windowNowPct), so one plan reads one number.
+    const shown = meterFigure(w, now);
+    fig.append(el('span', 'meter-name', name), el('span', `meter-used${shown.unread ? ' unread' : ''}`, shown.text));
+    fig.append(el('span', 'meter-used-note', shown.note));
     const right = el('div', 'meter-draw');
     const head = el('div', 'meter-head');
     head.append(el('span', 'meter-reset', resetWords(w.resetsAt, now)));
@@ -282,7 +280,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     // Today's limit, when he set one from the brief, stands in place of the city's cap until midnight (ruling 10).
     const mine = which === 'five' && v.todayCapPct !== null;
     const capLabel = which === 'five' ? (mine ? `today's limit ${pctOf(cap)}` : `city cap ${pctOf(cap)}`) : 'week';
-    const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${pctOf(w.estimatedPct)} now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` against its ${pctOf(cap)} cap` : `, unattended ${pctOf(v.night.usedPct)} against the ${pctOf(v.night.capPct)} night cap`}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
+    const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${windowNowPct(w) ?? 0}% now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` against its ${pctOf(cap)} cap` : `, unattended ${pctOf(v.night.usedPct)} against the ${pctOf(v.night.capPct)} night cap`}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
     right.append(head, meterRule(w, which === 'five' ? { cap, capLabel, stop: v.hardStopPct, label } : { cap: null, capLabel, stop: v.hardStopPct, label, night: v.night }));
     const legend = el('p', 'meter-legend');
     const key = (cls: string, text: string): HTMLElement => {
@@ -294,7 +292,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     };
     const since = w.estimatedPct - (w.usedPct ?? 0);
     legend.append(
-      key('his', `Your plan, about ${pctOf(w.estimatedPct)} now${since >= 0.05 ? ` with ${pctOf(since)} spent since the reading` : ''}`),
+      key('his', `Your plan, about ${windowNowPct(w) ?? 0}% now${since >= 0.05 ? ` with ${pctOf(since)} spent since the reading` : ''}`),
       key('city', `The city’s share, ${pctOf(w.cityPct)} of the window${which === 'five' ? `, against its ${pctOf(cap)} cap` : ''}`),
       ...(which === 'seven' ? [key('night', `Unattended, ${pctOf(v.night.usedPct)} of the week, against the ${pctOf(v.night.capPct)} night cap`)] : []),
     );
@@ -347,7 +345,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const sec = el('section', 'treasury-now');
     sec.append(secHead('Now'));
     const c = v.concurrency;
-    // The runs under way, counted as the board and the run pages count them; the slots the runner holds, apart.
+    // The runs the runner holds slots for, and the slots it holds, read from one count.
     const words = runningWords(v.underWay, c);
     const conc = el('span', 'now-runs', words.runs);
     const slotsLine = el('span', 'now-note now-slots-held', words.slots);
@@ -428,7 +426,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     for (const r of got.rows) {
       const li = el('li', 'entry');
       const when = new Date(r.at);
-      li.append(el('span', 'entry-id', `No. ${r.id}`), el('span', 'entry-when', `${WEEKDAY[when.getDay()]} ${hm(when.getTime())}`));
+      li.append(el('span', 'entry-id', `No. ${r.id}`), el('span', 'entry-when', `${WEEKDAY[when.getDay()]} ${clock(when)}`));
       const what = el('span', 'entry-what');
       const kind = KIND_WORDS[r.kind] ?? r.kind;
       if (r.runId && r.jobId) {
@@ -444,7 +442,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     }
     box.append(list);
     const more = got.count - got.rows.length;
-    box.append(el('p', 'entries-note', `${got.count === 1 ? '1 entry' : `${got.count} entries`} in the last 7 days, ${figure(got.total)} credits${more > 0 ? `; the newest ${got.rows.length} are shown` : ''}.`));
+    box.append(el('p', 'entries-note', `${got.count === 1 ? '1 entry' : `${got.count} entries`} in the last 7 days, ${money(got.total)} credits${more > 0 ? `; the newest ${got.rows.length} are shown` : ''}.`));
     return box;
   }
 

@@ -4,23 +4,27 @@ import './ui/style.css';
 import './ui/screens.css';
 
 import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
-import { previousWeek, weekOf } from '../../shared/tour';
+import { mondayMorning, tourWeekFor, weekOf } from '../../shared/tour';
+import { setClusterCulling } from './city/batch';
+import { homeKey } from './city/camera';
 import { api } from './api';
 import { coalesced } from './coalesce';
-import type { Plate } from './city/labels';
+import { bandKey, type Plate } from './city/labels';
 import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
 import { EMPTY_LIFE, foldLifeEvent, lifeAfter, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
 import { foldSchoolEvent, schoolAfter, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
-import { occupancy, type RepoState } from './city/occupancy.js';
-import { quarterCenterpiece, quarterLooks } from './city/quarters';
+import { type KnownRepo, occupancy, takeRepoState } from './city/occupancy.js';
+import { quarterCenterpieceSteps, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
+import type { LotSummary } from './city/grid';
 import type { MilestoneShow } from './city/milestones.js';
-import type { VehicleRef, VehiclesView } from './city/vehicles.js';
+import { CAB_HALF_LEN, JUNCTION_BOX, type VehicleRef, type VehiclesView } from './city/vehicles.js';
+import { signalAt } from './city/signals.js';
 import type { AmbientView } from './city/ambient.js';
-import { route } from '../../shared/commute.js';
+import { route, streetLine } from '../../shared/commute.js';
 import type { Trip, TripReason } from '../../shared/types';
-import { towerCenterpiece, towerMaterials } from './city/tower/look';
+import { COURSE_FAR, towerCenterpiece, towerCenterpieceSteps, towerMaterials } from './city/tower/look';
 import { firmMarkColor } from './city/tower/eras';
 import { cleanText } from './ui/board';
 import type { FigureView, PeopleView } from './city/people.js';
@@ -29,6 +33,7 @@ import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
 import { loadFigures } from './city/figures';
 import { loadKits, registerFallbackKits } from './city/kits';
+import { loadTrees } from './city/trees';
 import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
@@ -91,10 +96,22 @@ interface DebugHandle {
   home(): void;
   /** The view's limits now, as eased this frame. */
   limits(): ReturnType<ReturnType<typeof createCity>['limits']>;
+  /** Multiplies the home haze by k (the clear-air still, tools/capture.ts and tools/perf.ts overview-clear at 0.4); null restores the default. */
+  haze(k: number | null): void;
+  /** Draws (true) or leaves out (false) the stone's far coursing line (look.ts COURSE_FAR), for the UI check's before and after. */
+  coursing(on: boolean): void;
   /** Where a world point lands on screen, in normalised device coordinates (y up, the frame is -1 to 1). */
   project(p: number[]): number[];
   /** Each milestone as the city shows it now (milestones.ts), by id. */
   milestones(): Array<MilestoneShow & { id: string }>;
+  /** Hides or shows the ribbons (tests: the band read against the frame without it). */
+  ribbons(on: boolean): void;
+  /** Hides or shows every tree (tests: the crowns read against the frame without them). */
+  trees(on: boolean): void;
+  /** The trees as planted: every spot, and how many draw at each level now. */
+  treeCounts(): { spots: number; trees: number; near: number; far: number };
+  /** Where every tree stands (tools/perf.ts frames the street trees from them). */
+  treeSpots(): Array<{ x: number; y: number; z: number; species: string; size: number }>;
   /** The university as it stands (campus/index.ts): its origin and the later buildings' anchors, or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
   /** Holds the campus clock tower at a moment (ms since the epoch), for the clock still; null frees it. */
@@ -113,8 +130,26 @@ interface DebugHandle {
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** The geometries and textures on the GPU now (renderer.info.memory; the UI test's disconnect check). */
+  memory(): { geometries: number; textures: number };
+  /** Rebuilds waiting to run a step at a time (batch.ts scheduleRemerge), and a quarter rebuild waiting out its debounce. */
+  rebuilding(): number;
+  /** How many floors the tower drawn for a repo now has, or -1 (the UI test: the plates follow what is drawn). */
+  drawnFloors(repo: string): number;
+  /** The longest single rebuild step since last asked (the UI test: no step may stall a frame). */
+  longestStep(): { key: string; ms: number };
+  /** Starts (true) or ends (false) a per-frame trace of the city's own work, returning the last one (perf diagnosis). */
+  trace(on: boolean): ReturnType<ReturnType<typeof createCity>['trace']>;
+  /** Batch culling by cluster on or off (Task 12; off draws every batch whole, as before it), for a before-and-after measure. */
+  cull(on: boolean): void;
   /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
   breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
+  /** The share of a breakdown root's projected area the city leaves visible from where the camera stands (an ID pass; Phase 5 Task 10). */
+  visibleShare(key: 'campus'): Promise<number>;
+  /** Each pixel's distance from the eye in metres, row-major from the top at a small size (0 for sky; Phase 5 Task 15a). */
+  distances(): ReturnType<ReturnType<typeof createCity>['distances']>;
+  /** Frame times as the page draws them: start() begins a log, stop() ends it and returns each frame's time in ms (perf, frameStats). */
+  frameLog: { start(): void; stop(): number[] };
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** The transit network: what of it draws from this camera, and how many stops, stations, poles, bents, pylons and ranks stand. */
@@ -124,6 +159,7 @@ interface DebugHandle {
   /** Holds or releases the vehicles' clock, or moves it on (captures and tests). */
   vehicleHold(on: boolean): void;
   vehicleSkip(seconds: number): void;
+  vehicleLodShift(metres: number): void;
   /** Moves the clock on until a vehicle of the kind stands at a stop (the one nearest `near`): where it stands and which way it faces. */
   vehicleStage(kind: 'tram' | 'rail' | 'pod' | 'ferry', near?: number[]): VehicleProbe | null;
   /** Rides a synthetic trip from one point to another: each leg's vehicle (a cab summoned for a cab leg), and when it boards and alights. */
@@ -132,6 +168,16 @@ interface DebugHandle {
   vehicleSeek(conds: Array<{ kind: 'tram' | 'rail' | 'pod' | 'ferry'; near: number[]; radius: number; moving?: number }>, horizon?: number): boolean;
   /** A vehicle by id, as it stands now. */
   vehicle(id: string): VehicleProbe | null;
+  /**
+   * The persona cabs standing at a red light now: each with the junction it
+   * waits at and how many cars stand behind it in its lane within 30 m
+   * (captures: the junction-signal still).
+   */
+  /** Shows or hides the vehicles (the tram-home check compares the frame with and without them). */
+  vehicleShow(on: boolean): void;
+  /** The signal heads at the junctions: how many stand and how many draw near the eye. */
+  signalHeads(): { heads: number; drawn: number };
+  cabsAtRed(): Array<{ id: string; position: number[]; heading: number; junction: number[]; behind: number }>;
   /** Every vehicle of a kind, as each stands now. */
   vehicleKinds(kind: 'tram' | 'rail' | 'pod' | 'ferry' | 'cab'): VehicleProbe[];
   /** A stand-in rider at a point facing a heading, or none. */
@@ -174,6 +220,8 @@ interface DebugHandle {
   say(text: string, key?: string): void;
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
+  /** The ambient lots standing within `r` of a point, as built now (the perf and UI tools' framing). */
+  ambientLots(x: number, z: number, r: number): LotSummary[];
   /**
    * For captures that check a material against the datum and the Claude
    * amber: rebuilds a repo's tower with the named variants (ids from
@@ -235,6 +283,10 @@ interface DebugHandle {
   riding(): RideState | null;
   /** Holds the ride's clock, or sets it (captures). */
   rideHold(on: boolean): void;
+  /** The lens as it stands (post.ts): its close mode, how far on, the subject's distance, the focus aimed at, the background's blur. */
+  lens(): ReturnType<ReturnType<typeof createCity>['lens']>;
+  /** Holds the lens in a close mode for a staged still; undefined gives the camera's own back (tools/perf.ts). */
+  lensAs(mode: 'ride' | 'follow' | 'tour' | 'inspect' | null | undefined): void;
   rideSeek(t: number): void;
   /** Hides or shows the sites' drawing, to measure what they cost (tests). */
   showSites(on: boolean): void;
@@ -286,6 +338,22 @@ const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 
 /** What a firm's plate and plinth show of it, for telling when they change. */
 const plateOf = (f: FirmView): string => `${f.id}|${f.name}|${Math.round(f.balance)}|${f.status}|${f.agents.filter((a) => !a.retired).length}`;
 
+/**
+ * Whether the empty morning's line is still to be said today: once a local
+ * day at most, whatever the engine's own record says (a fresh home answers
+ * "first open" on every launch). Kept in this window's storage; without it
+ * the line is said, as before.
+ */
+function emptyMorningDue(day: string): boolean {
+  try {
+    if (localStorage.getItem('palimpsest:empty-morning') === day) return false;
+    localStorage.setItem('palimpsest:empty-morning', day);
+  } catch {
+    /* no storage: say it */
+  }
+  return true;
+}
+
 async function main(): Promise<void> {
   const host = document.getElementById('city');
   const veil = document.getElementById('veil');
@@ -312,12 +380,22 @@ async function main(): Promise<void> {
     firmsKey = key;
     return changed;
   };
+  /**
+   * The firms as the city opens: their names key the quarters' builds
+   * (quarterKey), so the first build has them and the names read after it
+   * (readNames) find nothing changed, rather than building every quarter twice
+   * before the first frame (Task 14).
+   */
+  let firstFirms: FirmView[] = [];
   const [settingsQuality] = await Promise.all([
     api.settings().then(
       (s) => s.quality,
       () => 'high' as const,
     ),
-    api.firms().then(takeFirms, () => false),
+    api.firms().then((firms) => {
+      firstFirms = firms;
+      return takeFirms(firms);
+    }, () => false),
     loadKits().catch((err: unknown) => {
       console.warn('the architecture kits did not load; building from plain stand-ins', err);
       registerFallbackKits();
@@ -325,6 +403,8 @@ async function main(): Promise<void> {
     }),
     // Without the modelled figures the people stand as plain figures; the city is whole either way.
     loadFigures().catch((err: unknown) => console.warn('the figures did not load; the people stand as plain figures', err)),
+    // Without the modelled trees each species stands as a plain crown of cards (trees.ts fallbackTree).
+    loadTrees().catch((err: unknown) => console.warn('the trees did not load; they stand as plain crowns', err)),
   ]);
   /** The quality towers are built at: Settings' choice, until the city steps down by itself. */
   let quality: 'high' | 'medium' = settingsQuality;
@@ -342,12 +422,12 @@ async function main(): Promise<void> {
   const city = createCity(host, {
     quality,
     autoQuality,
-    makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d), { firmSlots }),
+    makeDistrictCenterpiece: (d) => towerCenterpieceSteps(d, quality, lookOf(d), { firmSlots }),
     centerpieceKey: (d) => `${lookKey(lookOf(d))}|${quality}|${d.tower.floors.some((f) => f.earned) ? firmsKey : ''}`,
     districtTones: (d) => towerTones(lookOf(d)),
     makeQuarterCenterpiece: (q) => {
       const looks = quarterLooks(q);
-      return quarterCenterpiece(q, quality, (t) => looks.get(t.id) ?? lookFor(t.firmId ?? q.firmId), {
+      return quarterCenterpieceSteps(q, quality, (t) => looks.get(t.id) ?? lookFor(t.firmId ?? q.firmId), {
         name: firmViews.get(q.firmId)?.name ?? q.firmId,
         firmSlots,
         materials: towerMaterials,
@@ -355,7 +435,7 @@ async function main(): Promise<void> {
     },
     quarterKey: (q) => `${firmViews.get(q.firmId)?.name ?? ''}|${quality}|${firmsKey}`,
     // The civic exchange in the city's own pale limestone and granite.
-    makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
+    makeExchange: (q, campanile) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')), campanile }),
     // The skyline's mast and finial in the city's galvanised steel and polished bronze.
     milestoneMaterials: towerMaterials(lookFor('civic:exchange')),
     // The university's halls light their windows in the same glass as every tower.
@@ -369,6 +449,39 @@ async function main(): Promise<void> {
       return [c.r * 0.42, c.g * 0.42, c.b * 0.42];
     },
   });
+
+  /**
+   * A log of frame times, one requestAnimationFrame callback to the next, for
+   * the perf tool's frame rate and hitch counts. Nothing runs until start().
+   */
+  function frameLog(): { start(): void; stop(): number[] } {
+    let times: number[] | null = null;
+    let last = 0;
+    let id = 0;
+    const tick = (now: number): void => {
+      if (!times) return;
+      times.push(now - last);
+      last = now;
+      id = requestAnimationFrame(tick);
+    };
+    return {
+      start() {
+        cancelAnimationFrame(id);
+        times = [];
+        // The first callback only sets the clock: the time before it is not a frame.
+        id = requestAnimationFrame((now) => {
+          last = now;
+          id = requestAnimationFrame(tick);
+        });
+      },
+      stop() {
+        cancelAnimationFrame(id);
+        const out = times ?? [];
+        times = null;
+        return out;
+      },
+    };
+  }
 
   /** The agent board standing now (captures and the UI test), and how to take it down. */
   let agentBoardDown: (() => void) | null = null;
@@ -395,6 +508,8 @@ async function main(): Promise<void> {
     },
     riding: () => ride?.state() ?? null,
     rideHold: (on) => ride?.hold(on),
+    lens: () => city.lens(),
+    lensAs: (mode) => city.lensAs(mode),
     rideSeek: (t) => ride?.seek(t),
     showSites: (on) => city.showSites(on),
     exchange() {
@@ -433,10 +548,23 @@ async function main(): Promise<void> {
     camera: () => city.camera.position.toArray(),
     home: () => city.home(),
     limits: () => city.limits(),
+    haze: (k) => city.haze(k),
+    coursing: (on) => {
+      COURSE_FAR.value = on ? 1 : 0;
+    },
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    memory: () => city.memory(),
+    rebuilding: () => city.rebuilding(),
+    drawnFloors: (repo) => city.drawnFloors(repo),
+    longestStep: () => city.longestStep(),
+    trace: (on) => city.trace(on),
+    cull: (on) => setClusterCulling(on),
     breakdown: (detail) => city.breakdown(detail),
+    visibleShare: (key) => city.visibleShare(key),
+    distances: () => city.distances(),
+    frameLog: frameLog(),
     river: () => city.river(),
     transit: () => city.transit(),
     vehicles: () => city.vehicles()?.view(city.camera) ?? null,
@@ -461,6 +589,7 @@ async function main(): Promise<void> {
     },
     vehicleHold: (on) => city.vehicles()?.hold(on),
     vehicleSkip: (s) => city.vehicles()?.skip(s),
+    vehicleLodShift: (m) => city.vehicles()?.lodShift(m),
     vehicleStage(kind, near) {
       const r = city.vehicles()?.stage(kind, near ? { x: near[0], z: near[1] } : undefined);
       return r ? probe(r) : null;
@@ -470,7 +599,7 @@ async function main(): Promise<void> {
       const net = city.transitNetwork();
       if (!v || !net) return [];
       const legs = route({ x: from[0], z: from[1] }, { x: to[0], z: to[1] }, net);
-      const trip: Trip = { id: 'probe', agentId: 'probe', firmId: 'probe', reason: 'home', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: 0, endedAt: null };
+      const trip: Trip = { id: `probe:${++probeSeq}`, agentId: 'probe', firmId: 'probe', reason: 'home', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: 0, endedAt: null };
       return legs.map((l, i) => {
         if (l.mode === 'walk') return { mode: l.mode, id: null, boardsIn: 0, alightsIn: 0 };
         if (l.mode === 'cab') {
@@ -495,6 +624,44 @@ async function main(): Promise<void> {
       return null;
     },
     vehicleRider: (at, heading) => city.vehicles()?.rider(at ? [at[0], at[1], at[2]] : null, heading),
+    signalHeads: () => city.signalHeads(),
+    vehicleShow(on) {
+      const v = city.vehicles();
+      if (v) v.group.visible = on;
+    },
+    cabsAtRed() {
+      const v = city.vehicles();
+      const a = city.ambient();
+      if (!v || !a) return [];
+      const lights = a.signals();
+      const cars = a.cars();
+      const out: Array<{ id: string; position: number[]; heading: number; junction: number[]; behind: number }> = [];
+      for (const c of v.vehicles('cab')) {
+        const ph = c.phase();
+        if ((ph !== 'to-pickup' && ph !== 'carrying' && ph !== 'returning') || c.speed() > 0.05) continue;
+        const p = c.position();
+        const h = c.heading();
+        const fx = Math.cos(h);
+        const fz = Math.sin(h);
+        // Its nose just short of a signalled junction's box.
+        const ax = p[0] + fx * (CAB_HALF_LEN + 2);
+        const az = p[2] + fz * (CAB_HALF_LEN + 2);
+        const jx = streetLine(ax);
+        const jz = streetLine(az);
+        const j = Math.abs(ax - jx) < JUNCTION_BOX && Math.abs(az - jz) < JUNCTION_BOX ? lights.at(jx, jz) : null;
+        if (!j || signalAt(j, lights.now(), Math.abs(fx) >= Math.abs(fz) ? 'x' : 'z') !== 'stop') continue;
+        let behind = 0;
+        for (const car of cars) {
+          const rx = car.x - p[0];
+          const rz = car.z - p[2];
+          const along = rx * fx + rz * fz;
+          if (along > -2 || along < -30 || Math.abs(-rx * fz + rz * fx) > 1.6) continue;
+          behind++;
+        }
+        out.push({ id: c.id, position: p, heading: h, junction: [jx, jz], behind });
+      }
+      return out.sort((x, y) => y.behind - x.behind);
+    },
     people: () => city.people()?.view(city.camera) ?? null,
     person: (id) => city.people()?.figures().find((f) => f.agentId === id) ?? null,
     persons: () => city.people()?.figures() ?? [],
@@ -518,6 +685,13 @@ async function main(): Promise<void> {
     },
     peopleLantern: (on) => city.people()?.lantern(on),
     milestones: () => [...city.milestoneShows()].map(([id, m]) => ({ id, ...m })),
+    ribbons: (on) => city.showRibbons(on),
+    trees: (on) => city.showTrees(on),
+    treeSpots: () => city.trees().spots,
+    treeCounts() {
+      const t = city.trees();
+      return { spots: t.spots.length, trees: t.trees, near: t.near, far: t.far };
+    },
     campus() {
       const c = city.campus();
       if (!c) return null;
@@ -546,6 +720,7 @@ async function main(): Promise<void> {
     notices: () => notice.texts(),
     say: (text, key) => notice.add(text, key ? { key } : undefined),
     plots: () => city.plots(),
+    ambientLots: (x, z, r) => city.ambientLots(x, z, r),
     async ambientBoard() {
       // A board is measured with the streets empty: no car or person passes in front of it. The board stands on
       // (the capture reads it after this returns), so the streets stay empty with it; if laying it fails, the
@@ -623,7 +798,7 @@ async function main(): Promise<void> {
   /** Each firm's quarter as the engine last served it. */
   let servedQuarters: Quarter[] = [];
   /** Each firm as last read: its name, books and agents, for its plate and the name on its plinth. */
-  const firmViews = new Map<string, FirmView>();
+  const firmViews = new Map<string, FirmView>(firstFirms.map((f) => [f.id, f]));
   /** Quarters shown dark by a capture (debug only). */
   const darkened = new Set<string>();
   /** The districts standing now: served towers whose repos are still connected. */
@@ -633,7 +808,11 @@ async function main(): Promise<void> {
    * analysis step it reached. `done` holds a finished first analysis's
    * scaffold up until the refresh that brings its tower.
    */
-  const known = new Map<string, RepoState & { step: string; done?: boolean }>();
+  const known = new Map<string, KnownRepo>();
+  /** Every repo that has held a slot this session, by slot: the picker keeps a removed one's look in reserve. */
+  const sited = new Map<string, number>();
+  /** The last tower the engine served for each repo: a repo turned off and on again stands it until the refresh lists it again. */
+  const kept = new Map<string, District>();
   const byRepo = (repo: string): District | undefined => districts.find((d) => d.repo === repo);
   /** The step a repo's analysis last reported. */
   const analyzingStep = (repo: string): string => known.get(repo)?.step ?? '';
@@ -769,7 +948,7 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------- milestones (Phase 3 Task 14)
-  /** The milestones standing now, by id: read once, then kept by milestone.reached. */
+  /** The milestones standing now, by id: read once, then kept by milestone.reached and milestone.changed. */
   const milestoneRows = new Map<string, Milestone>();
   const standingNow = (m: Milestone): boolean => m.until === null || Date.parse(m.until) > Date.now();
   function showMilestones(): void {
@@ -1026,6 +1205,8 @@ async function main(): Promise<void> {
    */
   let liveTrips: Trip[] = [];
   const probeTrips = new Map<string, Trip>();
+  /** A number for each synthetic vehicle trip, so each probe books a cab of its own. */
+  let probeSeq = 0;
   const agentsAll = (): Agent[] => [...firmViews.values()].flatMap((f) => f.agents);
   const showTrips = (): void => {
     const trips = probeTrips.size ? [...liveTrips.filter((t) => !probeTrips.has(t.agentId)), ...probeTrips.values()] : liveTrips;
@@ -1096,13 +1277,23 @@ async function main(): Promise<void> {
     const quarters = servedQuarters.map((q) =>
       darkened.has(q.firmId) ? { ...q, dark: true, towers: q.towers.map((t) => ({ ...t, dark: true, firmId: q.firmId, root: q.root })) } : q,
     );
-    const occ = occupancy(known.values(), restyledServed, quarters);
+    const occ = occupancy(known.values(), restyledServed, quarters, kept);
     const sites = new Map<string, number>();
     for (const d of served) sites.set(d.repo, d.index);
     for (const r of known.values()) sites.set(r.fullName, r.slot);
-    looks = pickLooks([...sites].map(([repo, slot]) => ({ repo, slot })));
-    districts = occ.districts;
+    // A repo that leaves the list keeps its slot: its district holds its look in reserve (LookSite.gone), so its
+    // going re-picks no other tower and frees its variant for nobody else.
+    for (const [repo, slot] of sites) sited.set(repo, slot);
+    looks = pickLooks([...sited].map(([repo, slot]) => ({ repo, slot, ...(sites.has(repo) ? {} : { gone: true }) })));
     debug.builds += city.setPlots(occ);
+    // Once the city stands as asked (a rebuild runs a step a frame, Task 13): what he sees and clicks (the plates, the
+    // inspector, the districts a click opens) follows what is drawn, never a tower still being built.
+    city.whenBuilt(() => shown(occ));
+  }
+
+  /** The plates, the inspector and the district list for the occupancy now drawn. */
+  function shown(occ: ReturnType<typeof occupancy>): void {
+    districts = occ.districts;
     debug.districts = occ.districts.length;
     debug.sites = occ.sites.length;
     debug.quarters = occ.quarters.length;
@@ -1115,6 +1306,8 @@ async function main(): Promise<void> {
         origin: d.origin,
         name: name ?? d.repo,
         sub: `${owner}, ${n === 0 ? 'root only' : plural(n, 'floor')}`,
+        // Hovering a tower's plate says what its lit and dark bands are, in the inspector's words.
+        title: bandKey(d.tower.floors.slice(d.tower.datumIndex)) || undefined,
         onActivate: () => inspect(d.repo, null),
       };
     });
@@ -1155,6 +1348,10 @@ async function main(): Promise<void> {
   const show = (next: District[], quarters: Quarter[] = servedQuarters): void => {
     served = next;
     servedQuarters = quarters;
+    // The engine's fresh word on each tower: kept for its repo's next toggle, and dropped for a connected repo it no longer lists.
+    const listed = new Set(next.map((d) => d.repo));
+    for (const d of next) kept.set(d.repo, d);
+    for (const r of known.values()) if (r.connected && !listed.has(r.fullName)) kept.delete(r.fullName);
     // A finished first analysis stops holding its scaffold once the refresh after it lands, tower or not.
     for (const r of known.values()) {
       if (r.done) {
@@ -1169,23 +1366,16 @@ async function main(): Promise<void> {
 
   const countConnected = (): void => runhead.setConnected([...known.values()].filter((r) => r.connected).length);
 
-  /** Takes a repo as stored now, keeping the step its analysis reached. */
+  /** Takes a repo as stored now, keeping the step its analysis reached and the done-hold until the refresh (occupancy.ts). */
   const takeRepo = (r: Repo, step?: string): void => {
-    const was = known.get(r.fullName);
-    known.set(r.fullName, {
-      fullName: r.fullName,
-      slot: r.slot,
-      connected: r.connected,
-      status: r.status,
-      step: step ?? (r.status === 'analyzing' ? (was?.step ?? '') : ''),
-    });
+    known.set(r.fullName, takeRepoState(known.get(r.fullName), r, step));
   };
 
   /** Takes the stored repos as they are now: which are connected, and which are analyzing. */
   const takeRepos = (list: Repo[]): void => {
-    const steps = new Map([...known].map(([repo, k]) => [repo, k.step]));
+    const prior = new Map(known);
     known.clear();
-    for (const r of list) takeRepo(r, r.status === 'analyzing' ? steps.get(r.fullName) : undefined);
+    for (const r of list) known.set(r.fullName, takeRepoState(prior.get(r.fullName), r));
     countConnected();
   };
 
@@ -1214,7 +1404,7 @@ async function main(): Promise<void> {
   );
   api.events((e) => {
     // A milestone reached or patched (the spire passed on, a finial moved) stands at once.
-    if (e.type === 'milestone.reached') {
+    if (e.type === 'milestone.reached' || e.type === 'milestone.changed') {
       const m = (e.data as { milestone?: Milestone } | null)?.milestone;
       if (m?.id) {
         milestoneRows.set(m.id, m);
@@ -1293,16 +1483,19 @@ async function main(): Promise<void> {
       e.preventDefault();
       toCity();
     }
-    // H (or Home) in the city glides back to the home framing, which grows with the city.
+    // H (or Home) in the city glides back to the home framing, which grows with the city; with the inspector open it
+    // closes the inspector first. In a text field the letter is the field's.
     const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
-    if ((e.key === 'h' || e.key === 'H' || e.key === 'Home') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
+    const home = homeKey({ key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, typing, prevented: e.defaultPrevented, route: document.body.dataset.route ?? '' }, !!(inspector.repo || inspector.campus));
+    if (home.length) {
       e.preventDefault();
+      if (home.includes('close')) inspector.close();
       city.home();
     }
     // T in the city walks through the week (Decision 5), any day.
     if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
       e.preventDefault();
-      // This week, or the week before when this one has too little to walk (a Monday morning): tourWeekFor's rule.
+      // This week, or the week before on a Monday morning or when this one has too little to walk: tourWeekFor's rule.
       void startTour(weekOf(Date.now()).week, true);
     }
     // R rides the lift up the tower open in the inspector, or the selected agent's (Task 35).
@@ -1414,8 +1607,13 @@ async function main(): Promise<void> {
   const beginTour = async (week: string, fallBack: boolean): Promise<boolean> => {
     let tour: Tour | null;
     try {
-      tour = await api.tour(week);
-      if (fallBack && !(tour && tour.stops.some((x) => x.kind !== 'exchange'))) tour = await api.tour(previousWeek(week));
+      if (fallBack) {
+        // tourWeekFor's rule: a Monday morning walks last week without asking for this one's plan.
+        const now = Date.now();
+        const thisWeek = mondayMorning(now) ? null : await api.tour(week);
+        const walk = tourWeekFor(now, () => (thisWeek ? { stops: thisWeek.stops.filter((x) => x.kind !== 'exchange').length } : null));
+        tour = walk === week ? thisWeek : await api.tour(walk);
+      } else tour = await api.tour(week);
     } catch {
       notice.add("The engine did not answer with the week's tour.", { key: 'tour' });
       return false;
@@ -1487,7 +1685,7 @@ async function main(): Promise<void> {
   const applyRoute = (to: Route, place: Place): void => {
     const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo', 'audit', 'net', 'voyage', 'graduate'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
-    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' || route === 'audit' ? 'repos' : SCHOOL_ROUTES.has(route as Route) ? 'school' : route);
+    runhead.setRoute(route as Route);
     if (route !== 'city') {
       inspector.close();
       // A sheet opened over the city ends a ride or a tour under way.
@@ -1540,7 +1738,7 @@ async function main(): Promise<void> {
       // Drawn now, not on the hashchange after it, so the brief stands before the veil lifts.
       applyRoute('brief', { route: 'brief', id: null });
     }
-    else if (opened.first && !opened.brief.due) notice.add(`${emptyMorning()}.`);
+    else if (opened.first && !opened.brief.due && emptyMorningDue(opened.brief.day)) notice.add(`${emptyMorning()}.`);
   }
 
   await city.ready;

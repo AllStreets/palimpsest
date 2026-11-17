@@ -23,6 +23,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { type Kind, mergeStamped, stamp, TONE } from './campus/site.js';
 import { AO_NEAR, LAYER, setLayers } from './lod.js';
 import { type MatKey, paneData, paneGeometry } from './tower/kit.js';
+import { finish, type Steps } from './steps.js';
 
 /** A slot's kind in the campus masonry, and a tint on the kind's tone (the slot's own colour where the kind is a plain paint or a bare emitter). */
 export interface SchoolKind {
@@ -104,6 +105,8 @@ export interface SchoolBatch {
   group: THREE.Group;
   /** Draws exactly these built towers (each already placed in the world): new ones are taken in and hidden, ones no longer listed let go. Returns true when anything changed. */
   set(towers: THREE.Object3D[]): boolean;
+  /** set() in steps (steps.ts): the new towers taken and the batch merged off screen; the commit swaps it in. */
+  prepare(towers: THREE.Object3D[]): Steps<() => boolean>;
   /** Per frame: the AO's normal pass sees the masonry only while a tower is within its reach of the eye. */
   update(eye: THREE.Vector3): void;
   dispose(): void;
@@ -143,6 +146,11 @@ function stamped(g: THREE.BufferGeometry, k: SchoolKind, by?: THREE.Color): THRE
 
 /** Takes a built tower apart: its pieces stamped and merged, its panes kept; its meshes hidden. */
 function take(tower: THREE.Object3D): Entry {
+  return finish(takeSteps(tower));
+}
+
+/** take() a few parts at a time (steps.ts): stamping a tower's parts into world space is the costly part. */
+function* takeSteps(tower: THREE.Object3D): Steps<Entry> {
   tower.updateMatrixWorld(true);
   const pieces: THREE.BufferGeometry[] = [];
   const panes: THREE.Matrix4[] = [];
@@ -178,7 +186,8 @@ function take(tower: THREE.Object3D): Entry {
     }
     o.visible = false;
   };
-  const visit = (o: THREE.Object3D): void => {
+  let since = 0;
+  const visit = function* (o: THREE.Object3D): Steps<void> {
     if (o.name === 'tower:picks') return;
     if ((o as THREE.LOD).isLOD) {
       // A part with a near and a far level: the near one, which the merged mesh keeps at any distance.
@@ -191,11 +200,13 @@ function take(tower: THREE.Object3D): Entry {
     }
     if ((o as THREE.Mesh).isMesh) {
       mesh(o as THREE.Mesh);
+      if (++since % 6 === 0) yield;
       return;
     }
-    o.children.forEach(visit);
+    for (const ch of o.children) yield* visit(ch);
   };
-  visit(tower);
+  yield* visit(tower);
+  yield;
   const geo = pieces.length ? mergeStamped(pieces) : null;
   return { geo, sphere: geo?.boundingSphere?.clone() ?? null, panes, colours };
 }
@@ -224,13 +235,15 @@ export function schoolBatch(masonry: THREE.Material, window: THREE.Material): Sc
   }
 
   function remerge(): void {
-    clear();
-    aoSeen = null;
+    finish(remergeSteps(entries))();
+  }
+  /** The merged masonry and panes for these entries, built off screen; the commit swaps them in (steps.ts). */
+  function* remergeSteps(from: Map<THREE.Object3D, Entry>): Steps<() => void> {
     const geos: THREE.BufferGeometry[] = [];
     const spheres: THREE.Sphere[] = [];
     const panes: THREE.Matrix4[] = [];
     const colours: THREE.Color[] = [];
-    for (const e of entries.values()) {
+    for (const e of from.values()) {
       if (e.geo) {
         geos.push(e.geo);
         spheres.push(e.sphere!);
@@ -238,38 +251,72 @@ export function schoolBatch(masonry: THREE.Material, window: THREE.Material): Sc
       panes.push(...e.panes);
       colours.push(...e.colours);
     }
+    let nextStone: THREE.Mesh | null = null;
+    let nextGlass: THREE.InstancedMesh | null = null;
     if (geos.length) {
+      yield;
       const merged = geos.length === 1 ? geos[0].clone() : mergeGeometries(geos, false);
       if (merged) {
         merged.computeBoundingSphere();
-        stone = new THREE.Mesh(merged, masonry);
-        stone.name = 'school:masonry';
-        stone.castShadow = stone.receiveShadow = true;
-        stone.userData.lodParts = spheres;
-        group.add(stone);
+        nextStone = new THREE.Mesh(merged, masonry);
+        nextStone.name = 'school:masonry';
+        nextStone.castShadow = nextStone.receiveShadow = true;
+        nextStone.userData.lodParts = spheres;
       }
     }
     if (panes.length) {
-      glass = new THREE.InstancedMesh(paneGeo, window, panes.length);
+      yield;
+      const g = new THREE.InstancedMesh(paneGeo, window, panes.length);
       panes.forEach((p, i) => {
-        glass!.setMatrixAt(i, p);
-        glass!.setColorAt(i, colours[i]);
+        g.setMatrixAt(i, p);
+        g.setColorAt(i, colours[i]);
       });
-      glass.instanceMatrix.needsUpdate = true;
-      if (glass.instanceColor) glass.instanceColor.needsUpdate = true;
-      glass.castShadow = false;
-      glass.receiveShadow = true;
-      glass.name = 'school:panes';
-      glass.computeBoundingBox();
-      glass.computeBoundingSphere();
+      g.instanceMatrix.needsUpdate = true;
+      if (g.instanceColor) g.instanceColor.needsUpdate = true;
+      g.castShadow = false;
+      g.receiveShadow = true;
+      g.name = 'school:panes';
+      g.computeBoundingBox();
+      g.computeBoundingSphere();
       // Too thin for the AO and never a caster: the view alone draws the panes.
-      setLayers(glass, LAYER.view);
-      group.add(glass);
+      setLayers(g, LAYER.view);
+      nextGlass = g;
     }
+    return () => {
+      clear();
+      aoSeen = null;
+      stone = nextStone;
+      glass = nextGlass;
+      if (stone) group.add(stone);
+      if (glass) group.add(glass);
+    };
   }
 
   return {
     group,
+    *prepare(towers) {
+      // Each new tower taken a step at a time (its parts hide; it is not drawn yet), the batch merged off screen.
+      const want = new Set(towers);
+      const next = new Map<THREE.Object3D, Entry>();
+      const gone: Entry[] = [];
+      for (const [t, e] of entries) (want.has(t) ? next.set(t, e) : gone.push(e));
+      let changed = gone.length > 0;
+      for (const t of towers) {
+        if (next.has(t)) continue;
+        yield;
+        next.set(t, yield* takeSteps(t));
+        changed = true;
+      }
+      if (!changed) return () => false;
+      const swap = yield* remergeSteps(next);
+      return () => {
+        for (const e of gone) e.geo?.dispose();
+        entries.clear();
+        for (const [t, e] of next) entries.set(t, e);
+        swap();
+        return true;
+      };
+    },
     set(towers) {
       const want = new Set(towers);
       let changed = false;

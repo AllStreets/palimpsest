@@ -144,3 +144,15 @@ test('the audit page says plainly why the audit ran', () => {
   assert.equal(auditedBecause('demand'), 'audited when you asked');
   assert.equal(auditedBecause('brief'), 'audited when you asked');
 });
+
+test('every proposal states where it stands in one sentence of one kind, waiting or dismissed alike', async () => {
+  const { proposalState, tierChoiceWords } = await import('../app/src/ui/audit-words.js');
+  assert.equal(proposalState(jobOf({ status: 'proposed', tier: 'high', value: 150 })), 'Waiting on you; no firm bids until you accept it.');
+  assert.equal(proposalState(jobOf({ status: 'withdrawn', withdrawnBy: 'him', tier: 'normal', value: 60 })), 'Dismissed, normal tier, 60 credits.');
+  assert.equal(proposalState(jobOf({ status: 'bidding', tier: 'low', value: 20 })), 'Accepted, taking bids, low tier, 20 credits.');
+  assert.equal(proposalState(jobOf({ status: 'withdrawn', withdrawnBy: 'city' })), 'Withdrawn.');
+  assert.equal(proposalState(null), 'Not posted.');
+  // The cost is a choice he makes in words before he accepts: what the city would pay, and the Accept that names it.
+  assert.deepEqual(tierChoiceWords('high'), { lead: 'The city pays at most', accept: 'Accept at 150 credits' });
+  assert.deepEqual(tierChoiceWords('low'), { lead: 'The city pays at most', accept: 'Accept at 20 credits' });
+});

@@ -11,569 +11,569 @@
 export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = {
   "walkup:red": {
     "sun": [
-      44.9,
-      19.5,
-      14.9
+      31.9,
+      27.1,
+      17.6
     ],
     "shade": [
-      36.9,
-      13.7,
-      7.8
+      17.5,
+      11.5,
+      3.3
     ]
   },
   "walkup:buff": {
     "sun": [
-      52.9,
-      16.7,
-      19.9
+      47.4,
+      20.5,
+      26.2
     ],
     "shade": [
-      42,
-      11.9,
-      9.8
+      26.4,
+      9.5,
+      8
     ]
   },
   "walkup:ironspot": {
     "sun": [
-      40.2,
-      13.2,
-      10.3
+      22.8,
+      13.3,
+      8.7
     ],
     "shade": [
-      36.1,
-      10.6,
-      6
+      16.8,
+      6.1,
+      0.5
     ]
   },
   "walkup:white": {
     "sun": [
-      59.5,
-      13,
-      13.8
+      58.2,
+      13.7,
+      13.6
     ],
     "shade": [
-      46.7,
-      10.7,
-      3.6
+      33.8,
+      8.6,
+      -0.6
     ]
   },
   "walkup:black": {
     "sun": [
-      37.8,
-      11.2,
-      8.2
+      18.8,
+      8.3,
+      5
     ],
     "shade": [
-      35.2,
-      10.1,
-      5
+      14.5,
+      5,
+      0.5
     ]
   },
   "walkup:sage": {
     "sun": [
-      43.5,
-      10.9,
-      10.4
+      31.8,
+      9.2,
+      10.2
     ],
     "shade": [
-      38.7,
-      9.4,
-      5.1
+      19.8,
+      5,
+      -0.7
     ]
   },
   "walkup:grey": {
     "sun": [
-      46.2,
-      13.3,
-      11.2
+      36.9,
+      14.6,
+      12.5
     ],
     "shade": [
-      40.2,
-      10.3,
-      4.8
+      23.1,
+      7,
+      -0.8
     ]
   },
   "walkup:navy": {
     "sun": [
-      36.5,
-      10.8,
-      6.7
+      16.5,
+      7.1,
+      2.9
     ],
     "shade": [
-      35.3,
-      10.3,
-      4.3
+      15.8,
+      5.7,
+      -0.7
     ]
   },
   "walkup:cream": {
     "sun": [
-      59.1,
-      13.1,
-      15.8
+      58.2,
+      13.3,
+      16.3
     ],
     "shade": [
-      47.8,
-      11.5,
-      5.9
+      37.1,
+      10.3,
+      3.3
     ]
   },
   "commercial:limestone": {
     "sun": [
-      42.9,
-      12.4,
-      9.8
+      38.4,
+      11.5,
+      3.5
     ],
     "shade": [
-      40.3,
-      10.7,
-      4.6
+      31.1,
+      8.1,
+      -5.2
     ]
   },
   "commercial:white-terracotta": {
     "sun": [
-      46,
-      12.1,
-      9.5
+      43.4,
+      11.1,
+      2.5
     ],
     "shade": [
-      43.3,
-      10.8,
-      3.6
+      36.6,
+      9,
+      -6.3
     ]
   },
   "commercial:buff": {
     "sun": [
-      41.4,
-      13.5,
-      12.2
+      35.7,
+      13.2,
+      8.1
     ],
     "shade": [
-      41.1,
-      11.6,
-      7.6
+      30.5,
+      9.2,
+      1.7
     ]
   },
   "commercial:granite": {
     "sun": [
-      37,
-      11.3,
-      6.8
+      27.7,
+      9.2,
+      -2.1
     ],
     "shade": [
-      38.6,
-      10.8,
-      4.1
+      28.4,
+      7.7,
+      -5.7
     ]
   },
   "commercial:black": {
     "sun": [
-      33.9,
-      11,
-      6.5
+      21.2,
+      7.6,
+      -3.4
     ],
     "shade": [
-      37.6,
-      10.7,
-      4.9
+      27,
+      7.3,
+      -4.6
     ]
   },
   "commercial:green-terracotta": {
     "sun": [
-      39.3,
-      10.2,
-      9.3
+      26.5,
+      6.3,
+      2.1
     ],
     "shade": [
-      42.4,
-      8.1,
-      7.1
+      27.4,
+      2.4,
+      0
     ]
   },
   "commercial:brownstone": {
     "sun": [
-      38.2,
-      12.9,
-      10.1
+      25.8,
+      12.7,
+      3.3
     ],
     "shade": [
-      41.1,
-      9.4,
-      7.5
+      26.2,
+      5.1,
+      0.4
     ]
   },
   "commercial:blue": {
     "sun": [
-      40.6,
-      11.4,
-      7.8
+      31.3,
+      10.2,
+      0.3
     ],
     "shade": [
-      43,
-      8.7,
-      5.1
+      28.7,
+      4.5,
+      -1.9
     ]
   },
   "midcentury:teal": {
     "sun": [
-      39.1,
-      8.6,
-      6.8
+      40,
+      9,
+      -0.9
     ],
     "shade": [
-      34.9,
-      9.1,
-      4.6
+      31.1,
+      5.5,
+      -7.9
     ]
   },
   "midcentury:enamel": {
     "sun": [
-      37.5,
-      10.1,
-      6.7
+      43.4,
+      11,
+      1
     ],
     "shade": [
-      34.1,
-      9.7,
-      4.9
+      33.7,
+      6.5,
+      -7.5
     ]
   },
   "midcentury:white": {
     "sun": [
-      48.6,
-      11.1,
-      8.4
+      50.5,
+      10.6,
+      0.4
     ],
     "shade": [
-      40.6,
-      10,
-      2.8
+      39.4,
+      7.4,
+      -7.5
     ]
   },
   "midcentury:slate": {
     "sun": [
-      36.6,
-      10.1,
-      5.1
+      31,
+      9,
+      -3.2
     ],
     "shade": [
-      34.6,
-      9.8,
-      3.3
+      28.7,
+      5.7,
+      -6.9
     ]
   },
   "midcentury:mies": {
     "sun": [
-      35.4,
-      9.8,
-      5.6
+      23.3,
+      6.6,
+      -6.2
     ],
     "shade": [
-      35.2,
-      9.6,
-      4.7
+      28.1,
+      5.4,
+      -6.8
     ]
   },
   "midcentury:olive": {
     "sun": [
-      37.1,
-      9.3,
-      7.5
+      36.6,
+      10.3,
+      1.6
     ],
     "shade": [
-      36.6,
-      9.5,
-      5.3
+      33.8,
+      6.3,
+      -4
     ]
   },
   "midcentury:sky": {
     "sun": [
-      40.2,
-      9.3,
-      4.3
+      41.6,
+      10.1,
+      -4.1
     ],
     "shade": [
-      38.5,
-      9.6,
-      2.5
+      39,
+      6.9,
+      -7.2
     ]
   },
   "glass:silver": {
     "sun": [
-      39.1,
-      9.4,
-      6
+      44.7,
+      8.5,
+      -12.3
     ],
     "shade": [
-      43.7,
-      10.6,
-      5.9
+      37.5,
+      6.9,
+      0
     ]
   },
   "glass:teal": {
     "sun": [
-      33.8,
-      8,
-      5.6
+      35,
+      6.2,
+      -16.2
     ],
     "shade": [
-      42,
-      10.9,
-      6
+      31.2,
+      7.1,
+      2.1
     ]
   },
   "glass:blue": {
     "sun": [
-      32.7,
-      9.5,
-      4.3
+      33.8,
+      8.2,
+      -18.5
     ],
     "shade": [
-      45,
-      11.5,
-      8.3
+      37.9,
+      8.9,
+      8.4
     ]
   },
   "glass:charcoal": {
     "sun": [
-      32.8,
-      9.4,
-      5.4
+      30.4,
+      8,
+      -16.8
     ],
     "shade": [
-      45.2,
-      11.8,
-      8.4
+      33.8,
+      9.8,
+      10.1
     ]
   },
   "glass:smoked": {
     "sun": [
-      34.2,
-      10,
-      7.5
+      37.3,
+      8.1,
+      -9.1
     ],
     "shade": [
-      31,
-      9.9,
-      5.8
+      34.1,
+      8.4,
+      -20
     ]
   },
   "glass:bronze": {
     "sun": [
-      35.7,
-      10.8,
-      8.7
+      38.4,
+      9.6,
+      -8.1
     ],
     "shade": [
-      31.3,
-      10.3,
-      5.6
+      33.3,
+      8.6,
+      -18.6
     ]
   },
   "glass:white": {
     "sun": [
-      45.7,
-      8.8,
-      9.1
+      50,
+      9.1,
+      -7.6
     ],
     "shade": [
-      35.6,
-      9.8,
-      3.8
+      39.4,
+      8.6,
+      -18.1
     ]
   },
   "brutalist:grey": {
     "sun": [
-      45.2,
-      13,
-      10.7
+      37.9,
+      13.9,
+      12.9
     ],
     "shade": [
-      37.2,
-      10.3,
-      4.1
+      17.9,
+      5.9,
+      -2.4
     ]
   },
   "brutalist:cool": {
     "sun": [
-      44.7,
-      12.4,
-      9.3
+      36.6,
+      12.8,
+      10.1
     ],
     "shade": [
-      36.8,
-      10.1,
-      2.8
+      15.4,
+      5.5,
+      -4.6
     ]
   },
   "brutalist:pale": {
     "sun": [
-      52.8,
-      13.6,
-      13.1
+      51.8,
+      14.9,
+      16.5
     ],
     "shade": [
-      42.5,
-      10.6,
-      3.8
+      26.5,
+      7.8,
+      -1.2
     ]
   },
   "brutalist:dark": {
     "sun": [
-      36.3,
-      10.9,
-      7.5
+      18.8,
+      8.1,
+      6.9
     ],
     "shade": [
-      32.1,
-      9.8,
-      4.2
+      5.2,
+      2.8,
+      -2
     ]
   },
   "brutalist:buff": {
     "sun": [
-      46.2,
-      14.7,
-      14.6
+      41.1,
+      17.3,
+      21.8
     ],
     "shade": [
-      37.7,
-      10.9,
-      6.5
+      17.6,
+      7.2,
+      3.6
     ]
   },
   "parking:grey": {
     "sun": [
-      46.1,
-      11.4,
-      7.6
+      36.6,
+      10.9,
+      8.6
     ],
     "shade": [
-      40.2,
-      8.7,
-      2.1
+      22.4,
+      3.2,
+      -2.5
     ]
   },
   "parking:pale": {
     "sun": [
-      51,
-      11.3,
-      8.6
+      45.2,
+      10.8,
+      9.7
     ],
     "shade": [
-      43.6,
-      8.7,
-      2
+      28.5,
+      4.1,
+      -2.2
     ]
   },
   "parking:dark": {
     "sun": [
-      39.4,
-      10.2,
-      5.5
+      22.6,
+      7.3,
+      4.5
     ],
     "shade": [
-      37.6,
-      8.4,
-      2.3
+      17.2,
+      2,
+      -3
     ]
   },
   "parking:mesh": {
     "sun": [
-      41.9,
-      11.6,
-      7.7
+      29.2,
+      11.1,
+      9
     ],
     "shade": [
-      37.4,
-      10.3,
-      3.1
+      15.7,
+      5.9,
+      -0.9
     ]
   },
   "industrial:red": {
     "sun": [
-      36.5,
-      17.4,
-      10.4
+      25.7,
+      22.2,
+      6.2
     ],
     "shade": [
-      39,
-      12.1,
-      5.3
+      28.3,
+      10.2,
+      -2.7
     ]
   },
   "industrial:white": {
     "sun": [
-      49.5,
-      12.4,
-      10.9
+      49,
+      11.5,
+      4.8
     ],
     "shade": [
-      47.5,
-      10.4,
-      3.2
+      42,
+      8.8,
+      -3.9
     ]
   },
   "industrial:limewash": {
     "sun": [
-      59.9,
-      10.8,
-      12.1
+      60.5,
+      10.3,
+      10
     ],
     "shade": [
-      42.3,
-      10.5,
-      3.8
+      33.9,
+      8.6,
+      -7.8
     ]
   },
   "industrial:green": {
     "sun": [
-      44.3,
-      9.5,
-      9.3
+      33.5,
+      6.8,
+      6.6
     ],
     "shade": [
-      32.2,
-      9.6,
-      5.3
+      14.5,
+      4.5,
+      -7.1
     ]
   },
   "industrial:buff": {
     "sun": [
-      51.5,
-      13.2,
-      15.1
+      48,
+      14.5,
+      17.8
     ],
     "shade": [
-      36.5,
-      11.1,
-      7.8
+      23.8,
+      8.1,
+      -1.3
     ]
   },
   "industrial:steel": {
     "sun": [
-      44,
-      11.6,
-      9.9
+      34.5,
+      11.4,
+      10
     ],
     "shade": [
-      36.6,
-      9.6,
-      3.1
+      14,
+      5.3,
+      -5
     ]
   },
   "industrial:blue": {
     "sun": [
-      38.2,
-      9.8,
-      6.7
+      22.9,
+      6.2,
+      4
     ],
     "shade": [
-      34.2,
       9.3,
-      2.7
+      3.8,
+      -5.9
     ]
   }
 };
 
 /** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
-export const AMBIENT_INPUTS = 'ab5a1119540cc262';
+export const AMBIENT_INPUTS = 'rows walkup:red=0c488199e0;walkup:buff=f6c16d0bfe;walkup:ironspot=63856cafb1;walkup:white=8ce58c9230;walkup:black=ef36fbcbc3;walkup:sage=d69a0a6cab;walkup:grey=86fdbefa98;walkup:navy=0c19ce0b9d;walkup:cream=fd01ed2a31;commercial:limestone=c48d8b7994;commercial:white-terracotta=2492b69e02;commercial:buff=d5b7feb2d1;commercial:granite=27163e029c;commercial:black=e888dbf2d3;commercial:green-terracotta=7becc81ddc;commercial:brownstone=9a2d13a29c;commercial:blue=f7cae3890f;midcentury:teal=2bc89c78e8;midcentury:enamel=753d21162c;midcentury:white=ae3731e2d4;midcentury:slate=b60fc656bf;midcentury:mies=97026e5e07;midcentury:olive=34db9c227f;midcentury:sky=2121b4ff21;glass:silver=cdbb97efef;glass:teal=2b1b3cf507;glass:blue=3e520aefa0;glass:charcoal=672a89b782;glass:smoked=e0d7ae8893;glass:bronze=bb9894fe96;glass:white=74e075bf54;brutalist:grey=d6045a9959;brutalist:cool=e4a2e70bd1;brutalist:pale=974997824d;brutalist:dark=e9b3116d64;brutalist:buff=2338771e55;parking:grey=948ef90132;parking:pale=2f2266631e;parking:dark=45388581c7;parking:mesh=4710c3e446;industrial:red=9207560f7c;industrial:white=9bb6e3ea8e;industrial:limewash=e057189445;industrial:green=6693e30d28;industrial:buff=85cef1fedc;industrial:steel=aff70c8f88;industrial:blue=a28e4be1bd';

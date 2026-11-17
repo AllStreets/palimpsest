@@ -2,12 +2,12 @@
 
 ## Textures
 
-Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public domain). Each set is the 2k JPG with colour (`_diff`), normal (`_nor`) and packed ambient occlusion, roughness and metalness (`_arm`) maps, in `app/public/textures/`.
+Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public domain). Each set is made from the 2k JPG with colour (`_diff`), normal (`_nor`) and packed ambient occlusion, roughness and metalness (`_arm`) maps, in `app/public/textures/`, each map sized to the nearest view the city frames it in and saved again at JPEG quality 88.
 
 | Files | Texture | Author | License | Used for |
 |---|---|---|---|---|
-| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; classical tower roots; stone-era floors (sandstone and travertine recoloured from it); the university's limestone dressings and the clock's dials |
-| `brick_*` | [Red Brick 03](https://polyhaven.com/a/red_brick_03) | Poly Haven | CC0 | Brick-era floors: common red as scanned; cream city, salmon, buff and glazed white terracotta recoloured from it; the university's halls and the collegiate root |
+| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; every tower root's stone, recoloured from it: the Beaux-Arts root's sandstone, the Roman root's travertine, the Gothic root's grey stone and granite, the pagoda root's limestone and granite, the Chicago root's limestone and granite; stone-era floors (sandstone and travertine); the river's balustrades; the university's limestone dressings and the clock's dials |
+| `brick_*` | [Red Brick 03](https://polyhaven.com/a/red_brick_03) | Poly Haven | CC0 | Brick-era floors: common red as scanned; cream city, salmon, buff and glazed white terracotta recoloured from it; the Chicago root's brick; the university's halls and the collegiate root |
 | `granite_*` | [Granite Tile](https://polyhaven.com/a/granite_tile) | Poly Haven (Charlotte Baglioni) | CC0 | Pink and dark grey granite floors, recoloured from it |
 | `ashlar_*` | [Marble 01](https://polyhaven.com/a/marble_01) | Poly Haven (Rob Tuytel) | CC0 | Limestone and white marble floors, recoloured from its cut slabs; the university terrace's ashlar wall |
 | `ironspot_*` | [Dark Brick Wall](https://polyhaven.com/a/dark_brick_wall) | Poly Haven (Dimitrios Savva, Dario Barresi) | CC0 | Dark ironspot brick floors |

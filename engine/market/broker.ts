@@ -58,6 +58,8 @@ export interface ToolResult {
   stdout: string;
   stderr: string;
   refused: string | null;
+  /** True when the command was ended by its time cap. */
+  timedOut?: boolean;
 }
 
 export interface ExecToolInput {
@@ -414,7 +416,7 @@ export async function execTool(o: ExecToolInput): Promise<ToolResult> {
   const code = r.aborted && r.code === 0 ? null : r.code;
   // How the command ended, for the log and for the audit runner (a passing test check vouches for a REAL finding).
   o.log({ at: now(), kind: 'engine', text: `exit ${code === null ? 'none' : code}: ${o.command}`, data: { exit: { command: o.command, code, stage: o.stage ?? null } } });
-  return { code, stdout: r.stdout, stderr: r.stderr, refused: null };
+  return { code, stdout: r.stdout, stderr: r.stderr, refused: null, ...(r.timedOut ? { timedOut: true } : {}) };
 }
 
 /**

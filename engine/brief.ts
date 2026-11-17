@@ -16,7 +16,7 @@
  * No `seen` rows. Every text goes through `plain()`, which redacts.
  */
 import { localDay } from '../shared/day.js';
-import { MAX_ATTEMPTS } from '../shared/market-rules.js';
+import { creditsText, MAX_ATTEMPTS, windowNowPct } from '../shared/market-rules.js';
 import type { RawRow } from '../shared/net-features.js';
 import { AGREE, WORK_KINDS } from '../shared/school-rules.js';
 import type { Audit, Brief, BriefAction, BriefItem, BriefItemKind, Grant, Job, Milestone, Repo, Run, Tier, Tour, WorkKind } from '../shared/types.js';
@@ -35,6 +35,7 @@ import { decline, grant, grants, kindWords, revoke } from './school/autonomy.js'
 import { repoAcceptShare } from './school/datasets.js';
 import { predict } from './school/decisions.js';
 import { getSettings, patchSettings } from './settings.js';
+import { briefHandled, FINISHING } from '../shared/brief-rules.js';
 
 const DAY_MS = 24 * 3_600_000;
 const TIERS: readonly Tier[] = ['low', 'normal', 'high'];
@@ -43,7 +44,6 @@ const USAGE_MARGIN = 10;
 /** The actions that teach Triage something about what he wants (ruling 9), and (Phase 4) his answers on autonomy. */
 const TAUGHT: readonly BriefAction[] = ['dismiss', 'accept', 'tier', 'retry', 'cap', 'grant', 'decline', 'revoke'];
 /** The actions that finish an item: once taken, the item shows it and offers nothing else. A cap can be changed again. */
-const FINISHING: readonly BriefAction[] = ['accept', 'dismiss', 'retry', 'resume', 'audit', 'grant', 'decline', 'revoke'];
 /** Looking, not acting: recorded, but never covering what he did with the item (he may ask why after posting it). */
 const LOOKS: readonly BriefAction[] = ['why', 'diff', 'fly', 'open-pr'];
 /** Whether `next` should stand as the item's action over `was`. */
@@ -205,7 +205,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
         kind: 'merged',
         repo,
         title,
-        text: chosen ? `Merged, and ${firm(chosen.firmId)} was paid ${num(chosen.price)} credits.` : 'Merged.',
+        text: chosen ? `Merged, and ${firm(chosen.firmId)} was paid ${creditsText(chosen.price)} credits.` : 'Merged.',
         at: e.at,
         refs: { jobId: d.id, ...(j?.runId ? { runId: j.runId } : {}), ...(j?.floorId ? { floorId: j.floorId } : {}), ...(chosen ? { firmId: chosen.firmId } : {}) },
         actions: ['fly', 'diff', 'dismiss'],
@@ -405,7 +405,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
   const daily = near(t.fiveHour) || t.todayCapPct !== null;
   if (daily || near(t.sevenDay)) {
     const w = daily ? t.fiveHour : t.sevenDay;
-    const pct = num(Math.max(w.estimatedPct, w.usedPct ?? 0));
+    const pct = windowNowPct(w) ?? 0;
     drafts.push({
       id: 'usage',
       kind: 'usage',
@@ -518,22 +518,20 @@ function sinceWords(since: string, today: string): string {
   return `since ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][d.getDay()]}`;
 }
 
-/** Two sentences: what happened in the window, and what the city spent. */
-function lead(items: BriefItem[], n: ReturnType<typeof numbers>, since: string, today: string): string {
-  const count = (k: BriefItemKind) => items.filter((i) => i.kind === k).length;
-  // The merged and failed counts are the reports' (ruling 8), never recounted from the items.
-  const parts: string[] = [];
-  if (n.merged) parts.push(`${n.merged} merged`);
-  if (n.failed) parts.push(`${n.failed} failed`);
-  if (count('pr')) parts.push(`${plural(count('pr'), 'PR')} ${count('pr') === 1 ? 'waits' : 'wait'} for your review`);
-  if (count('proposal')) parts.push(`${plural(count('proposal'), 'proposal')} ${count('proposal') === 1 ? 'waits' : 'wait'} for your click`);
-  if (count('halt')) parts.push(`${plural(count('halt'), 'repo')} halted`);
-  const first = parts.length
-    ? `${sinceWords(since, today).replace(/^s/, 'S')}: ${listOf(parts)}.`
-    : items.length
-      ? `Nothing merged or failed ${sinceWords(since, today)}, and ${plural(items.length, 'line')} below ${items.length === 1 ? 'waits' : 'wait'} on you.`
-      : `Nothing waits on you this morning.`;
-  const second = n.all > 0 ? `The city spent ${num(n.all)} credits on model calls${n.audit > 0 ? `, ${num(n.audit)} of them on README audits` : ''}.` : 'The city made no model calls.';
+/**
+ * Two short sentences of at most three counts, as he would say it (audit 2026-11-17): what still waits on him
+ * and what merged, then what the city spent. The failed runs, halts and audits are rows of their own below.
+ */
+function lead(waiting: BriefItem[], n: ReturnType<typeof numbers>, since: string, today: string): string {
+  const open = waiting.filter((i) => !briefHandled(i)).length;
+  // The merged count is the reports' (ruling 8), never recounted from the items.
+  const merged = n.merged ? `${n.merged} merged ${sinceWords(since, today)}` : '';
+  const first = open
+    ? `${open} ${open === 1 ? 'thing waits' : 'things wait'} on you${merged ? `; ${merged}` : ''}.`
+    : merged
+      ? `Nothing waits on you; ${merged}.`
+      : 'Nothing waits on you this morning.';
+  const second = n.all > 0 ? `The city spent ${creditsText(n.all)} credits.` : 'The city made no model calls.';
   return `${first} ${second}`;
 }
 
@@ -664,7 +662,7 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
     firstOpen,
     // The brief opens before the city only for news or what waits on him: never for a standing recommendation alone.
     due: firstOpen && all.some((it) => !STANDING.has(it.kind) && !it.acted),
-    lead: plain(lead(all, numbers(since, day), since, day), 600),
+    lead: plain(lead(sections.waiting, numbers(since, day), since, day), 600),
     usage: { fiveHour: t.fiveHour, sevenDay: t.sevenDay, todayCapPct: t.todayCapPct?.pct ?? null, paused: t.paused ? { reason: t.paused.reason, detail: plain(t.paused.detail, 300) } : null },
     sections,
     tour: tour ? { week: tour.week, stops: realStops(tour) } : null,

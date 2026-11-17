@@ -31,6 +31,7 @@ import {
   proposalKey,
   QUIET_DAYS,
   reputationScore,
+  roundOpen,
   REVIEWER_SHARE,
   RIBBON_DAYS,
   salePrice,
@@ -276,6 +277,48 @@ test('runs under way are the runs with no end, counted by the pool their model d
   ];
   assert.deepEqual(runsUnderWay(runs, jobs), { total: 4, claude: 2, local: 1, api: 1 });
   assert.deepEqual(runsUnderWay([], []), { total: 0, claude: 0, local: 0, api: 0 });
+});
+
+test('bid.placed outside the current round is refused: a round is open only while bidding and before its close', () => {
+  const close = '2026-11-10T12:02:00.000Z';
+  const at = Date.parse(close);
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: close }, at - 1), true);
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: close }, at), false, 'at the close the round is over');
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: close }, at + 60_000), false);
+  assert.equal(roundOpen({ status: 'awarded', bidsCloseAt: close }, at - 1), false, 'an awarded job takes no bid');
+  assert.equal(roundOpen({ status: 'open', bidsCloseAt: null }, at), false);
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: 'not a time' }, at), false);
+  assert.equal(roundOpen(null, at), false);
+});
+
+test('credits are set one way on every screen: a thousands comma, whole bare, else to the cent', async () => {
+  const { creditsText } = await import('../shared/market-rules.js');
+  assert.equal(creditsText(2809.888), '2,809.89', 'never three places');
+  assert.equal(creditsText(82.22), '82.22');
+  assert.equal(creditsText(300), '300');
+  assert.equal(creditsText(23.4), '23.40');
+  assert.equal(creditsText(12345.6), '12,345.60');
+  assert.equal(creditsText(-419.42), '−419.42', 'a true minus');
+  assert.equal(creditsText(0.004), '0');
+  assert.equal(creditsText(-0.001), '0', 'no minus on nothing');
+  assert.equal(creditsText(59.999), '60');
+});
+
+test('a plan window now is one figure: the larger of the reading and the estimate, whole', async () => {
+  const { windowNowPct } = await import('../shared/market-rules.js');
+  assert.equal(windowNowPct({ usedPct: 44, estimatedPct: 44.6 }), 45, 'the reading plus what the city spent since');
+  assert.equal(windowNowPct({ usedPct: 50, estimatedPct: 20 }), 50, 'never under the reading');
+  assert.equal(windowNowPct({ usedPct: null, estimatedPct: 3.2 }), 3, 'an estimate with no reading');
+  assert.equal(windowNowPct({ usedPct: null, estimatedPct: 0 }), null, 'nothing read and nothing spent');
+});
+
+test('a column of credits keeps two places, with the same comma and true minus', async () => {
+  const { creditsFixed } = await import('../shared/market-rules.js');
+  assert.equal(creditsFixed(300), '300.00');
+  assert.equal(creditsFixed(2809.888), '2,809.89');
+  assert.equal(creditsFixed(-419.42), '−419.42');
+  assert.equal(creditsFixed(-0.001), '0.00');
+  assert.equal(creditsFixed(59.999), '60.00');
 });
 
 test('TIER_LABELS with custom base label', () => {

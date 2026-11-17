@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 
 import { lotParts, SECTIONS, type Face, type Lot } from '../app/src/city/lots.js';
-import { AWNING, HOODS, NAMED_KINDS, NAMES_PER_SET, packShopfront, SHOP_NAMES, SHOP_SLOTS, shopBays, shopfrontPlan, type ShopfrontPlan, signRow, signRows, unpackShopfront } from '../app/src/city/shopfronts.js';
+import { AWNING, cornerBay, CUT, cutOf, frontWidth, HOODS, NAMED_KINDS, NAMES_PER_SET, packShopfront, SHOP_NAMES, SHOP_SLOTS, shopBays, shopfrontPlan, type ShopfrontPlan, signRow, signRows, unpackShopfront } from '../app/src/city/shopfronts.js';
 
 const plan = (seed: number, o: Partial<Parameters<typeof shopfrontPlan>[0]> = {}): ShopfrontPlan =>
   shopfrontPlan({ archetype: 'walkup', hood: 'residential', w: 12, d: 10, front: ['pz'], seed, ...o });
@@ -145,4 +145,61 @@ test('every district has its own shop names, in an older and a modern set, each 
   assert.equal(rows[signRow(HOODS.indexOf('industrial'), 'shop', true, 7)], SHOP_NAMES.industrial.shop[0][1]);
   const p = plan(3, { hood: 'spine' });
   assert.equal(p.hood, HOODS.indexOf('spine'), 'the plan carries its district to the shader');
+});
+
+// The cut corners (Phase 5 Task 2): a corner lot of offices or slabs cuts its street corner, and its shopping front
+// is the straight run between the cuts, so the bays the awnings hang on are the bays the glass shows.
+
+test('a cut corner shortens the shopping front to the straight run between the cuts', () => {
+  assert.ok(CUT.chamfer > 0 && CUT.chamfer < 0.25 && CUT.round > CUT.chamfer && CUT.round < 0.25, 'the kit fractions (kits.py chamfer_box, round_box)');
+  assert.equal(cutOf('commercial', ['px', 'pz'], 0.6), 'chamfer');
+  assert.equal(cutOf('glass', ['nx', 'nz'], 0.9), 'chamfer');
+  assert.equal(cutOf('midcentury', ['px', 'nz'], 0.5), 'round', 'a streamline curve on a mid-century slab');
+  assert.equal(cutOf('commercial', ['px'], 0.9), null, 'one street front: no corner to cut');
+  assert.equal(cutOf('commercial', ['px', 'pz'], 0.2), null, 'the lower variants keep their square corners');
+  assert.equal(cutOf('walkup', ['px', 'pz'], 0.9), null, 'walk-ups and the rest stay square');
+  assert.equal(frontWidth(20, null), 20);
+  assert.ok(Math.abs(frontWidth(20, 'chamfer') - 20 * (1 - 2 * CUT.chamfer)) < 1e-9);
+  assert.ok(Math.abs(frontWidth(25, 'round') - 25 * (1 - 2 * CUT.round)) < 1e-9);
+});
+
+test('a cut lot hangs its awnings within the straight run, and its corner bay takes the x front\'s first kind', () => {
+  const s = SECTIONS.commercial;
+  const front: Face[] = ['pz', 'px'];
+  const seed = 5;
+  const plan = shopfrontPlan({ archetype: 'commercial', hood: 'residential', w: 24, d: 20, front, seed, cut: 'chamfer' });
+  const lot: Lot = {
+    x: 100,
+    z: -40,
+    w: 24,
+    d: 20,
+    h: s.ground + 6 * s.floor + s.parapet,
+    archetype: 'commercial',
+    hood: 'residential',
+    tone: 'buff',
+    colour: new THREE.Color(0.5, 0.4, 0.3),
+    accent: new THREE.Color(0.8, 0.75, 0.7),
+    style: [0, 0.3, 0.5, 0.8],
+    roof: 'flat',
+    front,
+    stack: 0,
+    index: 0,
+    shop: packShopfront(plan),
+  };
+  assert.ok(lotParts(lot).some((p) => p.chamfer), 'the variant cuts the corner');
+  // The plan's bays are counted over the straight run on each front.
+  assert.equal(plan.z.length, Math.min(SHOP_SLOTS, shopBays(frontWidth(24, 'chamfer'), plan.bay)));
+  assert.equal(plan.x.length, Math.min(SHOP_SLOTS, shopBays(frontWidth(20, 'chamfer'), plan.bay)));
+  const awnings = lotParts(lot).filter((q) => q.kind === 'awning');
+  const cutZ = 24 * CUT.chamfer;
+  const cutX = 20 * CUT.chamfer;
+  for (const a of awnings) {
+    const onPz = a.rot === undefined;
+    if (onPz) assert.ok(a.x - a.sx / 2 >= lot.x - 12 + cutZ - 1e-6 && a.x + a.sx / 2 <= lot.x + 12 - cutZ + 1e-6, `an awning on the z front stays clear of the cuts (${a.x}, ${a.sx})`);
+    else assert.ok(a.z - a.sx / 2 >= lot.z - 10 + cutX - 1e-6 && a.z + a.sx / 2 <= lot.z + 10 - cutX + 1e-6, `an awning on the x front stays clear of the cuts (${a.z}, ${a.sx})`);
+  }
+  assert.equal(cornerBay(plan), plan.x[0], 'the shader reads the same slot for the corner');
+  // A square lot plans over its full fronts, as it always did.
+  const square = shopfrontPlan({ archetype: 'commercial', hood: 'residential', w: 24, d: 20, front, seed });
+  assert.equal(square.z.length, Math.min(SHOP_SLOTS, shopBays(24, square.bay)));
 });

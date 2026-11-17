@@ -26,7 +26,7 @@ import { existsSync } from 'node:fs';
 
 import { apiCredits, claudeCredits, CREDIT_PCT, pctFor } from '../../shared/credits.js';
 import { localDay } from '../../shared/day.js';
-import { CREDITS_PER_USD, poolOfModel, todayCap } from '../../shared/market-rules.js';
+import { CREDITS_PER_USD, poolOfModel, todayCap, windowNowPct } from '../../shared/market-rules.js';
 import type { BudgetWindow, ModelRef, TreasuryState, UsageReading } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
@@ -801,6 +801,15 @@ export function liveLeaseCount(): number {
 // ---------------------------------------------------------------- the treasury
 
 /** The treasury as the screen and the scheduler see it. Entering `hard` or `stopped` here aborts leases and fires `onHardStop`. */
+/**
+ * His plan's two windows as they stand now, whole: the one figure the brief,
+ * Settings and the treasury show for the same moment (shared windowNowPct).
+ */
+export function planNow(now: number = Date.now()): { fiveHour: number | null; sevenDay: number | null } {
+  const t = treasury(now);
+  return { fiveHour: windowNowPct(t.fiveHour), sevenDay: windowNowPct(t.sevenDay) };
+}
+
 export function treasury(now: number = Date.now()): TreasuryState {
   const c = core(now);
   noteHard(c);

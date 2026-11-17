@@ -7,8 +7,9 @@
  * profile generated for that root: a fresh clone at the sha, the install
  * (egress to the repo's registries only), then every configured check
  * (egress allows nothing). The result is cached in `baselines`; a baseline
- * whose install failed, or that was stopped, is never cached, so a failure
- * of the city's own is never taken for a preexisting one.
+ * whose install failed, that was stopped, or that holds a check refused or
+ * out of time, is never cached, so a failure of the city's own is never
+ * taken for a preexisting one.
  */
 import { appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -108,7 +109,10 @@ async function compute(repo: Repo, sha: string, opts: BaselineOptions): Promise<
   }
   let egress: Egress | null = null;
   try {
-    const { dir } = await createRunDir(repo, runId, `palimpsest/baseline-${sha.slice(0, 7)}`);
+    const { dir } = await createRunDir(repo, runId, `palimpsest/baseline-${sha.slice(0, 7)}`, { signal }).catch((err: unknown) => {
+      stopped();
+      throw err;
+    });
     stopped();
     const co = await engineGit(dir, ['checkout', '--quiet', '--detach', sha]);
     if (co.code !== 0) throw new Error(`The baseline could not check out ${sha.slice(0, 7)}: ${co.stderr.trim()}`);
@@ -133,6 +137,9 @@ async function compute(repo: Repo, sha: string, opts: BaselineOptions): Promise<
       results.push(r);
       record('check.done', { runId, baseline: true, repo: repo.fullName, sha, check: r });
     }
+    // A check refused by the guard or ended by its time cap never answered: kept, a later real failure
+    // would read as preexisting. Such a baseline is returned for this run and computed again next time.
+    if (results.some((r) => r.inconclusive)) return results;
     openDb()
       .prepare('INSERT OR REPLACE INTO baselines (repo, sha, json) VALUES (?, ?, ?)')
       .run(repo.fullName, sha, JSON.stringify(results));

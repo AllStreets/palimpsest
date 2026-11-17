@@ -3,9 +3,12 @@ import * as THREE from 'three';
 import { BANKS, FERRY_Y, inChannel, PIERS, POD_Y, RAIL_Y, RIVER, SPEED, STREET_AT, streetLine, streetWay, tramHeight, type Line, type Network, type Rank } from '../../../shared/commute.js';
 import type { Trip, TripMode } from '../../../shared/types.js';
 import { LAYER, setLayers } from './lod.js';
+import { BLOOM_THRESHOLD } from './post.js';
 import { hasKit, kitShared } from './kits.js';
 import { LOD_EYE } from './lod-shader.js';
-import { CONTACT_Y, filleted, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
+import { CONTACT_Y, filleted, offsetLoop, POD_BEAM, RAIL_CAR, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
+import { greenIn, greenLeft, SIGNAL, signalAt, type Axis, type SignalJunction, type Signals } from './signals.js';
+import { finish, type Steps } from './steps.js';
 
 /**
  * The city's transit vehicles (Task 31): trams on the loop, elevated trains
@@ -145,6 +148,8 @@ export interface MotionOptions {
   lateral?: number;
   /** Seconds standing at each stop. */
   dwell: number;
+  /** Seconds standing at each stop in turn, where it differs from `dwell` (a cab held at a red light). */
+  dwells?: readonly number[];
 }
 
 export interface Plan {
@@ -165,43 +170,69 @@ export interface Plan {
  * motion between grid points is at constant acceleration, so it is smooth.
  * On an open track it starts and ends at a stand.
  */
+const CURVATURE = new WeakMap<Track, Float64Array>();
+
 export function motionPlan(track: Track, stops: readonly number[], o: MotionOptions): Plan {
   const L = track.length;
   const closed = track.closed;
   const decel = o.decel ?? o.accel;
-  const raw: number[] = [];
   const steps = Math.max(1, Math.ceil(L));
-  for (let i = 0; i < steps; i++) raw.push((i * L) / steps);
-  if (!closed) raw.push(L);
-  const stopSet = new Set<number>();
-  for (const s of stops) {
+  const stopSet = new Map<number, number>();
+  const at: number[] = [];
+  stops.forEach((s, k) => {
     const w = closed ? ((s % L) + L) % L : Math.min(Math.max(s, 0), L);
-    raw.push(w);
-    stopSet.add(w);
+    at.push(w);
+    stopSet.set(w, Math.max(stopSet.get(w) ?? 0, o.dwells?.[k] ?? o.dwell));
+  });
+  at.sort((a, b) => a - b);
+  // The metre grid is in order already: the stops are merged into it.
+  const raw: number[] = [];
+  let k = 0;
+  for (let i = 0; i <= steps; i++) {
+    if (i === steps && closed) break;
+    const g = (i * L) / steps;
+    while (k < at.length && at[k] <= g) raw.push(at[k++]);
+    raw.push(g);
   }
-  raw.sort((a, b) => a - b);
+  while (k < at.length) raw.push(at[k++]);
   const S: number[] = [];
   const isStop: boolean[] = [];
+  const dwellOf: number[] = [];
   for (const s of raw) {
     const last = S.length - 1;
     if (last >= 0 && s - S[last] < 1e-6) {
       if (stopSet.has(s)) {
         S[last] = s;
         isStop[last] = true;
+        dwellOf[last] = Math.max(dwellOf[last], stopSet.get(s)!);
       }
       continue;
     }
     S.push(s);
     isStop.push(stopSet.has(s));
+    dwellOf.push(stopSet.get(s) ?? 0);
   }
   const N = S.length;
   const ds = (i: number): number => (i + 1 < N ? S[i + 1] : closed ? L + S[0] : S[i]) - S[i];
   const next = (i: number): number => (i + 1 < N ? i + 1 : closed ? 0 : i);
+  // The track's curvature on its metre grid, worked out once per track (a cab's drive is planned again for each red
+  // light on it, on the same track).
+  let curv = CURVATURE.get(track);
+  if (o.lateral && !curv) {
+    curv = new Float64Array(steps + 2);
+    for (let i = 0; i <= steps + 1; i++) curv[i] = track.curvature(Math.min((i * L) / steps, L));
+    CURVATURE.set(track, curv);
+  }
+  const curvAt = (s: number): number => {
+    const u = (s / L) * steps;
+    const i = Math.floor(u);
+    return Math.abs(u - i) < 1e-6 && curv ? curv[i] : track.curvature(s);
+  };
   const v = S.map((s, i) => {
     if (isStop[i]) return 0;
     let lim = o.speed;
     if (o.lateral) {
-      const k = track.curvature(s);
+      const k = curvAt(s);
       if (k > 1e-4) lim = Math.min(lim, Math.sqrt(o.lateral / k));
     }
     return lim;
@@ -231,7 +262,7 @@ export function motionPlan(track: Track, stops: readonly number[], o: MotionOpti
   let t = 0;
   for (let i = 0; i < N; i++) {
     tA[i] = t;
-    tD[i] = t + (isStop[i] ? o.dwell : 0);
+    tD[i] = t + (isStop[i] ? dwellOf[i] : 0);
     if (i + 1 < N || closed) t = tD[i] + (2 * ds(i)) / Math.max(v[i] + v[next(i)], 1e-3);
   }
   const period = closed ? t : tA[N - 1];
@@ -395,9 +426,16 @@ const CONSIST: Record<Exclude<VehicleKind, 'cab'>, { models: Array<{ model: Mode
   // Two articulated sections nose to nose on the outside; the second runs reversed, its nose at the tail.
   tram: { models: [{ model: 'tram', flip: false }, { model: 'tram', flip: true }], pitch: 14.8, bogie: 8.6, floor: 0.34 },
   // Three cars: a cab car each end and a trailer between.
-  rail: { models: [{ model: 'railEnd', flip: false }, { model: 'railMid', flip: false }, { model: 'railEnd', flip: true }], pitch: 16.0, bogie: 10.6, floor: 0.95 },
+  rail: { models: [{ model: 'railEnd', flip: false }, { model: 'railMid', flip: false }, { model: 'railEnd', flip: true }], pitch: 16.0, bogie: RAIL_CAR.bogie, floor: 0.95 },
   pod: { models: [{ model: 'pod', flip: false }], pitch: 0, bogie: 3.2, floor: 0.36 },
   ferry: { models: [{ model: 'ferry', flip: false }], pitch: 0, bogie: 12, floor: 0.12 },
+};
+/** Each line's car body: half its length nose to tail and half its width (the widest rings of its model). */
+export const CAR_BODY: Record<Exclude<VehicleKind, 'cab'>, { half: number; width: number }> = {
+  tram: { half: 7.12, width: 1.27 },
+  rail: { half: RAIL_CAR.half, width: RAIL_CAR.width },
+  pod: { half: 3.2, width: 1.3 },
+  ferry: { half: 14, width: 4 },
 };
 /** The cab's floor over the road. */
 const CAB_FLOOR = 0.42;
@@ -449,10 +487,18 @@ interface Cab {
   rank: Rank;
   bay: number;
   phase: CabPhase;
-  /** The current drive (to the pickup, the ride, the way back) and when it started. */
-  run: { track: Track; plan: Plan } | null;
+  /** The current drive (to the pickup, the ride, the way back) or stand at the kerb, and when it started. */
+  run: { track: Track; plan: Plan; crossings?: Crossing[] } | null;
   since: number;
-  legs: { pickup: { track: Track; plan: Plan }; carry: { track: Track; plan: Plan }; back: { track: Track; plan: Plan } } | null;
+  legs: { pickup: Drive; carry: Drive; back: Drive } | null;
+  /**
+   * How it is held up behind a car ahead (setTraffic): its own speed while
+   * it follows slower than its timetable (or null when it keeps to it), and
+   * whether it has fallen behind the timetable it was planned on (so the
+   * signals it planned by no longer hold, and it is planned again from its
+   * next stand).
+   */
+  follow?: { v: number | null; late: boolean; replannedAt: number };
   /** An errand waiting for this cab to be back at its bay (when every bay in the city was out). */
   queue?: { token: string; a: V2; b: V2; est: { pickup: number; carry: number } } | null;
   /** The errand it is on (its booking's token) and that errand's own ends, as the trip gave them. */
@@ -648,19 +694,26 @@ function service(kind: Service['kind'], id: string, track: Track, line: Line | n
 
 /** The vehicles on every line, timetabled, and the cabs at their ranks. */
 function makeFleet(net: Network): Fleet {
+  return finish(makeFleetSteps(net));
+}
+
+/** makeFleet a service at a time (steps.ts): each line's motion plan is a step of its own. */
+function* makeFleetSteps(net: Network): Steps<Fleet> {
   const services: Service[] = [];
   // Trams both ways round the loop, one every 700 m or so; the opposite way half a headway out of step.
-  tramTracks(net).forEach((track, d) => {
+  for (const [d, track] of tramTracks(net).entries()) {
     const calls = net.tram.stops.map((st) => ({ s: track.project(st), x: st.x, z: st.z }));
     const n = Math.max(2, Math.round(track.length / 700));
     services.push(service('tram', `tram:${d ? 'rev' : 'fwd'}`, track, net.tram, calls, { speed: SPEED.tram, accel: 1.1, decel: 1.2, lateral: 0.9, dwell: 20 }, n, d * 0.5, null));
-  });
-  railTracks(net).forEach((track, d) => {
+    yield;
+  }
+  for (const [d, track] of railTracks(net).entries()) {
     const calls = net.rail.stops.map((st) => ({ s: track.project(st), x: st.x, z: st.z }));
     const n = Math.max(2, Math.round(track.length / 1500));
     services.push(service('rail', `rail:${d ? 'rev' : 'fwd'}`, track, net.rail, calls, { speed: SPEED.rail, accel: 0.9, decel: 1.0, lateral: 1.0, dwell: 20 }, n, d * 0.5, null));
-  });
-  net.pods.forEach((line, i) => {
+    yield;
+  }
+  for (const [i, line] of net.pods.entries()) {
     const lap = podLap(line);
     const a = xz(line.path[0]);
     const b = xz(line.path[line.path.length - 1]);
@@ -678,7 +731,8 @@ function makeFleet(net: Network): Fleet {
       }
     }
     services.push(service('pod', `pod:${i}`, lap.track, line, calls, { speed: SPEED.pod, accel: 1.3, decel: 1.4, lateral: 1.2, dwell: 15 }, 3, i * 0.31, t));
-  });
+    yield;
+  }
   const ferry = ferryLap();
   services.push(
     service(
@@ -740,14 +794,156 @@ function roadY(p: V2): number {
   return inChannel(p.x, 2) ? 0.08 : 0;
 }
 
-/** A cab's drive along a way on the street grid: round the plazas, right of the centre line, corners rounded, a stand at each end. */
-function drive(way: V2[], plazas: readonly V2[] = []): { track: Track; plan: Plan } {
-  const pts = rounded(laneOf(aroundPlazas(densify(way, false, 1e9), plazas), CAB_LANE), 7);
-  const track = trackOf(
-    pts.map((p) => [p.x, roadY(p), p.z] as V3),
-    false,
-  );
-  return { track, plan: motionPlan(track, [], CAB_OPTS) };
+/** A cab's run on the street grid: its track, its timetable, and the signalled junctions it crosses on the way. */
+interface Drive {
+  track: Track;
+  plan: Plan;
+  crossings: Crossing[];
+  /** When it was timed to set off, on the vehicles' clock (NaN: not timed to the lights yet, an estimate for the waits). */
+  t0: number;
+  /** The track's points, so the rest of it can be driven from a stand part way along (rest). */
+  pts: V3[];
+}
+
+/** Where a drive crosses a signalled junction: which, along which axis, and where along the track its middle stands. */
+interface Crossing {
+  j: SignalJunction;
+  axis: Axis;
+  /** The middle when its nose stands STOP_SHORT behind the stop line. */
+  line: number;
+  /** The middle when its tail has left the box. */
+  clear: number;
+}
+
+/** The lights a drive is planned by: the junctions, and the signal clock's lead over the vehicles' clock. */
+interface Lights {
+  signals: Signals;
+  shift: number;
+}
+
+/** The cab's nose and tail, this far from its middle (the point its track carries). */
+export const CAB_HALF_LEN = 2.3;
+/** A junction's box reaches this far each way from its centre: the stop lines (ambient.ts BOX). */
+export const JUNCTION_BOX = 6.5;
+/** A cab held up in traffic stops this far behind the car ahead. */
+const FOLLOW_GAP = 2.4;
+/** A cab stops with its nose this far short of the line, and moves off this long after its green shows. */
+const STOP_SHORT = 0.6;
+const MOVE_OFF = 1.2;
+
+/** The signalled junctions a track's middle passes through, in order, with where to stop for each and where it is clear. */
+function crossingsOf(track: Track, signals: Signals): Crossing[] {
+  const out: Crossing[] = [];
+  let inBox: SignalJunction | null = null;
+  let entry = 0;
+  const step = 0.5;
+  for (let s = 0; s <= track.length + 1e-6; s += step) {
+    const p = track.point(s);
+    const jx = streetLine(p.x);
+    const jz = streetLine(p.z);
+    const here = Math.abs(p.x - jx) < JUNCTION_BOX && Math.abs(p.z - jz) < JUNCTION_BOX ? signals.at(jx, jz) : null;
+    if (here !== inBox) {
+      if (inBox && here === null) {
+        // A drive that sets off with its nose already in the box has no line to stop at; one that sets off just
+        // short of it (stood at the line) stops where it stands.
+        const line = Math.max(0, entry - CAB_HALF_LEN - STOP_SHORT);
+        if (entry - CAB_HALF_LEN > 0.05) {
+          const t = track.tangent(Math.max(0, entry - 1));
+          out.push({ j: inBox, axis: Math.abs(t.x) >= Math.abs(t.z) ? 'x' : 'z', line, clear: Math.min(track.length, s + CAB_HALF_LEN) });
+        }
+      }
+      if (here) {
+        // Where the middle crosses into the box, to a centimetre.
+        let lo = Math.max(0, s - step);
+        let hi = s;
+        for (let k = 0; k < 6; k++) {
+          const mid = (lo + hi) / 2;
+          const q = track.point(mid);
+          if (Math.abs(q.x - jx) < JUNCTION_BOX && Math.abs(q.z - jz) < JUNCTION_BOX) hi = mid;
+          else lo = mid;
+        }
+        entry = hi;
+      }
+      inBox = here;
+    }
+  }
+  return out;
+}
+
+/**
+ * A cab's timetable on its track from the moment it sets off (`t0`, on the
+ * vehicles' clock), keeping to the signals: it goes through a junction only
+ * when its nose meets the line on green and its tail is out of the box
+ * before the red; otherwise it brakes to a stand short of the line and
+ * moves off a moment after its green shows. Junctions are taken in order,
+ * so each stop is timed on the plan with every stop before it.
+ */
+function signalPlan(track: Track, crossings: readonly Crossing[], t0: number, lights: Lights | null): Plan {
+  const stops: number[] = [];
+  const dwells: number[] = [];
+  // Planned with every stop so far at no dwell (one plan per stop added): a dwell only delays what comes after it, so
+  // the time at s is that plan's time plus the dwells of the stops before s. The last plan carries the dwells.
+  let plan = motionPlan(track, stops, CAB_OPTS);
+  if (!lights || !crossings.length) return plan;
+  const at = (t: number): number => t0 + t + lights.shift;
+  const timeAt = (s: number): number => {
+    let t = plan.timeAt(s);
+    for (let k = 0; k < stops.length; k++) if (stops[k] < s - 1e-6) t += dwells[k];
+    return t;
+  };
+  for (const c of crossings) {
+    const nose = timeAt(c.line + STOP_SHORT);
+    const tail = timeAt(c.clear);
+    // Through on green (not amber), the box cleared while its light still shows go.
+    if (greenLeft(c.j, at(nose), c.axis) + SIGNAL.amber > tail - nose + 0.3) continue;
+    stops.push(c.line);
+    dwells.push(0);
+    plan = motionPlan(track, stops, CAB_OPTS);
+    const stand = at(timeAt(c.line));
+    let wait = greenIn(c.j, stand, c.axis);
+    // A green too short to clear the box from a stand waits for the next one.
+    if (wait === 0 && greenLeft(c.j, stand, c.axis) < MOVE_OFF + 6) wait = greenLeft(c.j, stand, c.axis) + greenIn(c.j, stand + greenLeft(c.j, stand, c.axis) + 0.01, c.axis) + 0.01;
+    dwells[dwells.length - 1] = wait + MOVE_OFF;
+  }
+  return stops.length ? motionPlan(track, stops, { ...CAB_OPTS, dwells }) : plan;
+}
+
+/**
+ * A cab's drive along a way on the street grid: round the plazas, right of
+ * the centre line, corners rounded, a stand at each end, and kept to the
+ * signals when it sets off at `t0` under `lights`.
+ */
+function drive(way: V2[], plazas: readonly V2[] = [], t0 = 0, lights: Lights | null = null): Drive {
+  const pts = rounded(laneOf(aroundPlazas(densify(way, false, 1e9), plazas), CAB_LANE), 7).map((p) => [p.x, roadY(p), p.z] as V3);
+  return timed(pts, t0, lights);
+}
+
+/** A drive over these points, timed to the signals from `t0`. */
+function timed(pts: V3[], t0: number, lights: Lights | null): Drive {
+  const track = trackOf(pts, false);
+  const crossings = lights ? crossingsOf(track, lights.signals) : [];
+  return { track, plan: signalPlan(track, crossings, t0, lights), crossings, t0, pts };
+}
+
+/** The same track timed again from `t0` (a cab whose way is unchanged but which sets off later than planned). */
+function retime(d: Drive, t0: number, lights: Lights | null): Drive {
+  return timed(d.pts, t0, lights);
+}
+
+/** The rest of a drive from a stand `s0` along it, timed from `t0`. */
+function rest(d: Drive, s0: number, t0: number, lights: Lights | null): Drive {
+  const out: V3[] = [];
+  const p = d.track.point(s0);
+  out.push([p.x, p.y, p.z]);
+  let run = 0;
+  for (let i = 1; i < d.pts.length; i++) {
+    const a = d.pts[i - 1];
+    const b = d.pts[i];
+    run += Math.hypot(b[0] - a[0], b[2] - a[2]);
+    if (run > s0 + 0.05) out.push(b);
+  }
+  if (out.length < 2) out.push([...d.pts[d.pts.length - 1]] as V3);
+  return timed(out, t0, lights);
 }
 
 /** Where a cab pulls in to the kerb: this far from the street's centre line. */
@@ -781,6 +977,16 @@ function kerbPlan(p: V2, net: Network): { kerb: V2; via: V2 } {
     let out = 0;
     for (let pass = 0; pass < 4; pass++) {
       let moved = false;
+      // Never in a junction's box (a cab standing there would stand in the crossing traffic's way): out along the
+      // street to clear the cross street's stop line by a cab's length, on the side it leans to (or the way it was slid).
+      const u = axis === 'z' ? q.z : q.x;
+      const cross = streetLine(u);
+      const clear = JUNCTION_BOX + CAB_HALF_LEN + 1.5;
+      if (Math.abs(u - cross) < clear) {
+        const side = out || Math.sign(u - cross) || 1;
+        q = axis === 'z' ? { x: q.x, z: cross + side * clear } : { x: cross + side * clear, z: q.z };
+        moved = true;
+      }
       for (const o of plazas) {
         if (dist(q, o) >= PLAZA_CLEAR) continue;
         // Out along the street to the nearer edge of the plaza.
@@ -881,11 +1087,14 @@ function cabPose(cab: Cab, time: number): { x: number; y: number; z: number; yaw
   const p = track.point(s);
   const tan = track.tangent(Math.min(s, track.length - 0.01));
   const ahead = plan.at(t + 0.25).v;
+  // Held up behind a car, it goes at its own pace, not its timetable's.
+  const held = cab.follow?.v ?? null;
+  if (held !== null) return { ...p, yaw: Math.atan2(tan.z, tan.x), v: held, braking: held < v - 0.05 || held < 0.05 };
   return { ...p, yaw: Math.atan2(tan.z, tan.x), v, braking: ahead < v - 0.05 || (v < 0.05 && t > 0) };
 }
 
-/** Moves each summoned cab on to the next part of its errand when the current one is done. */
-function advanceCab(cab: Cab, time: number): void {
+/** Moves each summoned cab on to the next part of its errand when the current one is done (a drive set off late timed again under `lights`). */
+function advanceCab(cab: Cab, time: number, lights: Lights | null = null): void {
   for (let guard = 0; guard < 6; guard++) {
     const t = time - cab.since;
     const legs = cab.legs;
@@ -912,10 +1121,14 @@ function advanceCab(cab: Cab, time: number): void {
     if (!next) return;
     cab.since += at;
     cab.phase = next;
+    if (cab.follow) cab.follow.v = null;
+    // A drive planned to set off earlier (the cab was held up on the way) is timed again from now, so the lights it
+    // planned by are the lights it meets.
+    const due = (d: Drive): Drive => (lights && !(Math.abs(d.t0 - cab.since) <= 0.05) ? retime(d, cab.since, lights) : d);
     if (next === 'pickup') cab.run = { track: legs.pickup.track, plan: standAt(legs.pickup.track, legs.pickup.track.length) };
-    else if (next === 'carrying') cab.run = legs.carry;
+    else if (next === 'carrying') cab.run = legs.carry = due(legs.carry);
     else if (next === 'setdown') cab.run = { track: legs.carry.track, plan: standAt(legs.carry.track, legs.carry.track.length) };
-    else if (next === 'returning') cab.run = legs.back;
+    else if (next === 'returning') cab.run = legs.back = due(legs.back);
     else {
       cab.run = null;
       cab.legs = null;
@@ -975,9 +1188,13 @@ interface Paint {
  * metalness and roughness; a lamp's vertices say what kind of lamp it is.
  */
 class Kit {
-  private data = new Map<Part, { pos: number[]; nor: number[]; col: number[]; surf: number[]; kind: number[] }>();
+  private data = new Map<Part, { pos: number[]; nor: number[]; col: number[]; surf: number[]; kind: number[]; alt: number[]; lit: number[] }>();
+  /** While set, every vertex carries this as its other colour (the `alt` attribute): the shaders swap to it on the cars whose variant says so. */
+  alt: RGB | null = null;
+  /** While set, every vertex carries this much of the cabin's own light (the `lit` attribute): the strip on the seats and the floor. */
+  lit = 0;
   constructor(readonly lo: boolean) {
-    for (const p of PARTS) this.data.set(p, { pos: [], nor: [], col: [], surf: [], kind: [] });
+    for (const p of PARTS) this.data.set(p, { pos: [], nor: [], col: [], surf: [], kind: [], alt: [], lit: [] });
   }
   private vert(part: Part, p: V3, n: V3, c: RGB, s: Surf, k: RGB): void {
     const d = this.data.get(part)!;
@@ -986,6 +1203,9 @@ class Kit {
     d.col.push(...c);
     d.surf.push(...s);
     d.kind.push(...k);
+    if (this.alt) d.alt.push(...this.alt);
+    else d.alt.push(0, 0, 0);
+    d.lit.push(this.lit);
   }
   tri(part: Part, a: V3, b: V3, c: V3, na: V3, nb: V3, nc: V3, col: RGB, s: Surf = [0, 0.5], k: RGB = [0, 0, 0]): void {
     this.vert(part, a, na, col, s, k);
@@ -1169,6 +1389,8 @@ class Kit {
     g.setAttribute('color', new THREE.Float32BufferAttribute(d.col, 3));
     g.setAttribute('surf', new THREE.Float32BufferAttribute(d.surf, 2));
     g.setAttribute('lampKind', new THREE.Float32BufferAttribute(d.kind, 3));
+    g.setAttribute('alt', new THREE.Float32BufferAttribute(d.alt, 3));
+    g.setAttribute('lit', new THREE.Float32BufferAttribute(d.lit, 1));
     g.computeBoundingSphere();
     return g;
   }
@@ -1176,15 +1398,19 @@ class Kit {
   /**
    * Every part in one geometry for the far level: the glazing as its lit
    * room's colour (the `glow` attribute), the lamps by kind, the rest as
-   * painted.
+   * painted, the body's faces marked (`coat`) to wear its clear coat, and
+   * the glazing's (`pane`: glass, the windows' sill and head, a driver's cab)
+   * to show the sky as the near level's glass does.
    */
-  merged(glow: RGB): THREE.BufferGeometry {
+  merged(glow: RGB, win: Interior): THREE.BufferGeometry {
     const pos: number[] = [];
     const nor: number[] = [];
     const col: number[] = [];
     const surf: number[] = [];
     const kind: number[] = [];
     const gl: number[] = [];
+    const coat: number[] = [];
+    const pane: number[] = [];
     for (const p of PARTS) {
       const d = this.data.get(p)!;
       const n = d.pos.length / 3;
@@ -1201,6 +1427,9 @@ class Kit {
           gl.push(0, 0, 0);
         }
         kind.push(d.kind[i * 3], d.kind[i * 3 + 1], d.kind[i * 3 + 2]);
+        coat.push(p === 'body' ? 1 : 0);
+        if (p === 'glass') pane.push(1, win.sill, win.head, win.driver ? 1 : 0);
+        else pane.push(0, 0, 0, 0);
       }
     }
     const g = new THREE.BufferGeometry();
@@ -1210,6 +1439,8 @@ class Kit {
     g.setAttribute('surf', new THREE.Float32BufferAttribute(surf, 2));
     g.setAttribute('lampKind', new THREE.Float32BufferAttribute(kind, 3));
     g.setAttribute('glow', new THREE.Float32BufferAttribute(gl, 3));
+    g.setAttribute('coat', new THREE.Float32BufferAttribute(coat, 1));
+    g.setAttribute('pane', new THREE.Float32BufferAttribute(pane, 4));
     g.computeBoundingSphere();
     return g;
   }
@@ -1253,7 +1484,7 @@ const UNIT = new THREE.BoxGeometry(1, 1, 1);
 const KIT_CODES: Record<number, { part: Part; colour: RGB; surf: Surf; kind?: LampKind; own?: RGB }> = {
   1: { part: 'body', colour: lin('#8e959b'), surf: [0.9, 0.34] },
   2: { part: 'body', colour: lin('#777a7d'), surf: [0.85, 0.42] },
-  3: { part: 'body', colour: lin('#3a4348'), surf: [0.25, 0.32] },
+  3: { part: 'body', colour: lin('#4a555b'), surf: [0.25, 0.3] },
   4: { part: 'body', colour: lin('#1f6b6e'), surf: [0.1, 0.32] },
   5: { part: 'trim', colour: lin('#24262a'), surf: [0.3, 0.7] },
   6: { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] },
@@ -1387,7 +1618,15 @@ interface Interior {
   driver?: boolean;
   /** Light lines down the ceiling (a cab's small cabin has a soft dome light instead). */
   lines?: boolean;
+  /** A second seat colourway, a second ceiling strip and the light it gives the room: the cars whose variant says so wear these. */
+  seat2?: RGB;
+  strip2?: RGB;
+  light2?: RGB;
 }
+
+/** The ceiling strips' own light: the warm one every car has, and the cool one the other pods carry. */
+const STRIP_WARM: RGB = [1.0, 0.86, 0.68];
+const STRIP_COOL: RGB = [0.72, 0.84, 1.0];
 
 const WARM: RGB = [1.0, 0.72, 0.46];
 const COOL: RGB = [0.92, 0.96, 1.0];
@@ -1504,8 +1743,45 @@ function tramModel(kit: Kit): void {
   // that size and level bloomed to a white billboard over the windscreen.
   noseLamp(kit, TRAM_RINGS[8], 0, 2.53, 1.25, 0.2, 'tramBoard', [1.5, 0.72, 0.16]);
   if (!kit.lo) {
-    // Two wipers parked at the foot of the windscreen.
-    for (const sz of [-0.45, 0.35]) kit.bar('trim', [7.08, 1.06, sz - 0.3], [7.0, 1.42, sz + 0.25], 0.03, 0.02, lin('#0b0b0c'), [0.3, 0.5]);
+    // The windscreen's frame: a rubber gasket along its sill and its head, and the pillars either side where the
+    // glass meets the body, so the glass reads as a pane set in the nose and not a painted band.
+    windscreenFrame(kit, TRAM_RINGS, 1.02, 2.32, 1.08, 0.006);
+    // Two wipers parked at the foot of the windscreen, their arms and blades.
+    for (const sz of [-0.45, 0.35]) {
+      kit.bar('trim', [7.08, 1.06, sz - 0.3], [7.0, 1.42, sz + 0.25], 0.03, 0.02, lin('#0b0b0c'), [0.3, 0.5]);
+      kit.bar('trim', [7.07, 1.36, sz - 0.02], [6.96, 1.72, sz + 0.5], 0.02, 0.025, lin('#0b0b0c'), [0.3, 0.5]);
+    }
+  }
+}
+
+/**
+ * A windscreen's frame on a nose: the gasket along the sill and the head
+ * (a thin band following the nose's curve), and a pillar up each side at
+ * lateral z, following the rings from sill to head, all a hair proud of the
+ * skin (`proud`; the kit's subdivided shell sits a little inside its rings).
+ */
+function windscreenFrame(kit: Kit, rings: Ring[], sill: number, head: number, pillarZ: number, proud: number): void {
+  const rubber = lin('#08090a');
+  const ringAt = (y: number): Ring => rings.reduce((a, b) => (Math.abs(b.y - y) < Math.abs(a.y - y) ? b : a));
+  for (const y of [sill, head]) {
+    const r = ringAt(y);
+    const n = 11;
+    let prev: V3 | null = null;
+    for (let k = 0; k <= n; k++) {
+      const z = -r.w * 0.985 + (2 * r.w * 0.985 * k) / n;
+      const at = noseAt(r, z);
+      const p: V3 = [at.x + proud, y, z];
+      if (prev) kit.bar('trim', prev, p, 0.025, 0.055, rubber, [0.2, 0.4]);
+      prev = p;
+    }
+  }
+  for (const z of [-pillarZ, pillarZ]) {
+    const pts: V3[] = [];
+    for (let k = 0; k <= 8; k++) {
+      const y = sill + (head - sill) * (k / 8);
+      pts.push([noseAt(ringAt(y), z).x + proud, y, z]);
+    }
+    for (let k = 1; k < pts.length; k++) kit.bar('trim', pts[k - 1], pts[k], 0.07, 0.03, rubber, [0.2, 0.45]);
   }
 }
 
@@ -1552,6 +1828,9 @@ function railModel(kit: Kit, nose: boolean): void {
   if (nose && !kit.lo && hasKit('veh_railEnd')) {
     kit.coded(kitShared('veh_railEnd'));
     kit.coded(kitShared('veh_railEnd_gear'));
+    // The windscreen's frame on the modelled shell (kits.glb is at its cap): the gasket along the sill and the head
+    // and a pillar each side, on the rings the shell was cut to, a little proud of the subdivided skin.
+    windscreenFrame(kit, RAIL_RINGS(true), 1.8, 2.83, 1.1, 0.03);
     return;
   }
   const steel = lin('#8d9093');
@@ -1729,6 +2008,10 @@ const POD_INTERIOR: Interior = {
   doorW: POD_DOOR_W,
   seats: true,
   crowd: 0.22,
+  // Two colourways (a slate blue and a rust) and two ceiling strips (cool, warm): pods side by side differ.
+  seat2: lin('#7a4232'),
+  strip2: STRIP_WARM,
+  light2: scale(WARM, 1.15),
 };
 
 // ---- the ferry: a low double-ended river bus, navy hull, a white saloon glazed all round, a wheelhouse amidships.
@@ -1929,14 +2212,30 @@ const CAB_INTERIOR: Interior = {
   crowd: 0,
 };
 
+/**
+ * The far level's lit saloon (the tram) and lamps, each a real emitter just
+ * under the bloom threshold, so a vehicle a kilometre off reads as its lit
+ * windows and a lamp point, never a flare. The bloom pass reads the linear
+ * frame before the output pass applies the exposure, so the radiance itself
+ * stays under BLOOM_THRESHOLD (a far lamp at 1.08 still flared in round 1).
+ */
+export const FAR_EMIT_MAX = BLOOM_THRESHOLD * 0.9;
+const FAR_SALOON = 0.9;
+
 const MODELS: Record<ModelName, { build(kit: Kit): void; interior: Interior; glow: RGB }> = {
-  tram: { build: tramModel, interior: TRAM_INTERIOR, glow: scale(WARM, 0.55) },
+  // The tram's saloon, lit for dusk, reads from home through the haze: its far level's windows at FAR_SALOON.
+  tram: { build: tramModel, interior: TRAM_INTERIOR, glow: scale(WARM, FAR_SALOON) },
   railEnd: { build: (k) => railModel(k, true), interior: RAIL_INTERIOR(true), glow: scale(COOL, 0.6) },
   railMid: { build: (k) => railModel(k, false), interior: RAIL_INTERIOR(false), glow: scale(COOL, 0.6) },
   pod: { build: podModel, interior: POD_INTERIOR, glow: scale(COOL, 0.55) },
   ferry: { build: ferryModel, interior: FERRY_INTERIOR, glow: scale(WARM, 0.45) },
   cab: { build: cabModel, interior: CAB_INTERIOR, glow: scale(WARM, 0.12) },
 };
+
+/** A model's far level lit glazing, linear RGB (tests: the tram's saloon reads from home and does not bloom). */
+export function farGlowOf(name: ModelName): RGB {
+  return [...MODELS[name].glow] as RGB;
+}
 
 /** A model at a level: its shell and fittings, and near, the cabin a rider sits in. */
 function buildModel(kit: Kit, name: ModelName): void {
@@ -1982,14 +2281,20 @@ function cabin(kit: Kit, i: Interior, name: ModelName): void {
     kit.tri('trim', p, r, t, n, n, n, col, sf);
   };
   const e = 0.012;
+  // The floor and the ceiling panels carry a little of the strip's light (the `lit` attribute), so the room reads
+  // through the glass at dusk rather than falling to black.
+  kit.lit = 0.35;
   quad([x0, y0 + e, z0], [x1, y0 + e, z0], [x1, y0 + e, z1], [x0, y0 + e, z1], [0, 1, 0], floor, [0, 0.7]);
+  kit.lit = 0.5;
   quad([x0, y1 - e, z0], [x1, y1 - e, z0], [x1, y1 - e, z1], [x0, y1 - e, z1], [0, -1, 0], ceiling);
+  kit.lit = 0.2;
   for (const sz of [-1, 1]) {
     const z = sz * (z1 - e);
     quad([x0, y0, z], [x1, y0, z], [x1, sill, z], [x0, sill, z], [0, 0, -sz], lining);
     if (head < y1 - 0.02) quad([x0, head, z], [x1, head, z], [x1, y1, z], [x0, y1, z], [0, 0, -sz], ceiling);
   }
   for (const [x, nx] of [[x0 + e, 1], [x1 - e, -1]] as const) quad([x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1], [nx, 0, 0], lining);
+  kit.lit = 0;
   // Seats: rows facing forward either side of an aisle (a bench across a cab), one row where the rider sits.
   const seat = CABIN_SEAT[name];
   if (seat && (i.seats || seat.bench)) {
@@ -2008,23 +2313,101 @@ function cabin(kit: Kit, i: Interior, name: ModelName): void {
         for (let k2 = 0; k2 < n; k2++) {
           const zc = za + w * (k2 + 0.5);
           kit.box('trim', [x + 0.04, y0 + (seat.height - 0.09) / 2, zc], [0.4, seat.height - 0.09, w - 0.08], lin('#1d1d1e'), [0.6, 0.45]);
-          kit.box('trim', [x + 0.05, y0 + seat.height - 0.045, zc], [0.46, 0.09, w - 0.03], i.seat, [0, 0.85]);
-          kit.box('trim', [x - 0.2, y0 + seat.height + 0.27, zc], [0.07, 0.5, w - 0.03], scale(i.seat, 1.15), [0, 0.85], undefined, 0, -0.1);
+          // The cushion and the back in the car's colourway (a second colourway rides along as the other colour),
+          // each lit by the ceiling's strip (the `lit` attribute): the pan a thick cushion with a rolled front edge,
+          // the back in two leaves, upright then raked, a roll along its top catching the light, and a pale piping
+          // along the edges, so the seat has form through the glass and its colour reads.
+          const c = i.seat;
+          const c2 = i.seat2 ?? null;
+          const piping = scale(c, 1.6);
+          const piping2 = c2 ? scale(c2, 1.6) : null;
+          kit.alt = c2;
+          kit.lit = 0.55;
+          kit.box('trim', [x + 0.05, y0 + seat.height - 0.045, zc], [0.46, 0.09, w - 0.03], c, [0, 0.85]);
+          kit.lit = 0.75;
+          kit.box('trim', [x + 0.27, y0 + seat.height - 0.03, zc], [0.05, 0.11, w - 0.03], scale(c, 1.1), [0, 0.8]);
+          kit.alt = c2 ? scale(c2, 1.15) : null;
+          kit.lit = 0.45;
+          kit.box('trim', [x - 0.19, y0 + seat.height + 0.14, zc], [0.07, 0.3, w - 0.03], scale(c, 1.15), [0, 0.85]);
+          kit.lit = 0.65;
+          kit.box('trim', [x - 0.23, y0 + seat.height + 0.4, zc], [0.07, 0.26, w - 0.03], scale(c, 1.15), [0, 0.85], undefined, 0, -0.18);
+          kit.lit = 0.9;
+          kit.box('trim', [x - 0.26, y0 + seat.height + 0.54, zc], [0.09, 0.06, w - 0.03], scale(c, 1.3), [0, 0.75]);
+          kit.alt = piping2;
+          kit.lit = 1.0;
+          for (const sz of [-1, 1]) {
+            kit.box('trim', [x - 0.2, y0 + seat.height + 0.3, zc + sz * (w - 0.03) / 2], [0.09, 0.56, 0.012], piping, [0, 0.7], undefined, 0, -0.1);
+            kit.box('trim', [x + 0.05, y0 + seat.height + 0.002, zc + sz * (w - 0.03) / 2], [0.46, 0.012, 0.012], piping, [0, 0.7]);
+          }
+          kit.alt = null;
+          kit.lit = 0;
         }
       }
     }
   }
-  // Light lines down the ceiling (the cab has its dome light in the glazing's room instead).
+  // Light lines down the ceiling (the cab has its dome light in the glazing's room instead); a car with a second strip
+  // carries it as the lines' other colour, and the lamp shader picks by the car's variant.
   if (name !== 'cab' && i.lines !== false) {
-    for (const sz of [-1, 1]) kit.box('lamp', [(x0 + x1) / 2, y1 - 0.03, sz * Math.min(0.5, z1 * 0.4)], [x1 - x0 - 0.6, 0.02, 0.06], [1.0, 0.86, 0.68], [0, 0.4], 'always');
+    kit.alt = i.strip2 ?? null;
+    const strip: RGB = i.strip2 ? STRIP_COOL : STRIP_WARM;
+    for (const sz of [-1, 1]) kit.box('lamp', [(x0 + x1) / 2, y1 - 0.03, sz * Math.min(0.5, z1 * 0.4)], [x1 - x0 - 0.6, 0.02, 0.06], strip, [0, 0.4], 'always');
+    kit.alt = null;
   }
 }
 const MODEL_KIND: Record<ModelName, VehicleKind> = { tram: 'tram', railEnd: 'rail', railMid: 'rail', pod: 'pod', ferry: 'ferry', cab: 'cab' };
 
 // ---------------------------------------------------------------- materials
 
-/** The near level dissolves into the far one across this band, in metres from the eye. */
-export const VEHICLE_LOD = { near: 380, far: 460 } as const;
+/** The near level dissolves into the far one across this band, in metres from the eye, centred on 400 m. */
+export const VEHICLE_LOD = { near: 380, far: 420 } as const;
+
+/**
+ * The two levels' shares of a car `dist` metres from the eye: the far level's
+ * is the shader's smoothstep across the band and the near level keeps the
+ * rest, so between them every car is drawn whole and nothing pops (tests).
+ */
+export function lodBlend(dist: number): { near: number; far: number } {
+  const t = Math.min(Math.max((dist - VEHICLE_LOD.near) / (VEHICLE_LOD.far - VEHICLE_LOD.near), 0), 1);
+  const far = t * t * (3 - 2 * t);
+  return { near: 1 - far, far };
+}
+
+/**
+ * The far level's share in GLSL, of a distance expression: the one smoothstep
+ * the dither and the far glow's ramp use, so the shaders and lodBlend cannot
+ * drift apart (tests: the string names the band's two ends).
+ */
+export function lodFadeGlsl(dist: string): string {
+  return `smoothstep(${VEHICLE_LOD.near.toFixed(1)}, ${VEHICLE_LOD.far.toFixed(1)}, ${dist})`;
+}
+
+/**
+ * A vehicle's own variation, from its unit id (`<line>:<k>`, its place on
+ * its line): a small stable number the shaders vary the interior by, so the
+ * cars that follow each other on a line differ, and a car keeps its own look
+ * from frame to frame whatever its instance slot.
+ */
+function variantCode(id: string): number {
+  const parts = id.split(':');
+  const k = Number(parts[parts.length - 1]);
+  const line = Number(parts[parts.length - 2]);
+  return (Number.isFinite(k) ? k : 0) + (Number.isFinite(line) ? line * 3 : 0);
+}
+
+/** A pod's interior from its id: which of two seat colourways and which ceiling strip (pods side by side differ). */
+export function podVariant(id: string): { seat: 0 | 1; strip: 0 | 1 } {
+  const code = variantCode(id);
+  return { seat: (code & 1) as 0 | 1, strip: ((code >> 1) & 1) as 0 | 1 };
+}
+
+/**
+ * Metres added to every car's distance from the eye where the levels are
+ * chosen (the dither, the far glow and the near/far split). Always 0 in the
+ * app; the lod-400 check sets it to dissolve a tram that stands still through
+ * the band, so its frames differ by the levels alone and not by the tram
+ * moving over the ground behind it (vehicles.lodShift).
+ */
+export const VEHICLE_LOD_SHIFT = { value: 0 };
 
 /**
  * Each instance measures its own distance from the eye (lod-shader.ts's
@@ -2033,8 +2416,9 @@ export const VEHICLE_LOD = { near: 380, far: 460 } as const;
  */
 function dither(sh: THREE.WebGLProgramParametersWithUniforms, level: 'near' | 'far'): void {
   sh.uniforms.uLodEye = LOD_EYE;
+  sh.uniforms.uLodShift = VEHICLE_LOD_SHIFT;
   sh.vertexShader = sh.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform vec3 uLodEye;\nvarying float vLodFade;')
+    .replace('#include <common>', '#include <common>\nuniform vec3 uLodEye;\nuniform float uLodShift;\nvarying float vLodFade;')
     .replace(
       '#include <project_vertex>',
       `#include <project_vertex>
@@ -2044,7 +2428,7 @@ function dither(sh: THREE.WebGLProgramParametersWithUniforms, level: 'near' | 'f
         #else
           vec4 lodAt = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
         #endif
-        vLodFade = smoothstep(${VEHICLE_LOD.near.toFixed(1)}, ${VEHICLE_LOD.far.toFixed(1)}, distance(lodAt.xyz, uLodEye));
+        vLodFade = ${lodFadeGlsl('distance(lodAt.xyz, uLodEye) + uLodShift')};
         if (${level === 'near' ? 'vLodFade >= 1.0' : 'vLodFade <= 0.0'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
       }`,
     );
@@ -2175,8 +2559,9 @@ function lampMaterial(): THREE.MeshBasicMaterial {
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 lampKind;\nattribute vec3 color;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKind = lampKind;\nvOwn = color;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
+      .replace('#include <common>', `#include <common>\nattribute vec3 lampKind;\nattribute vec3 color;\nattribute vec3 alt;\nattribute float aVar;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;${VARIANT_GLSL}`)
+      // A ceiling strip with another colour (the second strip) shows it on the cars whose variant says so.
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKind = lampKind;\nvOwn = (dot(alt, alt) > 0.0 && variantStrip(aVar) > 0.5) ? alt : color;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\n${LAMP_GLSL}`)
       .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = lampShow(vKind, vOwn, vLead, vBrake);');
@@ -2185,8 +2570,16 @@ function lampMaterial(): THREE.MeshBasicMaterial {
   return m;
 }
 
+/**
+ * The body's clear coat, which both levels wear: the far level without it
+ * lost the sky's sheen off the painted body and drew a tram 13.5% darker
+ * than its near level at 400 m, so the dissolve dimmed the car as it crossed
+ * the band (the lod-400 check, Task 26 pass 2).
+ */
+export const BODY_COAT = { clearcoat: 0.55, clearcoatRoughness: 0.14 } as const;
+
 function bodyMaterial(): THREE.MeshPhysicalMaterial {
-  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.4, metalness: 0, clearcoat: 0.55, clearcoatRoughness: 0.14, envMapIntensity: 1.0 });
+  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.4, metalness: 0, ...BODY_COAT, envMapIntensity: 1.0 });
   m.name = 'vehicle-body';
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
@@ -2196,16 +2589,58 @@ function bodyMaterial(): THREE.MeshPhysicalMaterial {
   return m;
 }
 
+/** The variant's two bits (vehicles.ts variantCode): the seat colourway and the ceiling strip. */
+const VARIANT_GLSL = /* glsl */ `
+  float variantSeat(float v) { return mod(floor(v + 0.5), 2.0); }
+  float variantStrip(float v) { return mod(floor(floor(v + 0.5) / 2.0), 2.0); }`;
+
 function trimMaterial(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 });
   m.name = 'vehicle-trim';
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
     surfaced(sh);
+    // A vertex with another colour (a seat in the second colourway) wears it on the cars whose variant says so; a
+    // vertex the cabin's strip lights (`lit`) carries that light as its own, in the strip's colour by the variant.
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>\nattribute vec3 alt;\nattribute float aVar;\nattribute float lit;\nvarying float vLit;\nvarying float vStripVar;${VARIANT_GLSL}`)
+      .replace('#include <color_vertex>', '#include <color_vertex>\nif (dot(alt, alt) > 0.0 && variantSeat(aVar) > 0.5) vColor.rgb = alt;\nvLit = lit;\nvStripVar = variantStrip(aVar);');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying float vLit;\nvarying float vStripVar;`)
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        totalEmissiveRadiance += diffuseColor.rgb * mix(vec3(${STRIP_WARM.map((v) => v.toFixed(2)).join(', ')}), vec3(${STRIP_COOL.map((v) => v.toFixed(2)).join(', ')}), vStripVar) * vLit * 0.9;`,
+      );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-trim';
   return m;
 }
+
+/**
+ * The dusk sky in a pane of glazing, as both levels draw it: `nL` the face's
+ * normal in the car's frame, `n` and `V` the view-space normal and view
+ * direction, `y` the fragment's height in the car's frame and `win` the
+ * windows' sill, head and whether a driver's cab sits behind a windscreen.
+ * The far level without it drew its glazing as dark as its painted end, so a
+ * tram 400 m off seen from behind dimmed through the dissolve as its
+ * windscreen's band of sky went out (the lod-400 check, Task 26 pass 2).
+ */
+const GLASS_SKY_GLSL = /* glsl */ `
+  vec3 glassSky(vec3 nL, vec3 n, vec3 V, float y, vec3 win) {
+    float NdV = clamp(abs(dot(n, V)), 0.0, 1.0);
+    float F = 0.04 + 0.96 * pow(1.0 - NdV, 5.0);
+    // A band from the warm horizon up to the violet zenith, the street dark below, strongest at a glancing view, so
+    // the glass reads as glass and its curve shows.
+    vec3 Rw = inverseTransformDirection(reflect(-V, n), viewMatrix);
+    vec3 sky = mix(vec3(0.95, 0.56, 0.42), vec3(0.24, 0.2, 0.38), smoothstep(0.02, 0.55, Rw.y));
+    vec3 refl = mix(vec3(0.02, 0.018, 0.02), sky * 0.55, smoothstep(-0.06, 0.05, Rw.y));
+    // On a windscreen the sky lies across its upper third as a warm-to-violet band.
+    float front = smoothstep(0.5, 0.8, abs(nL.x));
+    float upper = smoothstep(win.x + 0.55 * (win.y - win.x), win.y - 0.05, y);
+    vec3 band = mix(vec3(1.0, 0.58, 0.4), vec3(0.42, 0.32, 0.62), smoothstep(win.y - 0.45, win.y - 0.05, y));
+    return refl * (0.05 + 0.9 * F) + band * 0.22 * front * upper * win.z;
+  }`;
 
 /**
  * Glazing over a lit saloon. The ray from the eye through each fragment is
@@ -2226,7 +2661,9 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
     uBoxMin: { value: new THREE.Vector3(...i.min) },
     uBoxMax: { value: new THREE.Vector3(...i.max) },
     uLight: { value: new THREE.Vector3(...i.light) },
+    uLight2: { value: new THREE.Vector3(...(i.light2 ?? i.light)) },
     uSeatCol: { value: new THREE.Vector3(...i.seat) },
+    uSeatCol2: { value: new THREE.Vector3(...(i.seat2 ?? i.seat)) },
     uOutside: { value: new THREE.Vector3(0.012, 0.016, 0.024) },
     uWin: { value: new THREE.Vector4(i.sill, i.head, i.pitch, i.pillar) },
     uPillarAt: { value: i.pillarAt },
@@ -2242,18 +2679,18 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
     dither(sh, 'near');
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vLP;\nvarying vec3 vLN;\nvarying vec3 vLE;\nvarying float vInst;')
+      .replace('#include <common>', '#include <common>\nattribute float aVar;\nvarying vec3 vLP;\nvarying vec3 vLN;\nvarying vec3 vLE;\nvarying float vInst;')
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
         vLP = transformed;
         vLN = objectNormal;
+        // The car's own variation (its place on its line), not its instance slot: its crowd and colourway hold still.
+        vInst = aVar;
         #ifdef USE_INSTANCING
           mat4 vToWorld = modelMatrix * instanceMatrix;
-          vInst = float(gl_InstanceID);
         #else
           mat4 vToWorld = modelMatrix;
-          vInst = 0.0;
         #endif
         vLE = (inverse(vToWorld) * vec4(cameraPosition, 1.0)).xyz;`,
       );
@@ -2268,8 +2705,10 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
         uniform vec3 uBoxMin;
         uniform vec3 uBoxMax;
         uniform vec3 uLight;
+        uniform vec3 uLight2;
         uniform vec3 uSeatCol;
-        uniform vec3 uOutside;
+        uniform vec3 uSeatCol2;
+        uniform vec3 uOutside;${VARIANT_GLSL}
         uniform vec4 uWin;
         uniform float uPillarAt;
         uniform vec4 uDoors;
@@ -2277,7 +2716,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
         uniform float uSeats;
         uniform float uCrowd;
         uniform float uDriver;
-        uniform float uLines;
+        uniform float uLines;${GLASS_SKY_GLSL}
         float vgHash(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
         float pillarAt(float x) {
           if (uWin.w <= 0.0) return 0.0;
@@ -2302,7 +2741,9 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
           float hw = bmax.z;
           float fl = bmin.y;
           float span = bmax.y - bmin.y;
-          vec3 L = uLight;
+          // This car's room: its ceiling strip's light and its seat colourway, by its variant.
+          vec3 L = mix(uLight, uLight2, variantStrip(vInst));
+          vec3 seatCol = mix(uSeatCol, uSeatCol2, variantSeat(vInst));
           vec3 c;
           if (tf.y <= t + 1e-5 && d.y > 0.0) {
             // The ceiling: two light lines along it, the panels between lit by them.
@@ -2310,8 +2751,8 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             float joint = 0.82 + 0.18 * step(0.03, fract(h.x / 1.25));
             c = L * (0.5 * joint + 3.4 * line * uLines + 0.4 * (1.0 - uLines));
           } else if (tf.y <= t + 1e-5) {
-            // The floor: dark, brighter down the aisle under the lights.
-            c = L * 0.09 * (0.55 + 0.45 * (1.0 - smoothstep(0.1, hw, abs(h.z))));
+            // The floor: warmed by the strips, brightest down the aisle under them.
+            c = L * 0.16 * (0.55 + 0.45 * (1.0 - smoothstep(0.1, hw, abs(h.z))));
           } else if (tf.z <= t + 1e-5) {
             // The far side: its windows onto the dusk, their pillars, and the panels under and over them.
             if (h.y > uWin.x && h.y < uWin.y) {
@@ -2333,16 +2774,22 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             float ts = (xs - p.x) / d.x;
             vec3 hs = p + d * ts;
             if (ts > 0.0 && ts < t && abs(hs.z) > 0.3 && hs.y > fl + 0.4 && hs.y < fl + 1.1) {
-              float top = smoothstep(fl + 0.96, fl + 1.08, hs.y);
-              c = uSeatCol * L * (0.28 + 0.5 * top);
+              // The back: shaded toward the floor, lit by the ceiling toward its top, a pale rim along its top edge
+              // where the strip catches it, and its own edge toward the aisle.
+              float up = smoothstep(fl + 0.4, fl + 1.1, hs.y);
+              float rim = 1.0 - smoothstep(0.0, 0.05, fl + 1.1 - hs.y);
+              float aisle = smoothstep(0.3, 0.36, abs(hs.z));
+              c = seatCol * L * (0.3 + 0.5 * up) + L * 0.6 * rim + L * 0.08 * (1.0 - aisle);
               t = ts;
             }
-            // The cushions, seen from above.
+            // The cushions, seen from above: lit by the strip, darker in the fold under the back.
             float tc = (fl + 0.46 - p.y) / d.y;
             if (d.y < 0.0 && tc > 0.0 && tc < t) {
               vec3 hc = p + d * tc;
               if (abs(hc.z) > 0.3) {
-                c = uSeatCol * L * 0.42;
+                float fold = smoothstep(0.0, 0.25, fract(hc.x / 0.9 + 0.5) * 0.9);
+                float under = 1.0 - smoothstep(0.1, 0.3, abs(abs(hc.z) - hw * 0.5));
+                c = seatCol * L * (0.45 + 0.3 * fold) + L * 0.1 * fold * under;
                 t = tc;
               }
             }
@@ -2435,31 +2882,28 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               vec3 hd = vLP + d * td;
               float scr = step(abs(hd.z - 0.35), 0.16) * step(abs(hd.x - (uBoxMax.x + 0.45)), 0.12);
               float pip = step(0.82, vgHash(floor(hd.z * 18.0) + floor(hd.x * 18.0) * 7.0)) * step(abs(hd.z), 0.9);
-              inside = vec3(0.006, 0.006, 0.007) + uLight * 0.012 + vec3(0.1, 0.22, 0.3) * scr + vec3(0.5, 0.25, 0.05) * pip * 0.3;
+              inside = vec3(0.012, 0.012, 0.014) + uLight * 0.03 + vec3(0.1, 0.22, 0.3) * scr + vec3(0.5, 0.25, 0.05) * pip * 0.3;
             }
             else {
                 // The door's window into the saloon: dimmed through two panes, its edges soft in a dark surround.
               float wedge = smoothstep(0.22, 0.12, abs(hb.z)) * smoothstep(uBoxMin.y + 1.05, uBoxMin.y + 1.2, hb.y) * smoothstep(uBoxMin.y + 1.75, uBoxMin.y + 1.6, hb.y);
-              inside = mix(uLight * 0.006 * (0.6 + 0.4 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y)), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d) * 0.3, wedge);
+              // The bulkhead itself: a dark panel, not black, the saloon's light leaking round the door's edges.
+              float leak = 1.0 - smoothstep(0.0, 0.12, abs(abs(hb.z) - 0.6) + 0.3 * (1.0 - step(hb.y, uBoxMin.y + 2.0)));
+              inside = mix(uLight * (0.012 + 0.02 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y) + 0.03 * leak), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d) * 0.3, wedge);
               // A faint lit panel over the door: the cab's own instruments light.
               inside += vec3(0.25, 0.4, 0.5) * 0.05 * step(abs(hb.z + 0.6), 0.25) * step(abs(hb.y - (uBoxMin.y + 1.9)), 0.08);
+              // The bulkhead meets the cab's ceiling, floor and sides in shade, not a hard box edge.
+              float soft = smoothstep(0.0, 0.35, min(min(hb.y - uBoxMin.y, uBoxMax.y - hb.y), uBoxMax.z - abs(hb.z)));
+              inside *= 0.5 + 0.5 * soft;
             }
-            if (tsb > 0.0 && tsb < tb && seat > 0.5) inside = uLight * 0.012 + vec3(0.004);
+            if (tsb > 0.0 && tsb < tb && seat > 0.5) inside = uLight * 0.02 + vec3(0.006);
           }
           vec3 V = normalize(vViewPosition);
           float NdV = clamp(abs(dot(normal, V)), 0.0, 1.0);
           float F = 0.04 + 0.96 * pow(1.0 - NdV, 5.0);
           totalEmissiveRadiance += inside * mask * (1.0 - F);
-          // The dusk sky in the glass: a band from the warm horizon up to the violet zenith, the street dark below,
-          // strongest at a glancing view, so the glass reads as glass and its curve shows.
-          vec3 Rw = inverseTransformDirection(reflect(-V, normalize(normal)), viewMatrix);
-          vec3 sky = mix(vec3(0.95, 0.56, 0.42), vec3(0.24, 0.2, 0.38), smoothstep(0.02, 0.55, Rw.y));
-          vec3 refl = mix(vec3(0.02, 0.018, 0.02), sky * 0.55, smoothstep(-0.06, 0.05, Rw.y));
-          // On a windscreen the sky lies across its upper third as a warm-to-violet band.
-          float front = smoothstep(0.5, 0.8, abs(nL.x));
-          float upper = smoothstep(uWin.x + 0.55 * (uWin.y - uWin.x), uWin.y - 0.05, vLP.y);
-          vec3 band = mix(vec3(1.0, 0.58, 0.4), vec3(0.42, 0.32, 0.62), smoothstep(uWin.y - 0.45, uWin.y - 0.05, vLP.y));
-          totalEmissiveRadiance += refl * (0.05 + 0.9 * F) * mask + band * 0.22 * front * upper * mask * uDriver;
+          // The dusk sky in the glass, and a windscreen's band of it (GLASS_SKY_GLSL, the far level's too).
+          totalEmissiveRadiance += glassSky(nL, normalize(normal), V, vLP.y, vec3(uWin.x, uWin.y, uDriver)) * mask;
           diffuseColor.rgb = mix(vec3(0.012), diffuseColor.rgb, mask);
         }`,
       );
@@ -2469,26 +2913,64 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
 }
 
 /** The far level: painted faces as painted, the glazing as its lit room's colour, the lamps by kind; one call per model. */
-function farMaterial(): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0 });
+/**
+ * The far level's lit glazing at the near edge of the cross-fade, as a share
+ * of its glow from home (FAR_GLOW_FROM metres out): the glow is pitched to
+ * read through the haze from 850 m (Task 4), and at 400 m that is several
+ * times what the near level's glass shows of its room, so the dissolve
+ * brightened the car as it crossed the band (the lod-400 check, Task 5: 52%
+ * at full glow, 27% at 0.3, 6% at 0.05, and at none the far level fell
+ * under the near by a tenth). At the band the far glazing carries a
+ * thirtieth of its light, what the near level's glass shows of its room
+ * from there; between the band and FAR_GLOW_FROM the glow rises to its full.
+ */
+export const FAR_GLOW_NEAR = 0.033;
+export const FAR_GLOW_FROM = 900;
+
+function farMaterial(): THREE.MeshPhysicalMaterial {
+  // The body's faces wear its clear coat (BODY_COAT, by the `coat` attribute); the trim, glazing and lamps none.
+  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.4, metalness: 0, ...BODY_COAT });
   m.name = 'vehicle-far';
   m.onBeforeCompile = (sh) => {
     dither(sh, 'far');
     surfaced(sh);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = glow;\nvKind = lampKind;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
+      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nattribute float coat;\nattribute vec4 pane;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;\nvarying float vFarDist;\nvarying float vCoat;\nvarying vec4 vPane;\nvarying vec3 vLN;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vCoat = coat;
+        vPane = pane;
+        vLN = objectNormal;
+        vGlow = glow;
+        vKind = lampKind;
+        vLead = aLead;
+        vBrake = aBrake;
+        vLampP = position;
+        {
+          #ifdef USE_INSTANCING
+            vec4 farAt = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          #else
+            vec4 farAt = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          #endif
+          vFarDist = distance(farAt.xyz, uLodEye) + uLodShift;
+        }`,
+      );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\n${LAMP_GLSL}`)
+      .replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\nmaterial.clearcoat *= vCoat;')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying float vFarDist;\nvarying float vCoat;\nvarying vec4 vPane;\nvarying vec3 vLN;${GLASS_SKY_GLSL}\nfloat farGlowRamp(float d) { return smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, d); }\n${LAMP_GLSL}`)
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
         if (vKind.x + vKind.y + vKind.z > 0.0) {
           vec3 own = vColor.rgb;
-          totalEmissiveRadiance += lampShow(vKind, own, vLead, vBrake);
+          totalEmissiveRadiance += min(lampShow(vKind, own, vLead, vBrake), vec3(${FAR_EMIT_MAX.toFixed(3)}));
           diffuseColor.rgb = vec3(0.0);
         }
-        totalEmissiveRadiance += vGlow;`,
+        // The glazing shows the sky as the near level's glass does (GLASS_SKY_GLSL).
+        if (vPane.x > 0.5) totalEmissiveRadiance += glassSky(normalize(vLN), normal, normalize(vViewPosition), vLampP.y, vPane.yzw);
+        // The glow at the band matches the near level's glass; it rises to its full by FAR_GLOW_FROM (see above).
+        totalEmissiveRadiance += vGlow * mix(${FAR_GLOW_NEAR.toFixed(2)}, 1.0, farGlowRamp(vFarDist));`,
       )
       // Lit glazing and lamps are small bright sources: the haze dims them far less than a painted side, so the
       // tram's lit cars on the viaduct and the ferry's lamps read from home.
@@ -2496,7 +2978,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
         '#include <fog_fragment>',
         `vec3 preFog = gl_FragColor.rgb;
         #include <fog_fragment>
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.6 * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.72 * farGlowRamp(vFarDist) * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
       );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-far';
@@ -2590,6 +3072,8 @@ export interface Vehicles {
    * retired, so their riders board again.
    */
   relay(net: Network): void;
+  /** relay in steps (steps.ts), the fleet laid a line at a time and swapped in at the last step. */
+  relaySteps(net: Network): Steps<void>;
   /** The quality the city draws at (the governor's step down reaches the vehicles: no headlamp pools at medium). */
   setQuality(q: 'high' | 'medium'): void;
   /** Every vehicle of a kind. */
@@ -2601,6 +3085,8 @@ export interface Vehicles {
   hold(on: boolean): void;
   /** Moves the clock on by `seconds` at once, held or not (tests and captures). */
   skip(seconds: number): void;
+  /** Adds `metres` to every car's distance where its level is chosen (VEHICLE_LOD_SHIFT; the lod-400 check), and draws. */
+  lodShift(metres: number): void;
   /**
    * Moves the clock on until a vehicle of the kind (other than a cab) has
    * just come to a stand at a stop, the one nearest `near` if given, and
@@ -2616,6 +3102,17 @@ export interface Vehicles {
   seek(conds: ReadonlyArray<{ kind: Exclude<VehicleKind, 'cab'>; near: V2; radius: number; moving?: number }>, horizon?: number): boolean;
   /** A stand-in rider (until the figures of Task 34) standing at a point facing a heading, or none (captures). */
   rider(at: V3 | null, heading?: number): void;
+  /**
+   * The signals the persona cabs keep to (ambient.ts signals(): the same
+   * lights as the traffic), or none. Errands planned from now on keep to them.
+   */
+  setSignals(signals: Signals | null): void;
+  /** The traffic a persona cab queues behind: the nearest car ahead of a point going its way (ambient.ts carAhead), or none. */
+  setTraffic(ahead: ((x: number, z: number, heading: number, reach: number) => { gap: number; speed: number } | null) | null): void;
+  /** Seconds on the vehicles' clock (the lights run on it: scene.ts syncs the traffic's signals to it). */
+  clock(): number;
+  /** Every car of a line's vehicles now: its middle, heading, and its body's half length and half width (tests: the cars keep to the viaduct). */
+  cars(kind: Exclude<VehicleKind, 'cab'>): Array<{ x: number; y: number; z: number; yaw: number; half: number; width: number }>;
   dispose(): void;
 }
 
@@ -2633,6 +3130,8 @@ interface Drawn {
   far: THREE.InstancedMesh;
   lead: THREE.InstancedBufferAttribute[];
   brake: THREE.InstancedBufferAttribute[];
+  /** Each car's variation (variantCode), one per near part and one for the far level. */
+  vary: THREE.InstancedBufferAttribute[];
   nearCount: number;
   farCount: number;
   tris: { near: number; far: number };
@@ -2692,11 +3191,16 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     const near: THREE.InstancedMesh[] = [];
     const lead: THREE.InstancedBufferAttribute[] = [];
     const brake: THREE.InstancedBufferAttribute[] = [];
+    const vary: THREE.InstancedBufferAttribute[] = [];
     let nearTris = 0;
     for (const p of PARTS) {
       const g = nearKit.part(p);
       if (!g) continue;
       drawnGeos.push(g);
+      const va = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      va.setUsage(THREE.DynamicDrawUsage);
+      g.setAttribute('aVar', va);
+      vary.push(va);
       if (p === 'lamp') {
         const la = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
         const ba = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
@@ -2723,7 +3227,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       near.push(mesh);
       group.add(mesh);
     }
-    const fg = farKit.merged(spec.glow);
+    const fg = farKit.merged(spec.glow, spec.interior);
     drawnGeos.push(fg);
     const fl = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
     const fb = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
@@ -2733,6 +3237,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     fg.setAttribute('aBrake', fb);
     lead.push(fl);
     brake.push(fb);
+    const fv = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+    fv.setUsage(THREE.DynamicDrawUsage);
+    fg.setAttribute('aVar', fv);
+    vary.push(fv);
     const farMesh = new THREE.InstancedMesh(fg, far, cap);
     farMesh.name = `vehicles:${name}:far`;
     farMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -2743,7 +3251,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     // Far off a car neither casts nor joins the AO: the view draws it alone.
     setLayers(farMesh, LAYER.view);
     group.add(farMesh);
-    drawn.set(name, { name, near, far: farMesh, lead, brake, nearCount: 0, farCount: 0, tris: { near: nearTris, far: fg.attributes.position.count / 3 } });
+    drawn.set(name, { name, near, far: farMesh, lead, brake, vary, nearCount: 0, farCount: 0, tris: { near: nearTris, far: fg.attributes.position.count / 3 } });
   }
   }
   buildDrawn();
@@ -2771,13 +3279,13 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   const size = new THREE.Vector3();
 
   /** Lays one car into its model's near and far instances by its distance from the eye. */
-  function place(name: ModelName, x: number, y: number, z: number, yaw: number, pitch: number, roll: number, lead: number, brake: number): void {
+  function place(name: ModelName, x: number, y: number, z: number, yaw: number, pitch: number, roll: number, lead: number, brake: number, variant: number): void {
     const d = drawn.get(name)!;
     pos.set(x, y, z);
     e.set(roll, -yaw, pitch, 'YZX');
     q.setFromEuler(e);
     m4.compose(pos, q, one);
-    const dist = pos.distanceTo(eyeAt);
+    const dist = pos.distanceTo(eyeAt) + VEHICLE_LOD_SHIFT.value;
     const ld = lead > 0 ? 1 : 0;
     if (dist < VEHICLE_LOD.far && d.nearCount < d.near[0].instanceMatrix.count) {
       const i = d.nearCount++;
@@ -2786,12 +3294,14 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         d.lead[k].setX(i, ld);
         d.brake[k].setX(i, brake);
       }
+      for (let k = 0; k < d.vary.length - 1; k++) d.vary[k].setX(i, variant);
     }
     if (dist > VEHICLE_LOD.near && d.farCount < d.far.instanceMatrix.count) {
       const i = d.farCount++;
       d.far.setMatrixAt(i, m4);
       d.lead[d.lead.length - 1].setX(i, ld);
       d.brake[d.brake.length - 1].setX(i, brake);
+      d.vary[d.vary.length - 1].setX(i, variant);
     }
   }
 
@@ -2850,19 +3360,20 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         heave = 0.05 * Math.sin(t * 0.9 + ph) + 0.02 * Math.sin(t * 2.3 + ph * 2);
         roll = 0.008 * Math.sin(t * 0.7 + ph) * (1 + v / SPEED.ferry);
       }
+      const variant = variantCode(u.id);
       cars.forEach((c, k) => {
-        place(c.model, c.x, c.y + RAIL_HEAD[kind] + heave, c.z, c.yaw, c.pitch + (kind === 'ferry' ? 0.004 * Math.sin(t * 0.5 + u.offset) : 0), roll, c.lead, c.lead < 0 || kind !== 'tram' ? braking : 0);
+        place(c.model, c.x, c.y + RAIL_HEAD[kind] + heave, c.z, c.yaw, c.pitch + (kind === 'ferry' ? 0.004 * Math.sin(t * 0.5 + u.offset) : 0), roll, c.lead, c.lead < 0 || kind !== 'tram' ? braking : 0, variant + k);
         if (kind === 'tram') addShade(c.x, c.y, c.z, c.yaw, 14.6, 3.1);
         // The leading car lays its headlamps' light on the road (trams only: the rail and pods run high).
         if (kind === 'tram' && c.lead > 0 && k === 0) addPool(c.x + Math.cos(c.yaw) * 7.3, c.y + RAIL_HEAD.tram, c.z + Math.sin(c.yaw) * 7.3, c.yaw, 18, 5.2, 0.12);
       });
     }
-    for (const cab of fleet.cabs) {
+    fleet.cabs.forEach((cab, k) => {
       const p = cabPose(cab, t);
-      place('cab', p.x, p.y, p.z, p.yaw, 0, 0, 1, p.braking ? 1 : 0);
+      place('cab', p.x, p.y, p.z, p.yaw, 0, 0, 1, p.braking ? 1 : 0, k);
       addShade(p.x, p.y, p.z, p.yaw, 4.5, 2.3);
       if (cab.phase !== 'parked') addPool(p.x + Math.cos(p.yaw) * 1.95, p.y, p.z + Math.sin(p.yaw) * 1.95, p.yaw, 12, 3.8, 0.1);
-    }
+    });
     for (const d of drawn.values()) {
       for (const mesh of d.near) {
         mesh.count = d.nearCount;
@@ -2872,7 +3383,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       d.far.count = d.farCount;
       d.far.visible = d.farCount > 0;
       d.far.instanceMatrix.needsUpdate = true;
-      for (const a of [...d.lead, ...d.brake]) a.needsUpdate = true;
+      for (const a of [...d.lead, ...d.brake, ...d.vary]) a.needsUpdate = true;
     }
     pools.count = poolCount;
     pools.visible = poolCount > 0;
@@ -3055,7 +3566,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       // Every bay in the city is out: the cab whose errand ends soonest (and has none waiting) takes this one next.
       // Its rider's booking says 'queued' and counts the real wait: that errand's end, then the drive from the bay.
       cab = [...fleet.cabs].sort((p, q) => cabFreeIn(p, fleet.time) + (p.queue ? 1e6 : 0) - (cabFreeIn(q, fleet.time) + (q.queue ? 1e6 : 0)))[0];
-      const plan = errandLegs(cab, a, b);
+      const plan = errandLegs(cab, a, b, fleet.time + cabFreeIn(cab, fleet.time));
       cab.queue = { token, a, b, est: { pickup: plan.pickup.plan.period, carry: plan.carry.plan.period } };
       return booking(cab, token);
     }
@@ -3063,25 +3574,38 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     return booking(cab, token);
   }
 
-  /** The three drives of an errand for a cab from its bay: to the kerb by a, on to the kerb by b, and back. */
-  function errandLegs(cab: Cab, a: V2, b: V2): NonNullable<Cab['legs']> {
+  /** The signals the cabs keep to, and the lead of the lights' clock over this one (setSignals). */
+  let lights: Lights | null = null;
+  const lightsNow = (): Lights | null => (signals ? { signals, shift: signals.now() - fleet.time } : null);
+  let signals: Signals | null = null;
+  /** The traffic a cab queues behind (setTraffic): the nearest car ahead of a point, going its way. */
+  let traffic: ((x: number, z: number, heading: number, reach: number) => { gap: number; speed: number } | null) | null = null;
+
+  /**
+   * The three drives of an errand for a cab setting off from its bay at
+   * `t0`: to the kerb by a, on to the kerb by b, and back, each timed to the
+   * signals from when it will set off.
+   */
+  function errandLegs(cab: Cab, a: V2, b: V2, t0: number): NonNullable<Cab['legs']> {
     const start = kerbPlan(a, net);
     const end = kerbPlan(b, net);
     const bay = bayPose(cab.rank, cab.bay);
-    return {
-      pickup: drive([...streetWay(bay, start.via), start.kerb], plazas),
-      carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas),
-      back: drive([end.kerb, ...streetWay(end.via, bay)], plazas),
-    };
+    lights = lightsNow();
+    // The drive it sets off on now is timed to the lights; the two after it are timed when each sets off (advanceCab),
+    // and until then their untimed runs stand for the waits a rider is told.
+    const pickup = drive([...streetWay(bay, start.via), start.kerb], plazas, t0, lights);
+    const later = (way: V2[]): Drive => ({ ...drive(way, plazas), t0: NaN });
+    return { pickup, carry: later([start.kerb, ...streetWay(start.via, end.via), end.kerb]), back: later([end.kerb, ...streetWay(end.via, bay)]) };
   }
 
   function sendCab(cab: Cab, a: V2, b: V2, token: string): void {
-    cab.legs = errandLegs(cab, a, b);
+    cab.legs = errandLegs(cab, a, b, fleet.time);
     cab.errand = token;
     cab.ends = { a, b };
     cab.phase = 'to-pickup';
     cab.since = fleet.time;
     cab.run = cab.legs.pickup;
+    cab.follow = { v: null, late: false, replannedAt: -Infinity };
   }
 
   /**
@@ -3134,8 +3658,9 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
 
   /** Each cab moves on through its errand; one back at its bay with another queued sets off again. */
   function advanceCabs(): void {
+    lights = lightsNow();
     for (const c of fleet.cabs) {
-      advanceCab(c, fleet.time);
+      advanceCab(c, fleet.time, lights);
       if (c.phase === 'parked' && c.queue) {
         const q = c.queue;
         c.queue = null;
@@ -3156,32 +3681,139 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     const start = kerbPlan(c.ends.a, net);
     const end = kerbPlan(c.ends.b, net);
     const bay = bayPose(c.rank, c.bay);
-    const toEnd = (from: V2): { track: Track; plan: Plan } => drive([from, ...streetWay(from, end.via), end.kerb], plazas);
-    const back = drive([end.kerb, ...streetWay(end.via, bay)], plazas);
+    lights = lightsNow();
+    // Each drive timed from when it will set off; one that sets off later than that is timed again then (advanceCab).
+    const t = time - c.since;
+    const toEnd = (from: V2, t0: number): Drive => drive([from, ...streetWay(from, end.via), end.kerb], plazas, t0, lights);
+    const backFrom = (t0: number): Drive => drive([end.kerb, ...streetWay(end.via, bay)], plazas, t0, lights);
     if (c.phase === 'to-pickup') {
-      c.legs = { pickup: drive([pos, ...streetWay(pos, start.via), start.kerb], plazas), carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas), back };
+      const pickup = drive([pos, ...streetWay(pos, start.via), start.kerb], plazas, time, lights);
+      const t1 = time + pickup.plan.period + CAB_BOARD_S;
+      const carry = drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas, t1, lights);
+      c.legs = { pickup, carry, back: backFrom(t1 + carry.plan.period + CAB_ALIGHT_S) };
       c.run = c.legs.pickup;
       c.since = time;
     } else if (c.phase === 'pickup') {
-      c.legs = { ...c.legs, carry: toEnd(pos), back };
+      const t1 = time + Math.max(0, CAB_BOARD_S - t);
+      const carry = toEnd(pos, t1);
+      c.legs = { ...c.legs, carry, back: backFrom(t1 + carry.plan.period + CAB_ALIGHT_S) };
     } else if (c.phase === 'carrying') {
-      c.legs = { ...c.legs, carry: toEnd(pos), back };
+      const carry = toEnd(pos, time);
+      c.legs = { ...c.legs, carry, back: backFrom(time + carry.plan.period + CAB_ALIGHT_S) };
       c.run = c.legs.carry;
       c.since = time;
     } else if (c.phase === 'setdown') {
-      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas) };
+      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas, time + Math.max(0, CAB_ALIGHT_S - t), lights) };
     } else if (c.phase === 'returning') {
-      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas) };
+      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas, time, lights) };
       c.run = c.legs.back;
       c.since = time;
+    }
+    if (c.follow) {
+      c.follow.v = null;
+      c.follow.late = false;
+      c.follow.replannedAt = time;
+    }
+  }
+
+  /**
+   * The persona cabs in traffic (setTraffic): a cab that would close on a
+   * car ahead of it in its lane goes no faster than lets it stop a safe gap
+   * behind, its timetable's clock held back by as much. Every cab also
+   * treats the stop line of a junction whose light does not show go, with
+   * the time to clear, as a car standing there (its timetable already stops
+   * for the reds it planned by; this keeps it to the lights as they are when
+   * it has fallen behind that timetable). One held up and standing has the
+   * rest of its drive timed again from there once its way ahead clears.
+   */
+  function followTraffic(dt: number): void {
+    if (dt <= 0) return;
+    for (const c of fleet.cabs) {
+      const run = c.run;
+      if (!run || !(c.phase === 'to-pickup' || c.phase === 'carrying' || c.phase === 'returning')) continue;
+      const f = (c.follow ??= { v: null, late: false, replannedAt: -Infinity });
+      const t1 = fleet.time - c.since;
+      const t0 = t1 - dt;
+      const was = run.plan.at(t0);
+      const will = run.plan.at(t1);
+      if (will.s - was.s < 1e-4 && !f.late) {
+        f.v = null;
+        continue;
+      }
+      const tan = run.track.tangent(Math.min(was.s, run.track.length - 0.01));
+      const heading = Math.atan2(tan.z, tan.x);
+      const p = run.track.point(was.s);
+      const nose = { x: p.x + tan.x * CAB_HALF_LEN, z: p.z + tan.z * CAB_HALF_LEN };
+      // The room it has: to the car ahead, and (once late) to a line it may not cross.
+      let room = Infinity;
+      let lead = 0;
+      const car = traffic?.(nose.x, nose.z, heading, 60) ?? null;
+      if (car) {
+        room = car.gap - FOLLOW_GAP;
+        lead = car.speed;
+      }
+      if (lights) {
+        const tNow = fleet.time + lights.shift;
+        for (const x of run.crossings ?? []) {
+          if (x.line + STOP_SHORT <= was.s) continue;
+          if (x.line > was.s + 80) break;
+          // Too close to stop short of the box at a firm 6 m/s²: it goes on through.
+          const v = f.v ?? was.v;
+          const edge = x.line + STOP_SHORT - was.s;
+          if ((v * v) / 12 > edge) continue;
+          // The light it would meet now: the line is a wall unless it shows go with time to clear.
+          if (greenLeft(x.j, tNow, x.axis) + SIGNAL.amber > 5 && signalAt(x.j, tNow, x.axis) === 'go') continue;
+          room = Math.min(room, Math.max(x.line - was.s, Math.min(edge - 0.05, 0.2)));
+          lead = 0;
+          break;
+        }
+      }
+      const want = will.s - was.s;
+      // Stood behind a car that has now gone (late, at a stand, room ahead): the rest of the drive is timed again from
+      // here, once, on the lights as they are, and it pulls away on that.
+      if (f.late && f.v !== null && f.v < 0.05 && room > FOLLOW_GAP + 3 && fleet.time - f.replannedAt > 1) {
+        const leg = c.phase === 'to-pickup' ? 'pickup' : c.phase === 'carrying' ? 'carry' : 'back';
+        const d = rest(c.legs![leg], was.s, fleet.time, lights);
+        c.legs![leg] = d;
+        c.run = d;
+        c.since = fleet.time;
+        f.v = null;
+        f.late = false;
+        f.replannedAt = fleet.time;
+        continue;
+      }
+      // The most it may go this step: what stops it within the room left at a comfortable 3 m/s².
+      const v0 = f.v ?? was.v;
+      const safe = room <= 0 ? 0 : Math.min(Math.sqrt(lead * lead + 2 * 3 * room), v0 + 2.2 * dt);
+      const may = Math.max(0, Math.min(want, safe * dt, Math.max(0, room)));
+      if (may >= want - 1e-4) {
+        f.v = null;
+        continue;
+      }
+      // Held back: its clock moves only as far as it goes.
+      let lo = t0;
+      let hi = t1;
+      for (let k = 0; k < 24; k++) {
+        const mid = (lo + hi) / 2;
+        if (run.plan.at(mid).s - was.s < may) lo = mid;
+        else hi = mid;
+      }
+      c.since += t1 - lo;
+      f.v = may / dt;
+      f.late = true;
     }
   }
 
   /** Lays the fleet on a network laid again, keeping the clock and every cab's errand at a rank that still stands. */
   function relay(next: Network): void {
+    finish(relaySteps(next));
+  }
+  /** relay a line at a time (steps.ts): the fleet as it runs keeps running until the new one is laid, then takes its clock. */
+  function* relaySteps(next: Network): Steps<void> {
+    const made = yield* makeFleetSteps(next);
     const time = fleet.time;
     const old = fleet;
-    fleet = makeFleet(next);
+    fleet = made;
     fleet.time = time;
     net = next;
     key = netKey(next);
@@ -3229,7 +3861,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     group,
     update(dt, eye) {
       if (disposed) return;
-      if (!held) fleet.time += dt;
+      if (!held) {
+        fleet.time += dt;
+        followTraffic(dt);
+      }
       advanceCabs();
       if (eye) eyeAt.copy(eye);
       draw();
@@ -3237,6 +3872,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     board,
     summonCab,
     relay,
+    relaySteps,
     setQuality(q) {
       quality = q;
     },
@@ -3300,6 +3936,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       advanceCabs();
       draw();
     },
+    lodShift(metres) {
+      VEHICLE_LOD_SHIFT.value = metres;
+      draw();
+    },
     stage(kind, near) {
       let best: { u: Unit; w: number } | null = null;
       for (const u of fleet.units) {
@@ -3335,6 +3975,20 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         return true;
       }
       return false;
+    },
+    setSignals(next) {
+      signals = next;
+      lights = lightsNow();
+    },
+    setTraffic(ahead) {
+      traffic = ahead;
+    },
+    clock: () => fleet.time,
+    cars(kind) {
+      const body = CAR_BODY[kind];
+      return fleet.units
+        .filter((u) => u.service.kind === kind)
+        .flatMap((u) => unitCars(u, fleet.time).cars.map((c) => ({ x: c.x, y: c.y, z: c.z, yaw: c.yaw, half: body.half, width: body.width })));
     },
     rider(at, heading = 0) {
       if (!at) {

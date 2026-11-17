@@ -10,7 +10,8 @@ import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
 import { emit } from '../engine/events.js';
-import { query, record } from '../engine/ledger.js';
+import { entries, query, record } from '../engine/ledger.js';
+import { replay } from '../engine/market/replay.js';
 import { agentTowerId } from '../engine/market/firms.js';
 import { backfillMilestones, installMilestones, listMilestones, milestonesOf, weekTour } from '../engine/market/milestones.js';
 import { layEarnedFloor, updateEarnedFloor } from '../engine/repos.js';
@@ -107,6 +108,12 @@ function reached(id?: string): Milestone[] {
     .filter((m) => !id || m.id === id);
 }
 
+function changed(id?: string): Milestone[] {
+  return query({ kind: 'milestone.changed' })
+    .map((e) => (e.data as { milestone: Milestone }).milestone)
+    .filter((m) => !id || m.id === id);
+}
+
 function stored(id: string): Milestone | null {
   const row = openDb().prepare('SELECT json FROM milestones WHERE id = ?').get(id) as { json: string } | undefined;
   return row ? (JSON.parse(row.json) as Milestone) : null;
@@ -153,10 +160,13 @@ test('a lit floor that gives a tower the greatest earned height moves the lit sp
   assert.equal(passed?.title, 'Held the skyline');
   assert.match(passed?.detail ?? '', /^a held the skyline until /);
   assert.doesNotMatch(passed?.detail ?? '', /stands tallest/);
-  // The patch writes the row and emits milestone.reached again with the patched row.
-  const aRows = reached('skyline:acme/a#founding');
-  assert.equal(aRows.length, 2);
-  assert.deepEqual(aRows[1], passed);
+  // The patch writes the row and records milestone.changed with the patched row: the ledger reaches a milestone once.
+  assert.equal(reached('skyline:acme/a#founding').length, 1, 'a changed milestone adds no second reach');
+  const aChanged = changed('skyline:acme/a#founding');
+  assert.equal(aChanged.length, 1);
+  assert.deepEqual(aChanged[0], passed);
+  // Replay rebuilds the patched row from the reach and the change.
+  assert.deepEqual(replay(entries()).milestones['skyline:acme/a#founding'], passed);
   assert.equal(reached('skyline:acme/b#founding').length, 1);
 
   // Both stand in the active list: one lit, one not; the agent tower does not hold the spire (it stands no taller above its datum).
@@ -164,11 +174,11 @@ test('a lit floor that gives a tower the greatest earned height moves the lit sp
   assert.deepEqual(active.map((m) => [m.towerId, m.lit]).sort(), [['acme/a#founding', false], ['acme/b#founding', true]]);
   assert.deepEqual(milestonesOf('acme/b#founding').filter((m) => m.kind === 'skyline').map((m) => m.id), ['skyline:acme/b#founding']);
   // A second lighting on b changes nothing: the holder stays, and no row is written again.
-  const before = reached().length;
+  const before = reached().length + changed().length;
   emit('floor.lit', { towerId: 'acme/b#founding', floorId: 'acme/b#job-j2' });
-  assert.equal(reached().length, before);
+  assert.equal(reached().length + changed().length, before);
   // Every title and detail is plain copy.
-  for (const m of reached()) assert.doesNotMatch(`${m.title} ${m.detail}`, /—|–|--|\p{Extended_Pictographic}/u);
+  for (const m of [...reached(), ...changed()]) assert.doesNotMatch(`${m.title} ${m.detail}`, /—|–|--|\p{Extended_Pictographic}/u);
 });
 
 test('the founding skyline is a separate unlit row', () => {
@@ -256,15 +266,15 @@ test("a firm's first waiting floor ribbons it, its lighting dates the ribbon's e
   light('acme/a', 'j1', 'ola', NOW - DAY);
   const lit = stored('ribbon:quickset:j1');
   assert.equal(lit?.until, iso(NOW - DAY + RIBBON_DAYS * DAY));
-  assert.equal(reached('ribbon:quickset:j1').length, 2, 'the patch emits the row again');
-  assert.deepEqual(reached('ribbon:quickset:j1')[1], lit);
+  assert.equal(reached('ribbon:quickset:j1').length, 1, 'the patch reaches nothing again');
+  assert.deepEqual(changed('ribbon:quickset:j1'), [lit], 'the patch records the changed row');
   assert.ok(listMilestones(NOW + 5 * DAY, { active: true }).some((m) => m.id === 'ribbon:quickset:j1'));
   assert.ok(!listMilestones(NOW + 7 * DAY, { active: true }).some((m) => m.id === 'ribbon:quickset:j1'));
 
   // The firm's second PR is not its first.
   layJob('acme/a', 'j2', 'ola', 'quickset', 'small', 'waiting', NOW);
   assert.equal(stored('ribbon:quickset:j2'), null);
-  assert.equal(ribbons().length, 2);
+  assert.equal(ribbons().length, 1, 'the second PR reaches no ribbon');
 
   // Kumo's first PR closes without a merge: the ribbon ends now.
   layJob('acme/a', 'j3', 'rin', 'kumo', 'small', 'waiting', NOW - DAY);
@@ -273,9 +283,9 @@ test("a firm's first waiting floor ribbons it, its lighting dates the ribbon's e
   emit('job.changed', { job: closed, from: 'waiting' });
   assert.equal(stored('ribbon:kumo:j3')?.until, iso(NOW));
   // A later change of the same job writes nothing more.
-  const n = reached('ribbon:kumo:j3').length;
+  const n = reached('ribbon:kumo:j3').length + changed('ribbon:kumo:j3').length;
   emit('job.changed', { job: { ...closed, status: 'failed' }, from: 'closed' });
-  assert.equal(reached('ribbon:kumo:j3').length, n);
+  assert.equal(reached('ribbon:kumo:j3').length + changed('ribbon:kumo:j3').length, n);
 
   // Ashlar's first PR waits when the firm goes bankrupt: the ribbon comes down now.
   layJob('acme/a', 'j4', 'ines', 'ashlar', 'small', 'waiting', NOW - DAY);
@@ -284,9 +294,9 @@ test("a firm's first waiting floor ribbons it, its lighting dates the ribbon's e
   assert.equal(stored('ribbon:ashlar:j4')?.until, iso(NOW));
   assert.equal(stored('ribbon:kumo:j3')?.until, iso(NOW), "another firm's ribbon is untouched");
   // A ribbon that already ended is not written again by the bankruptcy.
-  const before = reached().length;
+  const before = reached().length + changed().length;
   emit('firm.bankrupt', { firmId: 'ashlar', at: iso(NOW + DAY) });
-  assert.equal(reached().length, before);
+  assert.equal(reached().length + changed().length, before);
 });
 
 test('backfill reaches the skyline once and is idempotent', () => {
@@ -309,12 +319,12 @@ test('backfill reaches the skyline once and is idempotent', () => {
   assert.equal(stored('ribbon:quickset:j1')?.until, iso(NOW - 2 * DAY + RIBBON_DAYS * DAY), 'the first PR floor, lit two days ago, is ribboned to seven days after');
   assert.equal(stored('ribbon:quickset:j2'), null);
   assert.equal(stored('revival:acme/a#job-j1')?.until, iso(NOW - 2 * DAY + LIGHTS_DAYS * DAY), 'a floor 198 days after the last is a revival');
-  const once = reached().length;
+  const once = reached().length + changed().length;
   assert.equal(reached('skyline:acme/a#founding').length, 1);
 
   backfillMilestones(NOW);
   backfillMilestones(NOW + DAY);
-  assert.equal(reached().length, once, 'a second backfill writes nothing');
+  assert.equal(reached().length + changed().length, once, 'a second backfill writes nothing');
   // With the bus listened to again, the next lit floor still moves the spire from the backfilled holder.
   off = installMilestones({ now: () => NOW });
   light('acme/a', 'j2', 'ola', NOW);
@@ -428,12 +438,12 @@ test('a skyline tie leaves the holder unchanged', () => {
   layJob('acme/a', 'j1', 'ola', 'quickset', 'medium', 'waiting', NOW - 2 * DAY);
   light('acme/a', 'j1', 'ola', NOW - DAY);
   assert.equal(stored('skyline:acme/a#founding')?.lit, true);
-  const before = reached().filter((m) => m.kind === 'skyline').length;
+  const before = [...reached(), ...changed()].filter((m) => m.kind === 'skyline').length;
   layJob('acme/b', 'j2', 'rin', 'quickset', 'medium', 'waiting', NOW - DAY);
   light('acme/b', 'j2', 'rin', NOW);
   assert.equal(stored('skyline:acme/a#founding')?.lit, true, 'the holder keeps a tie');
   assert.equal(stored('skyline:acme/b#founding'), null, 'a level tower gets no spire row');
-  assert.equal(reached().filter((m) => m.kind === 'skyline').length, before, 'nothing is written on a tie');
+  assert.equal([...reached(), ...changed()].filter((m) => m.kind === 'skyline').length, before, 'nothing is written on a tie');
 });
 
 test('a revival reaches exactly on the 90-day boundary and not an hour short of it', () => {

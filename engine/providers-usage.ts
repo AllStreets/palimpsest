@@ -7,6 +7,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { creditsText } from '../shared/market-rules.js';
 import type { ProviderUsage } from '../shared/types.js';
 import { openDb } from './db.js';
 import { getRunner } from './exec.js';
@@ -273,7 +274,7 @@ export async function ollamaUsage(now: number = Date.now(), credits: (now: numbe
   const count = `${models.length} ${models.length === 1 ? 'model' : 'models'} installed`;
   try {
     const c = credits(now);
-    return { ...base, status: 'ready', models, detail: `${count}; local credits ${c.today} today, ${c.week} this week` };
+    return { ...base, status: 'ready', models, detail: `${count}; local credits ${creditsText(c.today)} today, ${creditsText(c.week)} this week` };
   } catch {
     return { ...base, status: 'ready', models, detail: `${count}; local credits unknown` };
   }
@@ -302,7 +303,7 @@ export function claudeUsage(now: number = Date.now()): ProviderUsage {
     const reason = (e instanceof Error ? e.message : String(e)).slice(0, 300);
     return { ...base, detail: r ? 'The statusline percentages held' : base.detail, trouble: `The transcripts trend could not be read: ${reason}` };
   }
-  return { ...base, detail: r ? `The city has spent ${t.citySpent.today} credits today and ${t.citySpent.week} this week` : base.detail };
+  return { ...base, detail: r ? `The city has spent ${creditsText(t.citySpent.today)} credits today and ${creditsText(t.citySpent.week)} this week` : base.detail };
 }
 
 export function anthropicApiUsage(now: number = Date.now()): ProviderUsage {

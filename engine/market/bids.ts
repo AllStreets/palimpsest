@@ -29,7 +29,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { calibrated as calibrate, expectedValue } from '../../shared/market-rules.js';
+import { calibrated as calibrate, expectedValue, roundOpen } from '../../shared/market-rules.js';
 import type { Agent, Bid, FloorSize, Job, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
@@ -344,6 +344,9 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
   // The job may have been awarded, withdrawn or reopened while the call ran; a late bid is not entered.
   const still = storedJob(cur.id);
   if (!still || still.status !== 'bidding' || still.bidsCloseAt !== round) return null;
+  // Nor is an answer that lands after the round closed, though no tick has awarded the job yet:
+  // the round is open only before its close (roundOpen), here as in the sample.
+  if (!roundOpen(still, clock())) return sitOut(cur, round, a, 'the plan answered after bidding closed', clock());
 
   const price = tidy(clamp(median(answers.map((x) => x.price)), MIN_PRICE, Math.max(MIN_PRICE, cur.value)));
   const confidence = tidy(clamp(median(answers.map((x) => x.confidence)), MIN_CONFIDENCE, MAX_CONFIDENCE));

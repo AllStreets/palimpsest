@@ -9,6 +9,7 @@ import { AGREE, LORA, NET_MIN, SEALED_USES, SURVIVE_DAYS } from '../../../shared
 import type { Agreement, GateState, Grant, Interval, JobSchool, NetCard, NetName, Prediction, TrainKind, TrainState, VoyageView, WorkKind } from '../../../shared/types.js';
 import { ago, plural } from './controls.js';
 import { shortDate } from './story.js';
+import { clock } from './time-words.js';
 
 /** Labels a net needs before it reports anything: the training rows plus the held-out ones (ruling 11). */
 const NEEDS = NET_MIN.train + NET_MIN.heldOut;
@@ -60,6 +61,17 @@ export const NET_LEARNS: Record<NetName, string> = {
   master: 'what you will decide',
 };
 
+/**
+ * What a net's rows leave out that tilts what it learns, said beside it. The
+ * cost head's rows are runs that ended merged, failed or closed (datasets.ts):
+ * a run that hit its credit cap is left out, and those are the dearest runs,
+ * so it learns from the cheaper ones and reads costs low.
+ */
+export const NET_BIAS: Partial<Record<NetName, string>> = {
+  'appraiser-cost':
+    'It leaves out runs that hit their credit cap, the dearest ones, so it reads costs low.',
+};
+
 /** The ledger's shorter line for a net that has a version: its standing and when, the numbers standing in their own cells. */
 export function netRowLine(card: NetCard): string {
   const v = card.current;
@@ -67,6 +79,31 @@ export function netRowLine(card: NetCard): string {
   if (card.status === 'trusted') return `Trusted at v${v.version}, ${shortDate(v.at)}; ${plural(card.history.length, 'version')} so far.`;
   return netLine(card);
 }
+
+/** The engine's word for a net with enough labels that has not trained yet (engine/school/nets.ts). */
+const NOT_TRAINED = 'Enough labels; not trained yet';
+
+/**
+ * A net's line on the school's ledger, saying when an untrained net with
+ * enough labels will train, or why it will not: the school off, or the gate
+ * shut and what it waits for. The engine's own refusal is kept whole, and
+ * any other standing reads as netRowLine says it.
+ */
+export function untrainedWhen(card: NetCard, school: { enabled: boolean; window: { from: string; to: string }; idleMinutes: number }, light: GateState): string {
+  if (card.status !== 'untrained' || (card.reason !== null && card.reason !== NOT_TRAINED)) return netRowLine(card);
+  const enough = `${card.labels} labels, enough to train.`;
+  if (!school.enabled) return `${enough} The school is off, so nothing trains until you turn it on in Settings.`;
+  if (light.ok) return `${enough} The gate is open, so it trains on the school's next pass.`;
+  const when = `It trains in the next window, ${hour(school.window.from)} to ${hour(school.window.to)}, once the Mac is on power and idle ${plural(school.idleMinutes, 'minute')}`;
+  return `${enough} ${when}; now training waits: ${light.reason ?? 'the gate did not say why'}.`;
+}
+
+/**
+ * What the scores on the school screen mean, in plain words: Brier, its
+ * range and n, the baseline, and when a net counts as better.
+ */
+export const SCORE_KEY =
+  'Brier says how far a net\'s chances land from what then happened: 0 is perfect, 0.25 is what saying even odds every time would score, and lower is better. Each score is taken on rows the net never trained on, and the range beside it holds the true score 19 times in 20. The baseline is the plain guess a net must beat, the usual rate; a net is trusted only when it beats it across that whole range. The cost net is scored instead by how many credits its guesses miss by.';
 
 export const STATUS_WORD: Record<NetCard['status'], string> = { thin: 'thin', untrained: 'not trained yet', trained: 'trained, not trusted', trusted: 'trusted' };
 
@@ -100,12 +137,9 @@ export function netLine(card: NetCard): string {
 
 // ---------------------------------------------------------------- the gate
 
-/** "01:00" as "1:00"; "23:30" stays. */
-const hour = (hhmm: string): string => hhmm.replace(/^0(\d)/, '$1');
-const hm = (iso: string): string => {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
+/** A window's edge as Settings stores it, "01:00", "23:30": already the app's clock (time-words.ts). */
+const hour = (hhmm: string): string => hhmm;
+const hm = (iso: string): string => clock(iso);
 
 /**
  * "Training waits: on battery." or "Training may run: on power in Low Power
@@ -247,7 +281,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 /** "12 November at 18:30", in local time. */
 const writtenAt = (iso: string): string => {
   const d = new Date(iso);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} at ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} at ${clock(d)}`;
 };
 
 /**
@@ -282,10 +316,9 @@ export function trainNowHeld(g: GateState): string | null {
   return g.power === 'battery' ? 'on battery' : 'could not read the power source';
 }
 
-/** "until 4:10": when "Train now" ends, in local time. */
+/** "until 04:10": when "Train now" ends, in local time. */
 export function untilLine(iso: string): string {
-  const d = new Date(iso);
-  return `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `until ${clock(iso)}`;
 }
 
 /** Said beside the Low Power switch only when the Mac is in Low Power on AC, which is when it matters. */

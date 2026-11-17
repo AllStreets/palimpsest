@@ -779,7 +779,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
       if (err instanceof Killed) throw err;
       return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, { job: 'engine' });
     }
-    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
+    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch, { signal: st.lease.signal }));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
     // Checks never read (or naming no command) are read now from the run's own clone, before the baseline and the install need them.

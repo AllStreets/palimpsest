@@ -290,3 +290,67 @@ test('probes are cached for 10 seconds', async () => {
   await gateNow('light', NIGHT + 2000);
   assert.equal(calls.length, n, 'nothing re-read within 10 s');
 });
+
+test('concurrent gate reads share one probe call each: the cache holds the reading in flight', async () => {
+  resetGateCache();
+  await Promise.all([gateNow('heavy', NIGHT), gateNow('light', NIGHT), gateNow('heavy', NIGHT)]);
+  for (const probe of ['pmset -g batt', 'pmset -g', 'pmset -g therm', 'ioreg -c IOHIDSystem']) {
+    assert.equal(calls.filter((c) => c === probe).length, 1, `${probe} ran ${calls.filter((c) => c === probe).length} times`);
+  }
+  assert.equal(calls.filter((c) => c.startsWith('df ')).length, 1);
+});
+
+test('a failed probe read stands 1 s, not 10: the next gate a second later reads again', async () => {
+  resetGateCache();
+  const failing: Runner = async (cmd, args) => {
+    calls.push(`${cmd.split('/').pop()} ${args.join(' ')}`.trim());
+    return { stdout: '', stderr: 'pmset: busy', code: 1 };
+  };
+  setRunner(failing);
+  const realNow = Date.now;
+  const t0 = realNow();
+  try {
+    Date.now = () => t0;
+    const first = await gateNow('light', NIGHT);
+    assert.equal(first.reason, 'could not read the power source');
+    setRunner(fakeMac);
+    Date.now = () => t0 + 500;
+    assert.equal((await gateNow('light', NIGHT)).reason, 'could not read the power source', 'within 1 s the failure stands');
+    Date.now = () => t0 + 1_200;
+    const later = await gateNow('light', NIGHT);
+    assert.equal(later.ok, true, `a failed read held past 1 s: ${later.reason}`);
+    // A good reading still stands its 10 s.
+    const n = calls.length;
+    Date.now = () => t0 + 9_000;
+    await gateNow('light', NIGHT);
+    assert.equal(calls.length, n);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('parseIdle reads the HIDIdleTime of the IOHIDSystem entry, not the first one printed', () => {
+  const minutes = (m: number) => BigInt(m * 60) * 1_000_000_000n;
+  const text = [
+    '+-o Root  <class IORegistryEntry, id 0x100000100, retain 30>',
+    '  +-o IOResources  <class IOResources, id 0x100000110>',
+    '    | {',
+    `    |   "HIDIdleTime" = ${minutes(2)}`,
+    '    | }',
+    '    +-o IOHIDSystem  <class IOHIDSystem, id 0x100000465>',
+    '      | {',
+    '      |   "HIDIdleTimeDelta" = 5',
+    `      |   "HIDIdleTime" = ${minutes(40)}`,
+    '      | }',
+    '      +-o IOHIDUserClient  <class IOHIDUserClient, id 0x100000500>',
+    '        | {',
+    `        |   "HIDIdleTime" = ${minutes(3)}`,
+    '        | }',
+  ].join('\n');
+  assert.equal(parseIdle(text), 40);
+  // No IOHIDSystem entry: nothing to read, whatever else says HIDIdleTime.
+  assert.equal(parseIdle(text.replace(/IOHIDSystem/g, 'IOOther')), null);
+  // The plain capture the other tests use still reads, and so does a bare property line with no header (the sample's answer).
+  assert.equal(parseIdle(ioreg(16)), 16);
+  assert.equal(parseIdle(`    | |   "HIDIdleTime" = ${minutes(42)}\n`), 42);
+});

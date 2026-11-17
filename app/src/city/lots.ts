@@ -20,7 +20,7 @@ import { ambientCap, cappedHeight, RESERVE_RADIUS, reserves, type CollarPlaza } 
 import { RENDERED } from './tower/rendered.js';
 import { onRiverGround } from '../../../shared/commute.js';
 import type { Look } from './tower/variants.js';
-import { AWNING, packShopfront, PALETTES, SHOP_SLOTS, shopBays, shopfrontPlan, STRIPED, unpackShopfront } from './shopfronts.js';
+import { AWNING, cutOf, frontWidth, packShopfront, PALETTES, SHOP_SLOTS, shopBays, shopfrontPlan, STRIPED, unpackShopfront } from './shopfronts.js';
 
 /** One city block's buildable square, in metres. */
 export const BLOCK = 64;
@@ -32,6 +32,36 @@ export const PITCH = BLOCK + STREET;
 export const LAMP_EDGE = BLOCK / 2 + 2;
 /** Lamp positions along a block edge, from the block centre. */
 export const LAMP_OFFSETS = [-24, -8, 8, 24];
+/** Inside this radius the street grid gives way to an open paved plaza with no street lamps (grid.ts lays it; the floor paints it). */
+export const PLAZA_RADIUS = 72;
+/** Lanterns ring each plaza at this radius. */
+export const PLAZA_LAMP_RING = 66;
+export const PLAZA_LAMPS = 24;
+/** Lit bollards ring each district's plinth at this radius. */
+export const BOLLARD_RING = 36;
+export const BOLLARDS = 20;
+/**
+ * Lanterns line a quarter's court this far in from its edge, every
+ * COURT_LANTERN_STEP metres out to COURT_LANTERN_REACH either side of the
+ * centre line (past it the towers stand).
+ */
+export const COURT_LANTERN_INSET = 5;
+export const COURT_LANTERN_STEP = 16;
+export const COURT_LANTERN_REACH = 32;
+/** No lantern stands within this of the court's centre line on its south edge, where the firm's name plinth is. */
+export const COURT_PLINTH_CLEAR = 20;
+
+/**
+ * A plot given back to the city (a repo disconnected, a site struck) fills
+ * with its blocks over PLOT_FILL_S seconds, rising from the ground, rather
+ * than appearing in one frame (Task 13). plotRise is the share of their
+ * height standing `t` seconds after the plot was freed: eased, 0 to 1.
+ */
+export const PLOT_FILL_S = 1.2;
+export function plotRise(t: number): number {
+  const x = Math.min(1, Math.max(0, t / PLOT_FILL_S));
+  return x * x * (3 - 2 * x);
+}
 
 /** A small deterministic generator, seeded per block so adding a district never reshuffles the rest of the city. */
 export function rng(seed: number): () => number {
@@ -399,7 +429,7 @@ export function makeBlock(i: number, j: number): Lot[] {
       index: lots.length,
       shop: [0, 0, 0, 0],
     };
-    lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front, seed: r() }));
+    lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front, seed: r(), cut: cutOf(a, front, lot.style[3]) }));
     lots.push(lot);
     return lot;
   };
@@ -532,6 +562,83 @@ export function farLot(i: number, j: number): Lot {
   return lot;
 }
 
+/**
+ * The far ring's skyline (Phase 5 Task 7). One low box per block read from
+ * the overview as an even texture of boxes, the grid showing through the
+ * haze. The ring keeps its one building per block (farLot) and gains a
+ * city's grain: blocks gather into clusters of taller building over a field
+ * a few blocks across (the spine's towers, stepped back by lotParts like the
+ * near city's), and many blocks stand a second, lower building in the
+ * widest strip the first leaves free, so the roofline breaks
+ * across a block as well as between blocks. Walls only, like the ring.
+ */
+export function farLots(i: number, j: number): Lot[] {
+  const base = farLot(i, j);
+  const out: Lot[] = [];
+  const r = rng(blockSeed(i, j) + 977);
+  // A smooth field over the blocks, about seven across: where it runs high the ring gathers into a cluster.
+  const field = valueNoise(i / 7.3 + 11.1, j / 7.3 - 4.7) * 0.65 + valueNoise(i / 2.9 - 3.3, j / 2.9 + 8.2) * 0.35;
+  const hood = base.hood;
+  if (field > 0.6 && r() < 0.55 + (field - 0.6) * 1.6) {
+    // A tower of the cluster: an office type, 12 to 34 storeys as the field rises, on the block's own footprint.
+    const a: Archetype = r() < 0.5 ? 'glass' : r() < 0.6 ? 'midcentury' : 'commercial';
+    const s = SECTIONS[a];
+    const [lo, hi] = s.tall ?? s.storeys;
+    const n = Math.round(lo + (hi - lo) * Math.min(1, (field - 0.6) * 2.5) * (0.55 + 0.45 * r()));
+    const w = Math.max(base.w, 30);
+    const d = Math.max(base.d, 30);
+    const tower: Lot = { ...base, archetype: a, w, d, x: i * PITCH + (r() - 0.5) * (BLOCK - w), z: j * PITCH + (r() - 0.5) * (BLOCK - d), h: sectionHeight(a, n) };
+    tower.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front: [], seed: tower.style[1] }));
+    out.push(onRiverGround(tower.x, tower.z, w + 2 * LOT_REACH, d) ? base : tower);
+  } else {
+    out.push(base);
+  }
+  const first = out[0];
+  if (r() < 0.6) {
+    // A second, lower building in the widest strip of the block the first leaves free, across x or across z.
+    const cx = i * PITCH;
+    const cz = j * PITCH;
+    const strips = [
+      { alongX: true, side: -1, room: first.x - first.w / 2 - (cx - BLOCK / 2) },
+      { alongX: true, side: 1, room: cx + BLOCK / 2 - (first.x + first.w / 2) },
+      { alongX: false, side: -1, room: first.z - first.d / 2 - (cz - BLOCK / 2) },
+      { alongX: false, side: 1, room: cz + BLOCK / 2 - (first.z + first.d / 2) },
+    ].sort((a, b) => b.room - a.room);
+    const { alongX, side, room } = strips[0];
+    const span = room - 3;
+    if (span >= 10) {
+      const a = pickType(r, hood, 'free');
+      const across = Math.min(span, 10 + r() * 16);
+      const along = 18 + r() * 26;
+      const w2 = alongX ? across : along;
+      const d2 = alongX ? along : across;
+      const x = alongX ? cx + side * (BLOCK / 2 - 1 - w2 / 2) : cx + (r() - 0.5) * (BLOCK - 2 - w2);
+      const z = alongX ? cz + (r() - 0.5) * (BLOCK - 2 - d2) : cz + side * (BLOCK / 2 - 1 - d2 / 2);
+      const n = Math.max(1, Math.min(SECTIONS[a].storeys[1], 1 + Math.floor(r() * 5)));
+      const lot: Lot = { ...first, archetype: a, x, z, w: w2, d: d2, h: sectionHeight(a, n), style: [0, r(), first.style[2], r()], index: 1 };
+      lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w: w2, d: d2, front: [], seed: lot.style[1] }));
+      const clear = Math.abs(x - first.x) >= (w2 + first.w) / 2 + 2 || Math.abs(z - first.z) >= (d2 + first.d) / 2 + 2;
+      if (clear && !onRiverGround(x, z, w2 + 2 * LOT_REACH, d2)) out.push(lot);
+    }
+  }
+  return out;
+}
+
+/** Smooth value noise in 0..1 over block coordinates (the far ring's clusters). */
+function valueNoise(x: number, y: number): number {
+  const h = (a: number, b: number): number => {
+    const t = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return t - Math.floor(t);
+  };
+  const i = Math.floor(x);
+  const j = Math.floor(y);
+  const fx = x - i;
+  const fy = y - j;
+  const u = fx * fx * (3 - 2 * fx);
+  const v = fy * fy * (3 - 2 * fy);
+  return (h(i, j) * (1 - u) + h(i + 1, j) * u) * (1 - v) + (h(i, j + 1) * (1 - u) + h(i + 1, j + 1) * u) * v;
+}
+
 function touching(a: Lot, b: Lot): boolean {
   return Math.abs(a.x - b.x) - (a.w + b.w) / 2 < 0.6 && Math.abs(a.z - b.z) - (a.d + b.d) / 2 < 0.6;
 }
@@ -557,17 +664,28 @@ function clearOf(t: Tone, lot: Lot, rings: CollarPlaza[]): boolean {
 }
 
 /**
- * Chooses every lot's tone, in lot order: each lot ranks its type's tones
- * by a hash of the block and its own index (weighted), and takes the first
- * that no touching lot of the same type already wears and that keeps clear
+ * Chooses the tone of every lot without one, in lot order: each lot ranks
+ * its type's tones by a hash of the block and its own index (weighted), and
+ * takes the first that no touching lot already wears and that keeps clear
  * of the towers whose ring it stands in. When nothing of its own type can
- * keep clear of a tower, the lot is built as the type that can.
+ * keep clear of a tower, the lot is built as the type that can. Lots that
+ * arrive with a tone keep it (standingLots clears only the ring lots'), so
+ * one tower's look change retones its own ring and no neighbour.
  */
 function assignTones(i: number, j: number, lots: Lot[], plazas: CollarPlaza[]): void {
   const districts = plazas.filter((p) => p.tones?.length || p.value !== undefined);
+  const ringsOf = (l: Lot): CollarPlaza[] => districts.filter((p) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH);
   for (const lot of lots) {
-    const rings = districts.filter((p) => Math.hypot(lot.x - p.x, lot.z - p.z) <= RING_REACH);
-    const taken = new Set(lots.filter((o) => o.index < lot.index && o.tone && touching(o, lot)).map((o) => o.tone));
+    if (lot.tone) continue;
+    const rings = ringsOf(lot);
+    // What a touching lot already wears: every lot that keeps its tone (out of every ring, or earlier in this pass),
+    // and an earlier ring lot only when it stands in no ring this one does not (so a lot in one tower's ring
+    // depends on that tower alone: another tower's look change never reaches it through a neighbour).
+    const taken = new Set(
+      lots
+        .filter((o) => o !== lot && o.tone && touching(o, lot) && (o.index < lot.index || ringsOf(o).length === 0) && ringsOf(o).every((p) => rings.includes(p)))
+        .map((o) => o.tone),
+    );
     const ranked = (a: Archetype): Tone[] =>
       TONES[a]
         .map((t, k) => ({ t, key: Math.pow(hash(blockSeed(i, j), lot.index * 31 + k, 7), 1 / (t.weight ?? 1)) }))
@@ -583,7 +701,7 @@ function assignTones(i: number, j: number, lots: Lot[], plazas: CollarPlaza[]): 
           lot.h = sectionHeight(a, Math.max(1, Math.round((lot.h - SECTIONS[a].ground) / SECTIONS[a].floor)));
           lot.roof = a === 'industrial' ? 'flat' : roofFor(a, lot.h, lot.w, lot.d, () => lot.style[3]);
           // A new type is a new frontage: the same seed, replanned as the type it now is.
-          lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood: lot.hood, w: lot.w, d: lot.d, front: lot.front, seed: lot.style[1] }));
+          lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood: lot.hood, w: lot.w, d: lot.d, front: lot.front, seed: lot.style[1], cut: cutOf(a, lot.front, lot.style[3] % 1) }));
           break;
         }
       }
@@ -623,9 +741,11 @@ export function standingLots(i: number, j: number, plazas: CollarPlaza[]): Lot[]
     // A factory stack stands only where nothing caps the skyline.
     out.push({ ...lot, h: cutTo(lot.archetype, lot.h, cap), stack: cap === Infinity ? lot.stack : 0 });
   }
-  if (plazas.some((p) => (p.tones?.length || p.value !== undefined) && out.some((l) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH))) {
-    // Each lot keeps its index on the block, so lots out of the ring keep their tones unless a neighbour's change forces one.
-    for (const l of out) l.tone = '';
+  const toned = plazas.filter((p) => p.tones?.length || p.value !== undefined);
+  if (out.some((l) => toned.some((p) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH))) {
+    // Only the lots in a tower's ring are retoned; every other lot keeps the block's own tone, so one tower's look
+    // change (a re-measure, a sale) retones its own ring and never a neighbour (Task 6).
+    for (const l of out) if (toned.some((p) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH)) l.tone = '';
     assignTones(i, j, out, plazas);
     for (const l of out) {
       const cap = ambientCap(l.x, l.z, plazas);
@@ -661,6 +781,8 @@ export type PartKind =
   | 'bay'
   | 'bayGlass'
   | 'bayLit'
+  | 'bayFoot'
+  | 'bayRoof'
   | 'awning';
 
 /** One box (or cylinder, prism, canopy) of a building: centre, size, a turn about y, and its colour. */
@@ -699,6 +821,10 @@ const ROOFBOX: Record<Archetype, number> = {
 };
 
 const unit = (s: number): number => s - Math.floor(s);
+
+/** The oriel bay's corbelled foot under its lowest storey and its lead roof over the top one: their heights in metres. */
+export const BAY_FOOT = 0.4;
+export const BAY_ROOF = 0.45;
 
 /**
  * The parts of a standing lot: its walls (stepped back when tall), its
@@ -747,8 +873,8 @@ export function lotParts(lot: Lot): Part[] {
     }
   }
   // Corner lots of offices and slabs cut their street corners where two street fronts meet: a chamfer on offices
-  // and glass, a streamline curve on mid-century slabs.
-  const cut = (a === 'commercial' || a === 'midcentury' || a === 'glass') && lot.front.length > 1 && v > 0.45;
+  // and glass, a streamline curve on mid-century slabs (shopfronts.ts cutOf; the shader maps the cut by the same rule).
+  const cut = cutOf(a, lot.front, v);
   for (const t of tiers) {
     const top = t === tiers[tiers.length - 1];
     const hh = t.y1 - t.y0 - (top ? 0.35 : 0);
@@ -770,15 +896,16 @@ export function lotParts(lot: Lot): Part[] {
     // Awnings over the shopfronts' glass on the street fronts, one per awning bay of the plan (shopfronts.ts): a
     // canvas hung at the head of the glass, under the fascia, in the front's own cloth.
     if (t === tiers[0] && a !== 'parking' && a !== 'industrial') {
-      const nx = Math.min(SHOP_SLOTS, shopBays(t.d, (lot.shop[3] % 1000) / 100));
-      const nz = Math.min(SHOP_SLOTS, shopBays(t.w, (lot.shop[3] % 1000) / 100));
+      const nx = Math.min(SHOP_SLOTS, shopBays(frontWidth(t.d, cut), (lot.shop[3] % 1000) / 100));
+      const nz = Math.min(SHOP_SLOTS, shopBays(frontWidth(t.w, cut), (lot.shop[3] % 1000) / 100));
       const plan = unpackShopfront(lot.shop, nx, nz);
       const scheme = PALETTES[plan.palette];
       const cloth = colour(0xffffff).setRGB(scheme.cloth[0] + (scheme.striped ? STRIPED : 0), scheme.cloth[1], scheme.cloth[2]);
       const y = s.ground - 1.05 + 0.02 - AWNING.drop / 2;
       for (const f of lot.front) {
         const onX = f === 'px' || f === 'nx';
-        const along = onX ? t.d : t.w;
+        // On a cut lot the shopping front is the straight run between the cuts, as the shader lays its bays.
+        const along = frontWidth(onX ? t.d : t.w, cut);
         const n = shopBays(along, plan.bay);
         const cw = along / n;
         const awnings = onX ? plan.awningsX : plan.awningsZ;
@@ -807,20 +934,25 @@ export function lotParts(lot: Lot): Part[] {
           const o = n === 1 ? (v - 0.35) * along * 0.3 : (b - 0.5) * along * 0.5;
           const bw = 3.0;
           const bd = 0.85;
+          // A piece of the bay's stack, turned to the face: its storeys, then the corbels and soffit under the
+          // lowest and the lead roof over the top (kits.py bay, bay_glass, bay_foot, bay_roof).
+          const at = (kind: PartKind, y: number, sy: number, c: THREE.Color | undefined, grow = 1, deep = 1): void => {
+            const put = (dx: number, dz: number, rot: number): void => p(kind, t.x + dx, y, t.z + dz, bw * grow, sy, bd * deep, c, rot);
+            if (f === 'pz') put(o, t.d / 2 + bd / 2, 0);
+            else if (f === 'nz') put(-o, -t.d / 2 - bd / 2, Math.PI);
+            else if (f === 'px') put(t.w / 2 + bd / 2, -o, Math.PI / 2);
+            else put(-t.w / 2 - bd / 2, o, -Math.PI / 2);
+          };
           for (let k = 0; k < storeys; k++) {
             const y = s.ground + k * s.floor + s.floor / 2;
             const lit = hash(Math.round(lot.x * 3 + b), Math.round(lot.z), k + 7) < 0.5;
-            const at = (dx: number, dz: number, rot: number, glass: boolean): void => {
-              // The panes stand a few centimetres proud of the bay's faces, clear of its own surface.
-              if (glass) p(lit ? 'bayLit' : 'bayGlass', t.x + dx, y, t.z + dz, bw * 1.03, s.floor, bd * 1.06, lit ? colour(0xffffff) : undefined, rot);
-              else p('bay', t.x + dx, y, t.z + dz, bw, s.floor, bd, bayPaint, rot);
-            };
-            for (const glass of [false, true]) {
-              if (f === 'pz') at(o, t.d / 2 + bd / 2, 0, glass);
-              else if (f === 'nz') at(-o, -t.d / 2 - bd / 2, Math.PI, glass);
-              else if (f === 'px') at(t.w / 2 + bd / 2, -o, Math.PI / 2, glass);
-              else at(-t.w / 2 - bd / 2, o, -Math.PI / 2, glass);
-            }
+            at('bay', y, s.floor, bayPaint);
+            // The panes stand a few centimetres proud of the bay's faces, clear of its own surface.
+            at(lit ? 'bayLit' : 'bayGlass', y, s.floor, lit ? colour(0xffffff) : undefined, 1.03, 1.06);
+          }
+          if (storeys > 0) {
+            at('bayFoot', s.ground - BAY_FOOT / 2, BAY_FOOT, bayPaint);
+            at('bayRoof', s.ground + storeys * s.floor + BAY_ROOF / 2, BAY_ROOF, undefined, 1.04, 1.06);
           }
         }
       }

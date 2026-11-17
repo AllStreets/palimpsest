@@ -3,7 +3,45 @@
  * reputation score and era, firm money and the job transition table. Shared
  * by the engine and the UI; imports nothing from engine/.
  */
-import type { Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
+import type { BudgetWindow, Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
+
+/**
+ * Credits as every screen and sentence sets them (Phase 5 audit): a
+ * thousands comma, a whole number bare, anything else to the cent, and a
+ * true minus. Never three places, never a minus on nothing.
+ */
+export function creditsText(n: number): string {
+  const cents = Math.round(n * 100);
+  if (cents === 0) return '0';
+  const abs = Math.abs(cents);
+  const whole = Math.floor(abs / 100);
+  const part = abs % 100;
+  const grouped = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${cents < 0 ? '−' : ''}${grouped}${part === 0 ? '' : `.${String(part).padStart(2, '0')}`}`;
+}
+
+/**
+ * Credits in a column of figures (the books, a ledger, a balance column):
+ * the same comma and true minus as creditsText, but always two places, so
+ * the points stand in one line down the column.
+ */
+export function creditsFixed(n: number): string {
+  const cents = Math.round(n * 100);
+  const abs = Math.abs(cents);
+  const grouped = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${cents < 0 ? '−' : ''}${grouped}.${String(abs % 100).padStart(2, '0')}`;
+}
+
+/**
+ * How much of a plan window stands used now, the one figure the brief,
+ * Settings and the treasury all show: the larger of his last reading and
+ * the estimate (the reading plus what the city spent since), whole. Null
+ * when nothing has read the window and nothing has been spent in it.
+ */
+export function windowNowPct(w: Pick<BudgetWindow, 'usedPct' | 'estimatedPct'>): number | null {
+  if (w.usedPct === null && w.estimatedPct <= 0) return null;
+  return Math.round(Math.max(w.estimatedPct, w.usedPct ?? 0));
+}
 
 /** A job's value (the bid ceiling) by tier, in credits (ruling 3). */
 export const TIER_VALUE: Record<Tier, number> = { low: 20, normal: 60, high: 150 };
@@ -151,6 +189,18 @@ export const LEGAL_MOVES: Record<JobStatus, JobStatus[]> = {
 
 export function legalMove(from: JobStatus, to: JobStatus): boolean {
   return LEGAL_MOVES[from]?.includes(to) ?? false;
+}
+
+/**
+ * Whether a job's round takes an answer at `at`: the job is bidding and its
+ * window has not closed. A bid outside it (after the close, on a job awarded
+ * or reopened) is refused, so a round never reads as closing while its bids
+ * still climb.
+ */
+export function roundOpen(j: Pick<Job, 'status' | 'bidsCloseAt'> | null | undefined, at: number): boolean {
+  if (!j || j.status !== 'bidding' || !j.bidsCloseAt) return false;
+  const close = Date.parse(j.bidsCloseAt);
+  return Number.isFinite(close) && at < close;
 }
 
 // ---------------------------------------------------------------- Phase 3: the audit, the brief, milestones and the tour
@@ -367,6 +417,20 @@ export function runsUnderWay(runs: Array<Pick<Run, 'model' | 'endedAt' | 'jobId'
     out[poolOfModel(r.model)]++;
   }
   return out;
+}
+
+/**
+ * The runs under way that hold a slot: a run holds the slot its lease took,
+ * so the runs the runner really works on are the slots it holds, pool by
+ * pool, never more than the runs on the books. Runs on the books with no
+ * lease behind them (the sample economy's) are not at work. The treasury's
+ * runs line and its slots line both read this one count.
+ */
+export function runsHoldingSlots(u: RunsUnderWay, held: { claude: number; local: number; api: number }): RunsUnderWay {
+  const claude = Math.min(u.claude, held.claude);
+  const local = Math.min(u.local, held.local);
+  const api = Math.min(u.api, held.api);
+  return { total: claude + local + api, claude, local, api };
 }
 
 /** A model reference by shape: a provider, a colon and a name (an Ollama name may carry a tag: `qwen2.5-coder:7b`). */

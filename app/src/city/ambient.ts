@@ -2,11 +2,14 @@ import * as THREE from 'three';
 
 import { inChannel, railHalf, STREET_PITCH, streetLine, tramHalf, type Network } from '../../../shared/commute.js';
 import { CIVIC_LAMPS, FOUNTAIN, onExchange } from './exchange.js';
-import { figureLevel } from './figures.js';
+import { figureLevel, loadSkin, SKIN_UNIFORMS } from './figures.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
 import { LAMP_EDGE, LAMP_OFFSETS, PITCH } from './lots.js';
 import { HEADLAMP } from './post.js';
+import { SIGNAL, signalJunction, signalPhase, signalsOf, type SignalJunction, type Signals } from './signals.js';
+import { streetFloor } from './street.js';
+import { finish, type Steps } from './steps.js';
 
 /**
  * The city's ambient life (Task 32): unlabelled traffic on the street grid
@@ -191,14 +194,8 @@ function segDist(p: V2, a: V2, b: V2): number {
 type Axis = 'x' | 'z';
 type Turn = 'straight' | 'left' | 'right';
 
-interface Signal {
-  /** Seconds of green for traffic along x, then along z. */
-  gx: number;
-  gz: number;
-  offset: number;
-}
-const AMBER = 3;
-const ALL_RED = 2;
+const AMBER = SIGNAL.amber;
+const ALL_RED = SIGNAL.allRed;
 
 interface Junction {
   key: string;
@@ -207,7 +204,8 @@ interface Junction {
   /** Lanes coming in and going out, by the way they run. */
   into: Lane[];
   out: Lane[];
-  signal: Signal | null;
+  /** Its signals (signals.ts), where two streets with traffic cross. */
+  signal: SignalJunction | null;
   /** People on each crossing now: walking along x (across the street along z), walking along z. */
   walkers: { x: number; z: number };
   /** Whether any car's lane runs along each axis here. */
@@ -380,40 +378,25 @@ function layRoads(net: Network, plazas: readonly AmbientPlaza[], r: () => number
   for (const lane of lanes) {
     for (const o of lane.to.out) if (o.to !== lane.from) lane.moves.push(moveOf(lane, o));
   }
-  // Signals where two streets cross, with greens of their own and a place in the cycle.
+  // Signals where two streets cross, each on the city's one cycle at its own place in it (signals.ts), shared with
+  // the persona cabs and walkers. The draw keeps the seeded stream as it was when the play was drawn here.
   for (const j of junctions.values()) {
     if (!(j.axes.x && j.axes.z)) continue;
-    // One cycle across the grid, its greens timed as a wave along x (80 m a block at 10 m/s) so eastbound
-    // traffic moves in platoons, and a little play per junction so no two corners change at once.
-    const gx = 22;
-    const gz = 20;
-    j.signal = { gx, gz, offset: -j.x / 10 - j.z / 25 + (r() - 0.5) * 3 };
+    r();
+    j.signal = signalJunction(j.x, j.z);
   }
   return { junctions, lanes, length: lanes.reduce((s, l) => s + l.len, 0) };
 }
 
 /** A junction's signals at time t: which axis may go, whether its amber shows, and seconds left in that state. */
 function signalAt(j: Junction, t: number, out: { green: Axis | null; amber: boolean; left: number } = { green: null, amber: false, left: 0 }): { green: Axis | null; amber: boolean; left: number } {
-  const set = (green: Axis | null, amber: boolean, left: number): typeof out => {
-    out.green = green;
-    out.amber = amber;
-    out.left = left;
+  if (!j.signal) {
+    out.green = null;
+    out.amber = false;
+    out.left = Infinity;
     return out;
-  };
-  const s = j.signal;
-  if (!s) return set(null, false, Infinity);
-  const cycle = s.gx + s.gz + 2 * (AMBER + ALL_RED);
-  let u = (((t + s.offset) % cycle) + cycle) % cycle;
-  if (u < s.gx) return set('x', false, s.gx - u);
-  u -= s.gx;
-  if (u < AMBER) return set('x', true, AMBER - u);
-  u -= AMBER;
-  if (u < ALL_RED) return set(null, false, ALL_RED - u);
-  u -= ALL_RED;
-  if (u < s.gz) return set('z', false, s.gz - u);
-  u -= s.gz;
-  if (u < AMBER) return set('z', true, AMBER - u);
-  return set(null, false, Math.max(0, ALL_RED - (u - AMBER)));
+  }
+  return signalPhase(j.signal, t, out);
 }
 
 // ---------------------------------------------------------------- the cars
@@ -531,7 +514,11 @@ function aheadOf(car: Car, idx: number, env: Env): typeof AHEAD {
         AHEAD.gap = tail.s - tail.len - (car.s - lane.len - m.len);
         AHEAD.vl = tail.v;
       }
-      if ((!car.commit && !mayEnter(car, env)) || cabHolds(car, env)) {
+      // A car committed to the box but held short of it by a persona cab standing there gives up its commitment:
+      // once the cab has gone it asks afresh, so it never goes in on a red it waited into.
+      const held = cabHolds(car, env);
+      if (held && car.commit) car.commit = false;
+      if ((!car.commit && !mayEnter(car, env)) || held) {
         const line = lane.len - car.s;
         if (line < AHEAD.gap) {
           AHEAD.gap = line;
@@ -678,6 +665,7 @@ function carPoint(car: Car, back: number, out: V2): V2 {
 
 const PF = { x: 0, z: 0 };
 const PB = { x: 0, z: 0 };
+const REAR = { x: 0, z: 0 };
 const POSE: { x: number; z: number; yaw: number; junction: Junction | null; axis: Axis } = { x: 0, z: 0, yaw: 0, junction: null, axis: 'x' };
 
 /** A car's pose (into a shared scratch: copy what you keep): its middle, heading, and the junction whose box it stands in. */
@@ -1572,6 +1560,21 @@ export const FIGURE_PART = { base: 0, buzz: 1, short: 2, long: 3, bun: 4, hat: 5
 export const SHOULDER_IN = 0.0156;
 
 /**
+ * The seated pose (the personas in a cab or a carriage, the crowd on a
+ * shelter's bench): the hip and knee angles, and how far the body drops so
+ * the seat of the trousers rests on the seat when the figure's origin is set
+ * at the seat's height (test/people.test.ts measures it on the modelled figure).
+ */
+export const SEATED = { hip: 1.5, knee: 1.5, drop: 0.81 } as const;
+
+/**
+ * A tram shelter's bench (transit.ts tramShelter): its seat's top over the
+ * pavement, its distance from the line, and where along it people sit (the
+ * hips a little back of the seat's centre, the knees toward the track).
+ */
+export const BENCH = { y: 0.765, l: 6.42, slots: [-1.95, -1.05, -0.15, 0.75, 1.65] } as const;
+
+/**
  * The plain figure (original): boxes on the rig, for the far level, and for
  * every level when figures.glb did not load. Its attributes are the
  * modelled figure's (aSkin, aSurf), so one shader poses both.
@@ -1857,6 +1860,9 @@ export const FIGURE_GLSL = /* glsl */ `
   varying float vCloth;
   varying float vEye;
   varying vec3 vIris;
+  /** The close level's skin: the figure's uv in the atlas and its tone (negative on anything but skin). */
+  varying vec2 vSkinUv;
+  varying float vSkinT;
   vec3 skinTone(float t) {
     vec3 a = vec3(0.72, 0.47, 0.37);
     vec3 b = vec3(0.47, 0.27, 0.17);
@@ -1889,6 +1895,20 @@ export const FIGURE_GLSL = /* glsl */ `
     mat3 head; mat3 torso;
     float shift; float drop; float sway;
   };
+  /** Sitting down (people.ts SEATED): hips and knees to right angles, forearms on the thighs, the body dropped to the seat and leaning back. */
+  void sitDown(inout Rig R, float sit, float lean) {
+    if (sit <= 0.0) return;
+    R.hipL = mix(R.hipL, ${SEATED.hip.toFixed(2)}, sit);
+    R.hipR = mix(R.hipR, ${SEATED.hip.toFixed(2)}, sit);
+    R.kneeL = mix(R.kneeL, ${SEATED.knee.toFixed(2)}, sit);
+    R.kneeR = mix(R.kneeR, ${SEATED.knee.toFixed(2)}, sit);
+    R.armL = mix(R.armL, 0.45, sit);
+    R.armR = mix(R.armR, 0.45, sit);
+    R.elbL = mix(R.elbL, 1.0, sit);
+    R.elbR = mix(R.elbR, 1.0, sit);
+    R.torso = R.torso * rotZ(-0.06 * sit - 0.3 * lean);
+    R.drop += ${SEATED.drop.toFixed(2)} * sit;
+  }
   /** One bone's move of a rest point: child joints before their parents. */
   void boneMove(int bone, Rig R, inout vec3 p, inout vec3 n) {
     vec3 L = vec3(1.0, 1.0, -1.0);
@@ -1961,7 +1981,12 @@ export const FIGURE_GLSL = /* glsl */ `
     rough = 0.86;
     metal = 0.0;
     if (code == 0) { alb = mix(skin, skin * vec3(1.12, 0.8, 0.76), blush); rough = 0.5; }
-    else if (code == 1) { alb = aBody.z > 0.5 && aSurf.y < 0.5 ? aCoat * 0.45 + vec3(0.01) : hairTone(aLook.y); rough = 0.46; }
+    else if (code == 1) {
+      alb = aBody.z > 0.5 && aSurf.y < 0.5 ? aCoat * 0.45 + vec3(0.01) : hairTone(aLook.y);
+      // The hair cards each carry their own shade (figures.py: the mass at the middle, the cards spread about it).
+      alb *= blush > 0.0 ? 0.72 + 0.56 * blush : 1.0;
+      rough = 0.46;
+    }
     else if (code == 3) { alb = aLegs; rough = 0.8; }
     else if (code == 4) { alb = fract(aLook.y * 7.3) > 0.7 ? vec3(0.07, 0.035, 0.018) : vec3(0.016, 0.014, 0.012); rough = 0.36; }
     else if (code == 5) { alb = vec3(0.02, 0.016, 0.013); rough = 0.35; }
@@ -2003,6 +2028,8 @@ export const FIGURE_GLSL = /* glsl */ `
     vEye = code == 7 ? 1.0 : 0.0;
     float t = fract(aLook.y * 13.7 + aLook.x * 2.3);
     vIris = aLook.x > 0.45 || t < 0.55 ? vec3(0.03, 0.016, 0.008) : t < 0.8 ? vec3(0.06, 0.045, 0.02) : vec3(0.05, 0.075, 0.09);
+    vSkinUv = uv;
+    vSkinT = (code == 0 || code == 9) ? aLook.x : -1.0;
   }`;
 
 /** The figure's fragment: its surface, the iris and pupil on the eye, a fine weave close up, occlusion on the ambient light. */
@@ -2014,10 +2041,75 @@ export const FIGURE_FRAG = /* glsl */ `
   varying vec3 vObj;
   varying float vCloth;
   varying float vEye;
-  varying vec3 vIris;`;
+  varying vec3 vIris;
+  varying vec2 vSkinUv;
+  varying float vSkinT;`;
 
-/** Wires FIGURE_GLSL into a standard material's shader: `rig` is GLSL returning the instance's Rig; `extra` runs after (sees code). */
-export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: string, extra = '', extraFrag = ''): void {
+/**
+ * The skin atlas on the close level (figures.ts SKIN_UNIFORMS, figures-skin.webp):
+ * the figure's tone picks the quadrant; its colour over the quadrant's own
+ * tone gives the breakup (so every tone in between keeps its own colour);
+ * the alpha's height makes the pores, within a few metres, as a bump map.
+ */
+const SKIN_FRAG = /* glsl */ `
+  uniform sampler2D uSkin;
+  uniform float uSkinOn;
+  vec3 skinToneF(float t) {
+    vec3 a = vec3(0.72, 0.47, 0.37);
+    vec3 b = vec3(0.47, 0.27, 0.17);
+    vec3 c = vec3(0.13, 0.072, 0.045);
+    return t < 0.55 ? mix(a, b, t / 0.55) : mix(b, c, (t - 0.55) / 0.45);
+  }
+  /** The quadrant a tone reads (0 to 3, row by row) and its centre tone. */
+  float skinQuad(float t) { return floor(clamp(t, 0.0, 0.999) * 4.0); }
+  vec2 skinAtlasUv(float q, vec2 uv) { return (clamp(uv, 0.0, 1.0) * 0.984 + 0.008 + vec2(mod(q, 2.0), floor(q * 0.5))) * 0.5; }
+  vec3 perturbSkin(vec3 surf_pos, vec3 surf_norm, vec2 dHdxy, float faceDirection) {
+    vec3 vSigmaX = normalize(dFdx(surf_pos.xyz));
+    vec3 vSigmaY = normalize(dFdy(surf_pos.xyz));
+    vec3 R1 = cross(vSigmaY, surf_norm);
+    vec3 R2 = cross(surf_norm, vSigmaX);
+    float fDet = dot(vSigmaX, R1) * faceDirection;
+    vec3 vGrad = sign(fDet) * (dHdxy.x * R1 + dHdxy.y * R2);
+    return normalize(abs(fDet) * surf_norm - vGrad);
+  }`;
+/**
+ * In color_fragment (three's main reads the colour, then the roughness, then
+ * the normal): the atlas sample, the colour over the tone, the roughness and
+ * the pores' slope; SKIN_NORMAL bends the normal by that slope once it exists.
+ */
+const SKIN_COLOR = /* glsl */ `
+  float skinOn = uSkinOn * step(0.0, vSkinT);
+  vec4 skinS = vec4(0.5);
+  float skinRough = vRough;
+  vec2 skinDH = vec2(0.0);
+  if (skinOn > 0.5) {
+    float q = skinQuad(vSkinT);
+    vec2 sUv = skinAtlasUv(q, vSkinUv);
+    skinS = texture2D(uSkin, sUv);
+    // The quadrant's own tone out, the figure's own in: the atlas gives the breakup, the figure its colour.
+    vec3 tone = max(skinToneF((q + 0.5) * 0.25), vec3(0.01));
+    skinS.rgb /= tone;
+    // The pores' height is the colour's luminance over the tone's (the pits a tenth darker): a bump within a few metres.
+    float near = smoothstep(7.0, 2.0, length(vViewPosition));
+    vec2 dSTdx = dFdx(sUv);
+    vec2 dSTdy = dFdy(sUv);
+    float toneLum = dot(tone, vec3(0.3333));
+    float h = dot(skinS.rgb, vec3(0.3333));
+    float hx = dot(texture2D(uSkin, sUv + dSTdx).rgb, vec3(0.3333)) / toneLum - h;
+    float hy = dot(texture2D(uSkin, sUv + dSTdy).rgb, vec3(0.3333)) / toneLum - h;
+    skinDH = vec2(hx, hy) * (0.006 * near);
+    // Matte in the pores, a little smoother on the plateaus, never a gloss.
+    skinRough = mix(0.66, 0.5, smoothstep(0.86, 1.0, h)) + 0.04 * (1.0 - near);
+  }`;
+const SKIN_NORMAL = /* glsl */ `
+  if (skinOn > 0.5) normal = perturbSkin(-vViewPosition, normal, skinDH, faceDirection);`;
+
+/** Wires FIGURE_GLSL into a standard material's shader: `rig` is GLSL returning the instance's Rig; `extra` runs after (sees code); `skin` adds the atlas (the close level). */
+export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: string, extra = '', extraFrag = '', skin = false): void {
+  if (skin) {
+    sh.uniforms.uSkin = SKIN_UNIFORMS.uSkin;
+    sh.uniforms.uSkinOn = SKIN_UNIFORMS.uSkinOn;
+  }
   sh.vertexShader = sh.vertexShader
     .replace(
       '#include <common>',
@@ -2039,10 +2131,11 @@ export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: 
     )
     .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
   sh.fragmentShader = sh.fragmentShader
-    .replace('#include <common>', `#include <common>\n${FIGURE_FRAG}\n${LAMP_FRAG}\n${extraFrag}`)
+    .replace('#include <common>', `#include <common>\n${FIGURE_FRAG}\n${LAMP_FRAG}\n${skin ? SKIN_FRAG : ''}\n${extraFrag}`)
     .replace(
       '#include <normal_fragment_begin>',
       `#include <normal_fragment_begin>
+      ${skin ? SKIN_NORMAL : ''}
       if (vCloth > 0.5) {
         float near = smoothstep(14.0, 3.0, length(vViewPosition));
         float wv = sin(vObj.y * 620.0) * sin((vObj.x + vObj.z) * 540.0) + 0.5 * sin(vObj.y * 1900.0 + vObj.x * 1100.0);
@@ -2053,6 +2146,7 @@ export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: 
       '#include <color_fragment>',
       `#include <color_fragment>
       diffuseColor.rgb = vAlb;
+      ${skin ? `${SKIN_COLOR}\n      if (skinOn > 0.5) diffuseColor.rgb *= skinS.rgb;` : ''}
       if (vEye > 0.5) {
         float r = length(vec2(vObj.y - ${EYE_AT[1].toFixed(4)}, abs(vObj.z) - ${EYE_AT[2].toFixed(4)}));
         float front = smoothstep(${(EYE_AT[0] + 0.006).toFixed(4)}, ${(EYE_AT[0] + 0.0095).toFixed(4)}, vObj.x);
@@ -2060,7 +2154,7 @@ export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: 
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.004), front * (1.0 - smoothstep(0.0022, 0.0028, r)));
       }`,
     )
-    .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
+    .replace('#include <roughnessmap_fragment>', skin ? 'float roughnessFactor = skinRough;' : 'float roughnessFactor = vRough;')
     .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
     .replace('#include <aomap_fragment>', 'reflectedLight.indirectDiffuse *= vAo;\nreflectedLight.indirectSpecular *= mix(0.3, 1.0, vAo);')
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LAMP_FRAG_MAIN}`);
@@ -2120,6 +2214,11 @@ const CROWD_RIG = /* glsl */ `
     // The whole body drops as the legs spread (so the planted foot stays down), and sways over the standing foot.
     R.drop = w * 0.86 * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow);
     R.sway = w * 0.022 * s + idle * 0.012 * slow;
+    // Seated on a bench (style 5): hips and knees bent, the hands on the knees, looking out from the seat.
+    if (style == 5) {
+      R.head = rotY(0.3 * sin(ph * 0.23 + aLook.y * 6.0)) * rotZ(-0.02);
+      sitDown(R, 1.0, 0.0);
+    }
     return R;
   }`;
 
@@ -2135,7 +2234,7 @@ function figureMaterial(level: 'hi' | 'lo' | 'far', inBand?: { value: THREE.Vect
     if (level === 'hi') dissolve(sh, LIFE_LOD.close, 'near');
     else if (level === 'lo') dissolve(sh, LIFE_LOD.close, 'far', LIFE_LOD.person, inBand);
     else dissolve(sh, LIFE_LOD.person, 'far', LIFE_LOD.crowdEnd);
-    figureShader(sh, CROWD_RIG);
+    figureShader(sh, CROWD_RIG, '', '', level === 'hi');
   };
   m.customProgramCacheKey = () => `palimpsest-ambient-figure-${level}`;
   return m;
@@ -2317,8 +2416,12 @@ export interface Ambient {
   setQuality(q: 'high' | 'medium'): void;
   /** The plazas, courts and sites standing now: no car's lane crosses one and no pavement walker enters a court or a site. */
   setPlazas(plazas: readonly AmbientPlaza[]): void;
+  /** setPlazas in steps (steps.ts): the traffic and the crowd run on what stands until the new streets are installed. */
+  setPlazasSteps(plazas: readonly AmbientPlaza[]): Steps<void>;
   /** The network laid again (its extent grown): the streets inside its loop. */
   relay(net: Network): void;
+  /** relay in steps (steps.ts). */
+  relaySteps(net: Network): Steps<void>;
   /** Where the trams are now (scene.ts reads them off the transit vehicles): cars wait for one at its crossings. */
   setTrams(at: ReadonlyArray<V2>): void;
   /**
@@ -2326,6 +2429,16 @@ export interface Ambient {
    * a car follows one ahead in its lane and keeps out of a box one is in.
    */
   setCabs(at: ReadonlyArray<CabPose>): void;
+  /** The junctions with signals and the clock their lights run on (signals.ts): the persona cabs and walkers read the same lights. */
+  signals(): Signals;
+  /** Runs the lights on another clock that reads `t` now (scene.ts: the vehicles' clock, which the persona cabs plan by). */
+  syncSignals(t: number): void;
+  /**
+   * The nearest car ahead of a point going the same way in its lane, within
+   * `reach` metres: the gap to its rear and its speed (vehicles.ts: a
+   * persona cab queues behind it), or null.
+   */
+  carAhead(x: number, z: number, heading: number, reach: number): { gap: number; speed: number } | null;
   cars(): AmbientCar[];
   /** How many cars, moving and parked, the car buffers hold now (tests: every kept car has room). */
   carRoom(): number;
@@ -2334,6 +2447,8 @@ export interface Ambient {
   people(): AmbientPerson[];
   /** The street lamp that lights a point most (direction to it and strength), as the crowd is lit; people.ts lights the personas by it. */
   lampLight(x: number, y: number, z: number, out: [number, number, number, number]): void;
+  /** The street floor's height under a point (street.ts): the kerb's on a pavement, 0 on a road or a plaza; people.ts stands the personas on it. */
+  floorAt(x: number, z: number): number;
   view(camera: THREE.Camera): AmbientView;
   /** Holds the clock (captures). */
   hold(on: boolean): void;
@@ -2381,9 +2496,24 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   /** After a relay, until the streets are back to their numbers. */
   let refill = false;
   let roads: Roads;
+  /** The signalled junctions, as the persona cabs and walkers read them, on the clock the lights run on. */
+  let signalled: Signals;
+  /** The lights run this far ahead of the traffic's own clock (syncSignals: the vehicles' clock, so the cabs and the cars see one light). */
+  let signalShift = 0;
   let walk: Walkway;
   let cars: Car[] = [];
   let people: Person[] = [];
+  /** The street floor under a point: the pavement's step up, sinking to the plane over a plaza or a court as the kerb tiles do (street.ts floorStands). */
+  function floorAt(x: number, z: number): number {
+    let stands = 1;
+    for (const q of plazas) {
+      const r = q.court ?? PLAZA_R;
+      const d = q.court !== undefined ? Math.max(Math.abs(x - q.x), Math.abs(z - q.z)) : Math.hypot(x - q.x, z - q.z);
+      const t = clamp((d - (r - 1)) / 4, 0, 1);
+      stands = Math.min(stands, t * t * (3 - 2 * t));
+    }
+    return stands > 0 ? streetFloor(x, z) * stands : 0;
+  }
   /** Plaza walkers' lanterns and lamp posts, which they walk round. */
   let posts: V2[] = [];
   /** The street lamps, by block, as they stand now. */
@@ -2405,6 +2535,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
    * Shuffled once, so the quality keeps the first of them.
    */
   function layParked(): void {
+    finish(layParkedSteps());
+  }
+  /** layParked a street at a time (steps.ts); the parked cars standing now stay until the last step. */
+  function* layParkedSteps(): Steps<void> {
     const r = mulberry(seed * 4241 + 29);
     const inner = railHalf(net.blocks) + 2 * STREET_PITCH;
     const reach = inner + 3 * STREET_PITCH;
@@ -2428,6 +2562,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     // Past the walkers' pavements a car may stand with two wheels up on the kerb.
     const walked = tramHalf(net.blocks);
     for (let a = -reach; a <= reach + 1e-6; a += STREET_PITCH) {
+      yield;
       for (let b = -reach; b + STREET_PITCH <= reach + 1e-6; b += STREET_PITCH) {
         for (const along of ['x', 'z'] as Axis[]) {
           // The run from b to b + 80 along `along`, on the street at `a`.
@@ -2519,14 +2654,30 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
    * the rest go, and the streets refill out of sight (drift).
    */
   function lay(keep = false): void {
+    finish(laySteps(keep));
+  }
+  /**
+   * lay in steps (steps.ts): the roads and the walkway worked out off to the
+   * side, then installed together in one step, then the parked cars. The
+   * traffic and the crowd run on what stands until each is installed.
+   */
+  function* laySteps(keep = false): Steps<void> {
+    const r = mulberry(seed * 7919 + 17);
+    const nextRoads = layRoads(net, plazas, r);
+    yield;
+    const nextWalk = layWalkway(net, plazas, nextRoads);
+    yield;
     // The junctions are laid afresh: none of the old ones may linger as keys.
     inRoad.clear();
     const oldCars = keep ? cars : [];
     const oldPeople = keep ? people : [];
-    const r = mulberry(seed * 7919 + 17);
-    roads = layRoads(net, plazas, r);
+    roads = nextRoads;
+    signalled = signalsOf(
+      [...roads.junctions.values()].flatMap((j) => (j.signal ? [j.signal] : [])),
+      () => time + signalShift,
+    );
     layStreams(r);
-    walk = layWalkway(net, plazas, roads);
+    walk = nextWalk;
     posts = [];
     for (const p of plazas) {
       if (p.kind !== 'district' && p.kind !== 'civic') continue;
@@ -2537,7 +2688,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       if (p.kind === 'civic') for (const l of CIVIC_LAMPS) posts.push({ x: p.x + l.x, z: p.z + l.z });
     }
     layLamps();
-    layParked();
+    yield;
+    yield* layParkedSteps();
     if (!keep) {
       populate();
       return;
@@ -2728,7 +2880,25 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         const toTrack = Math.atan2(-nrm.z * lat, -nrm.x * lat);
         const along = Math.atan2(-t.z * lat, -t.x * lat);
         const placed: Array<[number, number]> = [];
+        // A few sit on the shelter's bench (transit.ts: along the shelter at BENCH.l from the line, its seat BENCH.y up), spaced along it.
+        const seats = BENCH.slots.filter(() => r() < 0.45).slice(0, Math.max(0, k - 1));
         for (let i = 0; i < k; i++) {
+          if (i < seats.length) {
+            const p = add(newPerson(nextPerson++, r));
+            if (!p) break;
+            const u = seats[i] + (r() - 0.5) * 0.12;
+            p.x = st.x + t.x * u + nrm.x * lat * BENCH.l;
+            p.z = st.z + t.z * u + nrm.z * lat * BENCH.l;
+            p.y = BENCH.y;
+            p.state = 'waiting';
+            p.face = toTrack + gauss(r) * 0.12;
+            p.yaw = p.face;
+            p.v = 0;
+            p.style = 5;
+            p.timer = 1e9;
+            placed.push([u, BENCH.l]);
+            continue;
+          }
           // Most wait by the shelter, under its canopy or at the edge before it; a few down the platform.
           let u = 0;
           let l = 0;
@@ -2993,7 +3163,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     // A car moving off along that street, its rear not yet clear of the crossing.
     for (const o of j.out) if (o.axis === crossed) for (const c of o.cars) if (c.v > 1 && c.s - c.len < 4 && c.s >= 0) return false;
     if (j.signal) {
-      const s = signalAt(j, time, XSIG);
+      const s = signalAt(j, time + signalShift, XSIG);
       return s.green === axis && !s.amber && s.left > need + ALL_RED;
     }
     // No signals: across a street with traffic only when nothing comes within 30 m.
@@ -3317,7 +3487,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   }
 
   function stepCars(dt: number): void {
-    env.t = time;
+    env.t = time + signalShift;
     gatherInRoad();
     for (const lane of roads.lanes) if (lane.cars.length > 1) lane.cars.sort(bySDesc);
     movedCars.length = 0;
@@ -3663,13 +3833,18 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       const walking = p.state === 'walking' || p.state === 'crossing';
       const wv = walking ? clamp(p.v / Math.max(0.3, p.pace * 0.5), 0, 1) : 0;
       const k = p.height / 1.75;
+      // On the ground (not a platform) a walker stands on the street floor: up the kerb on the pavements, down at the crossings.
+      if (p.y < 0.2) p.y = floorAt(p.x, p.z);
       pos.set(p.x, p.y, p.z);
       q.setFromAxisAngle(up, -p.yaw);
       m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * p.build), k, k * p.build));
       const stride = Math.asin(clamp((p.step * Math.max(0.55, wv)) / (2 * 0.86 * k), 0, 0.62));
       if (d < LIFE_LOD.person.far) {
         lampLight(lamps, p.x, p.y + 1.3, p.z, p.lamp);
-        if (close && d < LIFE_LOD.close.far) writePerson(closePeople, p, wv, stride);
+        if (close && d < LIFE_LOD.close.far) {
+          writePerson(closePeople, p, wv, stride);
+          loadSkin();
+        }
         if (!close || d > LIFE_LOD.close.near) writePerson(nearPeople, p, wv, stride);
         addShade(p.x, p.y, p.z, p.yaw, 0.62 * k, 0.5 * k * p.build);
       } else p.lamp[3] = 0;
@@ -3751,11 +3926,14 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       refill = true;
     },
     setPlazas(p) {
+      finish(this.setPlazasSteps(p));
+    },
+    *setPlazasSteps(p) {
       const next = [...p];
       if (!next.some((x) => x.kind === 'civic')) next.unshift({ x: 0, z: 0, kind: 'civic' });
       if (JSON.stringify(next) === JSON.stringify(plazas)) return;
       plazas = next;
-      lay(true);
+      yield* laySteps(true);
     },
     setTrams(at) {
       env.trams = at;
@@ -3763,21 +3941,49 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     setCabs(at) {
       env.cabs = at;
     },
+    signals: () => signalled,
+    carAhead(x, z, heading, reach) {
+      const hx = Math.cos(heading);
+      const hz = Math.sin(heading);
+      let best: { gap: number; speed: number } | null = null;
+      for (const c of cars) {
+        // Its rear: where a cab behind it would stop.
+        carPoint(c, c.len, REAR);
+        const rx = REAR.x - x;
+        const rz = REAR.z - z;
+        if (Math.abs(rx) > reach + 6 || Math.abs(rz) > reach + 6) continue;
+        const along = rx * hx + rz * hz;
+        if (along < -1 || along > reach) continue;
+        if (Math.abs(-rx * hz + rz * hx) > CAB_IN_LANE) continue;
+        // Going the same way (not crossing in a box, not oncoming).
+        const p = carPose(c);
+        if (Math.cos(p.yaw) * hx + Math.sin(p.yaw) * hz < 0.7) continue;
+        if (!best || along < best.gap) best = { gap: along, speed: c.v };
+      }
+      return best;
+    },
+    syncSignals(t) {
+      signalShift = t - time;
+    },
     relay(n) {
+      finish(this.relaySteps(n));
+    },
+    *relaySteps(n) {
       if (n.blocks === net.blocks && JSON.stringify(n.ranks) === JSON.stringify(net.ranks)) return;
       net = n;
-      lay(true);
+      yield* laySteps(true);
     },
     cars: () =>
       cars.map((c) => {
         const p = carPose(c);
         const m = c.s < 0 ? c.via : c.next;
-        return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time), width: c.width };
+        return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time + signalShift), width: c.width };
       }),
     carRoom: () => carCap,
     parked: () => parked.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, model: c.model, paint: [...c.paint] as [number, number, number], kerb: c.kerb })),
     people: () => people.map((p) => ({ id: p.id, state: p.state, x: p.x, z: p.z, yaw: p.yaw, speed: p.v, phase: p.phase % (Math.PI * 2), cadence: p.cadence, height: p.height, build: p.build, coat: [...p.coat] as [number, number, number], group: p.group })),
     lampLight: (x, y, z, out) => lampLight(lamps, x, y, z, out),
+    floorAt,
     view(camera) {
       void camera;
       let meshes = 0;

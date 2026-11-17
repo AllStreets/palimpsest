@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import type { Page } from 'playwright';
 
 import { SAMPLE_USED } from '../engine/sample.js';
-import { LIVE_JOB_STATUSES } from '../shared/market-rules.js';
+import { LIVE_JOB_STATUSES, runsHoldingSlots } from '../shared/market-rules.js';
 import type { Job, TreasuryView } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
@@ -57,8 +57,12 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     check((await page.locator('.runhead-link[data-route="treasury"]').getAttribute('aria-current')) === 'page', 'the running head marks Treasury');
     const five = sheet.locator('.meter[data-window="five"]');
     const seven = sheet.locator('.meter[data-window="seven"]');
-    check((await text(page, '.meter[data-window="five"] .meter-used')) === `${SAMPLE_USED.five}%`, `the five-hour meter reads the seeded ${SAMPLE_USED.five}% (${await text(page, '.meter[data-window="five"] .meter-used')})`);
-    check((await text(page, '.meter[data-window="seven"] .meter-used')) === '21%', `the seven-day meter reads the seeded 21% (${await text(page, '.meter[data-window="seven"] .meter-used')})`);
+    // The headline is the figure now (windowNowPct), the one Settings and the brief show for the same moment.
+    const usageNow = ((await page.evaluate(() => fetch('/api/usage').then((r) => r.json()))) as { now: { fiveHour: number | null; sevenDay: number | null } | null }).now;
+    const fiveNow = `${usageNow?.fiveHour ?? SAMPLE_USED.five}%`;
+    const sevenNow = `${usageNow?.sevenDay ?? 21}%`;
+    check((await text(page, '.meter[data-window="five"] .meter-used')) === fiveNow, `the five-hour meter reads ${fiveNow}, as Settings and the brief do (${await text(page, '.meter[data-window="five"] .meter-used')})`);
+    check((await text(page, '.meter[data-window="seven"] .meter-used')) === sevenNow, `the seven-day meter reads ${sevenNow}, as Settings and the brief do (${await text(page, '.meter[data-window="seven"] .meter-used')})`);
     for (const [name, m] of [['five-hour', five], ['seven-day', seven]] as const) {
       check((await m.locator('svg.meter-rule .meter-his').count()) === 1, `the ${name} meter draws his use`);
       check((await m.locator('svg.meter-rule .meter-city').count()) === 1, `the ${name} meter draws the city's share`);
@@ -108,7 +112,12 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     const onBoard = jobsNow.filter((j) => LIVE_JOB_STATUSES.includes(j.status) && !!j.runId).length;
     const runsLine = (await runningRow.locator('.now-runs').textContent()) ?? '';
     const said = Number((/^(\d+) runs? under way/.exec(runsLine) ?? [])[1] ?? (/^No run/.test(runsLine) ? 0 : -1));
-    check(onBoard > 0 && said === onBoard, `Running counts the same runs the job board counts (${said} against ${onBoard} on the board: ${runsLine})`);
+    // The books count the board's runs; the Running row counts only those that hold a slot (490ebce), so its runs
+    // line and its slots line agree. The sample's runs hold no lease, so here it reads "No run under way."
+    const tRun = await api<TreasuryView>(page, '/api/treasury');
+    const held = runsHoldingSlots(tRun.underWay, tRun.concurrency);
+    check(onBoard > 0 && tRun.underWay.total === onBoard, `the treasury's books count the same runs the job board counts (${tRun.underWay.total} against ${onBoard} on the board)`);
+    check(said === held.total, `Running counts the runs that hold a slot (${said} against ${held.total} held: ${runsLine})`);
     check(/^Slots the runner holds: Claude \d+ of \d+, local \d+ of \d+, API \d+\.$/.test(((await runningRow.locator('.now-slots-held').textContent()) ?? '').trim()), `and names the slots the runner holds apart (${await runningRow.locator('.now-slots-held').textContent()})`);
 
     // Spend by firm and by model, and the balances; every row opens to its credits entries.

@@ -6,6 +6,8 @@ Run headless (never with a UI):
     /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
         --python tools/kits/kits.py -- app/public/kits/kits.glb
 
+It then writes the trees (tools/kits/trees.py) to trees.glb beside it.
+
 Every piece is built from numbers below (no randomness without a fixed seed),
 so the same script always writes the same file. Pieces are authored in the
 three.js frame (x right, y up, z out of the face) and written to Blender as
@@ -622,39 +624,118 @@ def car():
     return p
 
 
-def bay():
-    """One storey of a three-sided oriel bay, a unit box: angled cheeks, a flat front, a sill course at its foot."""
+def lamp_post():
+    """A street lamp post, unit height (y -0.5..0.5, grid.ts scales it to 8 m), its plan in metres: a cast base with a
+    collar, a tapered shaft, a bracket arm reaching 1.3 m along +x and the lantern's housing over the lens at its end."""
     p = Piece()
-    back, front, fw = -0.5, 0.5, 0.3
-    pts = [(-0.5, back), (-fw, front), (fw, front), (0.5, back)]
+    H = 8.0
+    u = lambda m: -0.5 + m / H
+    # The base: a square plinth, then a round cast foot swelling into a collar, and the shaft rising from it.
+    # Kept lean (kits.glb has a size cap): six-sided turnings, one arm box, one housing box.
+    p.merge(lathe([(0.2, u(0.0)), (0.2, u(0.6)), (0.165, u(0.86)), (0.125, u(0.95))], 6))
+    p.merge(lathe([(0.125, u(0.95)), (0.095, u(3.5)), (0.07, u(7.6)), (0.078, u(7.74)), (0.0, u(7.9))], 6))
+    # The bracket: an arm leaving the shaft just under its top, rising a little to the housing.
+    p.merge(box(0.0, 1.3, u(7.8), u(7.92), -0.055, 0.055))
+    # The housing: a shallow cowl over the lens (grid.ts lays the lens itself, emissive, just under it).
+    p.merge(box(0.86, 1.76, u(7.86), u(8.04), -0.22, 0.22))
+    return p
+
+
+def lantern_post():
+    """A plaza lantern post, unit height like lamp_post: the same base and a shorter taper, and on top a four-sided lantern
+    cage with a pyramidal cap and a finial, round the lens grid.ts lays inside it."""
+    p = Piece()
+    H = 8.0
+    u = lambda m: -0.5 + m / H
+    p.merge(lathe([(0.2, u(0.0)), (0.2, u(0.6)), (0.165, u(0.86)), (0.125, u(0.95))], 6))
+    p.merge(lathe([(0.125, u(0.95)), (0.09, u(3.5)), (0.08, u(7.4)), (0.11, u(7.5)), (0.11, u(7.62))], 6))
+    # The cage: two crossed slim frames (four uprights seen from any side) and a pyramidal cap to a point.
+    p.merge(box(-0.28, 0.28, u(7.62), u(8.28), -0.02, 0.02))
+    p.merge(box(-0.02, 0.02, u(7.62), u(8.28), -0.28, 0.28))
+    p.merge(frustum(0.34, 0.0, u(8.28), u(8.7), top=False, n=4, rot=0.0))
+    return p
+
+
+BAY_PTS = [(-0.5, -0.5), (-0.3, 0.5), (0.3, 0.5), (0.5, -0.5)]
+BAY_GLASS = (-0.26, 0.32)
+
+
+def bay_faces():
+    """The three faces of the oriel's plan (angled cheeks, a flat front), each with its outward unit normal in the plan."""
     for k in range(3):
-        (x0, z0), (x1, z1) = pts[k], pts[k + 1]
-        p.quad((x0, -0.5, z0), (x1, -0.5, z1), (x1, 0.5, z1), (x0, 0.5, z0))
-        # The sill course, a little proud, its top catching the light.
+        (x0, z0), (x1, z1) = BAY_PTS[k], BAY_PTS[k + 1]
         nx, nz = (z1 - z0), -(x1 - x0)
         ln = math.hypot(nx, nz)
-        nx, nz = nx / ln * 0.06, nz / ln * 0.06
-        p.quad((x0 + nx, -0.5, z0 + nz), (x1 + nx, -0.5, z1 + nz), (x1 + nx, -0.4, z1 + nz), (x0 + nx, -0.4, z0 + nz), tone=0.9)
-        p.quad((x0, -0.4, z0), (x1, -0.4, z1), (x1 + nx, -0.4, z1 + nz), (x0 + nx, -0.4, z0 + nz), tone=0.9)
-    idx = [p.vert((x, 0.5, z)) for x, z in pts]
-    p.face(list(reversed(idx)))
+        yield (x0, z0), (x1, z1), (nx / ln, nz / ln)
+
+
+def bay():
+    """One storey of a three-sided oriel bay, a unit box: angled cheeks and a flat front, each with a sill course at its
+    foot and a raised, bevelled apron panel under the glass. No top: the storey above or the lead roof (bay_roof) covers it."""
+    p = Piece()
+    for (x0, z0), (x1, z1), (nx, nz) in bay_faces():
+        p.quad((x0, -0.5, z0), (x1, -0.5, z1), (x1, 0.5, z1), (x0, 0.5, z0))
+        # The sill course, a little proud, its top catching the light.
+        sx, sz = nx * 0.06, nz * 0.06
+        p.quad((x0 + sx, -0.5, z0 + sz), (x1 + sx, -0.5, z1 + sz), (x1 + sx, -0.44, z1 + sz), (x0 + sx, -0.44, z0 + sz), tone=0.9)
+        p.quad((x0, -0.44, z0), (x1, -0.44, z1), (x1 + sx, -0.44, z1 + sz), (x0 + sx, -0.44, z0 + sz), tone=0.9)
+        # The apron panel: a raised field between the sill and the glass, bevelled back to the face on all four sides.
+        at = lambda t, y, d: (x0 + (x1 - x0) * t + nx * d, y, z0 + (z1 - z0) * t + nz * d)
+        i0, i1, ya, yb, d, b = 0.12, 0.88, -0.41, -0.29, 0.025, 0.02
+        # Smooth, so the field and its bevels share their vertices and the panel's edges soften like painted timber.
+        p.quad(at(i0 + b, ya + b, d), at(i1 - b, ya + b, d), at(i1 - b, yb - b, d), at(i0 + b, yb - b, d), tone=0.88, smooth=True)
+        p.quad(at(i0, ya, 0), at(i1, ya, 0), at(i1 - b, ya + b, d), at(i0 + b, ya + b, d), tone=1.0, smooth=True)
+        p.quad(at(i1, ya, 0), at(i1, yb, 0), at(i1 - b, yb - b, d), at(i1 - b, ya + b, d), tone=0.82, smooth=True)
+        p.quad(at(i1, yb, 0), at(i0, yb, 0), at(i0 + b, yb - b, d), at(i1 - b, yb - b, d), tone=0.72, smooth=True)
+        p.quad(at(i0, yb, 0), at(i0, ya, 0), at(i0 + b, ya + b, d), at(i0 + b, yb - b, d), tone=0.82, smooth=True)
     return p
 
 
 def bay_glass():
-    """One storey of the bay's windows: a pane on each face, set just proud of the bay."""
+    """One storey of the bay's windows: a pane on each face, set just proud of the bay, from the apron to the head."""
     p = Piece()
-    back, front, fw = -0.5, 0.5, 0.3
-    pts = [(-0.5, back), (-fw, front), (fw, front), (0.5, back)]
-    for k in range(3):
-        (x0, z0), (x1, z1) = pts[k], pts[k + 1]
-        nx, nz = (z1 - z0), -(x1 - x0)
-        ln = math.hypot(nx, nz)
-        nx, nz = nx / ln * 0.01, nz / ln * 0.01
+    for (x0, z0), (x1, z1), (nx, nz) in bay_faces():
+        nx, nz = nx * 0.01, nz * 0.01
         i = 0.14
         ax, az = x0 + (x1 - x0) * i + nx, z0 + (z1 - z0) * i + nz
         bx, bz = x0 + (x1 - x0) * (1 - i) + nx, z0 + (z1 - z0) * (1 - i) + nz
-        p.quad((ax, -0.3, az), (bx, -0.3, bz), (bx, 0.32, bz), (ax, 0.32, az))
+        p.quad((ax, BAY_GLASS[0], az), (bx, BAY_GLASS[0], bz), (bx, BAY_GLASS[1], bz), (ax, BAY_GLASS[1], az))
+    return p
+
+
+def bay_foot():
+    """The bay's foot under its lowest storey, a unit box (lots.ts BAY_FOOT tall): the soffit closing the bay's plan from
+    below, and two corbels carrying it, each a bracket curving out from the wall to the soffit."""
+    p = Piece()
+    idx = [p.vert((x, 0.5, z), 0.8) for x, z in BAY_PTS]
+    p.face(idx)
+    # The bracket's profile in (z, y) from the soffit's outer edge back and down to the wall.
+    prof = [(0.34, 0.5), (0.3, 0.3), (0.12, -0.02), (-0.22, -0.32), (-0.5, -0.5)]
+    for cx in (-0.3, 0.3):
+        xa, xb = cx - 0.05, cx + 0.05
+        side = [(-0.5, 0.5)] + prof
+        p.face([p.vert((xa, y, z), 0.85) for z, y in reversed(side)])
+        p.face([p.vert((xb, y, z), 0.85) for z, y in side])
+        for (za, ya), (zb, yb) in zip(prof, prof[1:]):
+            p.quad((xb, ya, za), (xa, ya, za), (xa, yb, zb), (xb, yb, zb), tone=0.9, smooth=True)
+    return p
+
+
+def bay_roof():
+    """The bay's lead roof over its top storey, a unit box (lots.ts BAY_ROOF tall): a fascia round the three faces and
+    the lead sloping up from it to the wall, with a rolled seam down the middle of the front."""
+    p = Piece()
+    eave = -0.15
+    for (x0, z0), (x1, z1), (nx, nz) in bay_faces():
+        p.quad((x0, -0.5, z0), (x1, -0.5, z1), (x1, eave, z1), (x0, eave, z0), tone=0.75)
+    # The front's slope to the ridge along the wall, in two sheets with a rolled seam between.
+    (lx, lz), (rx, rz) = BAY_PTS[1], BAY_PTS[2]
+    p.quad((lx, eave, lz), (0.0, eave, lz), (0.0, 0.5, -0.5), (-0.3, 0.5, -0.5), smooth=False)
+    p.quad((0.0, eave, lz), (rx, eave, rz), (0.3, 0.5, -0.5), (0.0, 0.5, -0.5), smooth=False)
+    p.quad((-0.012, eave, lz), (0.012, eave, lz), (0.012, 0.52, -0.5), (-0.012, 0.52, -0.5))
+    # The cheeks' slopes, from their eaves up to the ridge's ends.
+    p.tri((-0.5, eave, -0.5), (lx, eave, lz), (-0.3, 0.5, -0.5))
+    p.tri((rx, eave, rz), (0.5, eave, -0.5), (0.3, 0.5, -0.5))
     return p
 
 
@@ -670,13 +751,13 @@ def chamfer_box(c):
         p.quad((x1, -0.5, z1), (x0, -0.5, z0), (x0, 0.5, z0), (x1, 0.5, z1))
     top = [p.vert((x, 0.5, z)) for x, z in pts]
     p.face(list(reversed(top)))
-    bot = [p.vert((x, -0.5, z)) for x, z in pts]
-    p.face(bot)
+    # No bottom: a wall stands on the ground or on the tier under it.
     return p
 
 
-def round_box(r, seg=5):
-    """A unit box with its four vertical edges rounded to radius `r` (a fraction of the side): a streamline corner."""
+def round_box(r, seg=5, bottom=True):
+    """A unit box with its four vertical edges rounded to radius `r` (a fraction of the side): a streamline corner.
+    The ambient wall drops its bottom (never seen); the vehicles' blocks keep theirs."""
     p = Piece()
     h = 0.5
     pts = []
@@ -690,8 +771,9 @@ def round_box(r, seg=5):
         p.quad((x1, -0.5, z1), (x0, -0.5, z0), (x0, 0.5, z0), (x1, 0.5, z1), smooth=True)
     top = [p.vert((x, 0.5, z)) for x, z in pts]
     p.face(list(reversed(top)))
-    bot = [p.vert((x, -0.5, z)) for x, z in pts]
-    p.face(bot)
+    if bottom:
+        bot = [p.vert((x, -0.5, z)) for x, z in pts]
+        p.face(bot)
     return p
 
 
@@ -918,9 +1000,13 @@ def build():
     add('rooftop_unit', rooftop_unit(), True)
     add('car', car(), True)
     add('bay', bay(), True)
+    add('lamp_post', lamp_post())
+    add('lantern_post', lantern_post())
     add('bay_glass', bay_glass())
+    add('bay_foot', bay_foot(), True)
+    add('bay_roof', bay_roof(), True)
     add('chamfer_box', chamfer_box(0.12))
-    add('round_box', round_box(0.16))
+    add('round_box', round_box(0.16, bottom=False))
 
 
 def to_blender(name, piece, colours):
@@ -1193,8 +1279,41 @@ def main():
         export_cameras=False,
         export_lights=False,
     )
+    slim_glb(out)
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in bpy.context.scene.objects)
     print(f'kits: {len(PIECES)} pieces, {tris} triangles -> {out}')
+    # The trees go in their own file beside it (tools/kits/trees.py; kits.glb has no room under its cap).
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import trees
+    trees.write(os.path.join(os.path.dirname(os.path.abspath(out)), 'trees.glb'))
+
+
+def slim_glb(path):
+    """Drops from the GLB's JSON what app/src/city/kits.ts never reads (mesh names, buffer view targets, the generator
+    string): the same geometry, a few KB lighter under the file's cap."""
+    import json
+    import struct
+    with open(path, 'rb') as f:
+        data = f.read()
+    magic, version, _length = struct.unpack_from('<III', data, 0)
+    assert magic == 0x46546C67
+    json_len, json_type = struct.unpack_from('<II', data, 12)
+    assert json_type == 0x4E4F534A
+    doc = json.loads(data[20:20 + json_len])
+    rest = data[20 + json_len:]
+    doc.get('asset', {}).pop('generator', None)
+    for m in doc.get('meshes', []):
+        m.pop('name', None)
+    for bv in doc.get('bufferViews', []):
+        bv.pop('target', None)
+    for sc in doc.get('scenes', []):
+        sc.pop('name', None)
+    body = json.dumps(doc, separators=(',', ':')).encode()
+    body += b' ' * (-len(body) % 4)
+    out = struct.pack('<III', magic, version, 12 + 8 + len(body) + len(rest)) + struct.pack('<II', len(body), json_type) + body + rest
+    with open(path, 'wb') as f:
+        f.write(out)
 
 
 main()

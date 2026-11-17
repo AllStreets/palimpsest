@@ -1,32 +1,42 @@
 import * as THREE from 'three';
 
-import { reserves, type CollarPlaza } from './collar';
-import { onExchange } from './exchange';
-import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade';
-import { kitShared } from './kits';
+import { cancelRemerges, clusterCulling, remergeOwner, scheduleRemerge } from './batch.js';
+import { RESERVE_RADIUS, reserves, type CollarPlaza } from './collar.js';
+import { onExchange } from './exchange.js';
+import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade.js';
+import { kitShared } from './kits.js';
 import { lightsOutEmitter } from './lightsout.js';
-import { AMBIENT_LOD, AO_NEAR, boxDistance, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
+import { AMBIENT_LOD, AO_NEAR, boxDistance, frustumBlocks, frustumDelta, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
 import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, farLotStands, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLotStands, farLots, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, plotRise, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
 import { inChannel } from '../../../shared/commute.js';
-import { materials } from './materials';
+import { materials } from './materials.js';
 import { AWNING, STRIPED } from './shopfronts.js';
+import { finish, type Steps } from './steps.js';
+import { ROOF_TREE_RADIUS, roofTree, streetTreeSpots, type TreeSpot } from './trees.js';
 
-export { BLOCK, LAMP_EDGE, LAMP_OFFSETS, PITCH, STREET } from './lots';
+export { streetTreeSpots, STREET_TREE_RADIUS } from './trees.js';
+export { BLOCK, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, LAMP_EDGE, LAMP_OFFSETS, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, STREET } from './lots.js';
 
 /** Blocks within this many of the centre (Chebyshev) carry bays and rooftop units; past it they would be sub-pixel. */
 export const DETAIL_RADIUS = 10;
-/** Inside this radius the street grid gives way to an open paved plaza with no street lamps. */
-export const PLAZA_RADIUS = 72;
-/** Lanterns ring each plaza at this radius. */
-export const PLAZA_LAMP_RING = 66;
-export const PLAZA_LAMPS = 24;
-/** Lit bollards ring each district's plinth at this radius. */
-export const BOLLARD_RING = 36;
-export const BOLLARDS = 20;
 
 /** A plaza: a district (with its root's height, so the blocks round it stay under the root), a site, or the civic plaza. */
 export type Plaza = CollarPlaza;
+
+/** A standing lot as the tools read it: where it is, its plan and height, its type, its street fronts, its cut corner and its style. */
+export interface LotSummary {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+  archetype: Archetype;
+  front: string[];
+  style: [number, number, number, number];
+  cut: boolean;
+  bays: number;
+}
 
 export interface Grid {
   group: THREE.Group;
@@ -34,20 +44,31 @@ export interface Grid {
   blockers: THREE.Object3D[];
   /** Rebuilds the skyline and lamps around these plazas (the civic plaza at the origin is always kept). */
   setPlazas(plazas: Plaza[]): void;
+  /** True while a rebuild is under way or a freed plot's blocks are still rising. */
+  rising(): boolean;
+  /** setPlazas a row of blocks at a time (steps.ts); the copies keep drawing what they hold until the last step. */
+  setPlazasSteps(plazas: Plaza[]): Steps<void>;
   /** Building bodies standing now, near city and far ring together (tests and debugging). */
   buildings(): number;
+  /** The standing lots whose centres lie within `r` of a point, as they are built now (the perf and UI tools' framing). */
+  lots(x: number, z: number, r: number): LotSummary[];
   /** Draws these lots on their own, outside the city (the ambient swatch board), and returns the group holding them. */
   board(lots: Lot[]): { group: THREE.Group; dispose(): void };
   /**
    * Follows the eye and the shadow's centre: the roof kit near the eye, the
-   * blocks the AO can still see and the blocks in the sun's shadow column.
-   * Returns true when what casts into the shadow map changed.
+   * blocks the AO can still see and the blocks in the sun's shadow column;
+   * given the eye's camera, the view and the AO hold only the blocks its
+   * frustum meets (Task 12). Returns true when what casts into the shadow
+   * map changed.
    */
-  update(eye: THREE.Vector3, shadowTarget: THREE.Vector3): boolean;
-  /** Instances each pass's copies hold now (tests and debugging). */
-  lod(): { near: number; shadow: number; ao: number };
+  update(eye: THREE.Vector3, shadowTarget: THREE.Vector3, camera?: THREE.Camera, now?: number): boolean;
+  /** Instances each pass's copies hold now, the view's among them, and the city-wide set they are taken from (tests and debugging). */
+  lod(): { near: number; shadow: number; ao: number; view: number; viewWrites: number; city: number; viewFills: number };
+  /** The trees the city plants as it stands now (trees.ts draws them): the street trees and the roof gardens' trees. */
+  treeSpots(): TreeSpot[];
   dispose(): void;
 }
+
 
 /** The sun's shadow camera as scene.ts sets it up: the ambient shadow copies carry the blocks inside it. */
 export interface ShadowBox {
@@ -57,17 +78,6 @@ export interface ShadowBox {
   near: number;
   far: number;
 }
-
-/**
- * Lanterns line a quarter's court this far in from its edge, every
- * COURT_LANTERN_STEP metres out to COURT_LANTERN_REACH either side of the
- * centre line (past it the towers stand).
- */
-export const COURT_LANTERN_INSET = 5;
-export const COURT_LANTERN_STEP = 16;
-export const COURT_LANTERN_REACH = 32;
-/** No lantern stands within this of the court's centre line on its south edge, where the firm's name plinth is. */
-export const COURT_PLINTH_CLEAR = 20;
 
 /** True on a plaza's paving: within PLAZA_RADIUS of a round plaza's centre, or on a quarter's court. */
 function paved(x: number, z: number, plazas: Plaza[]): boolean {
@@ -209,16 +219,17 @@ function bayPaneMaterial(base: THREE.MeshStandardMaterial): THREE.MeshStandardMa
         float upright = 1.0 - bayBox(fract(vPaneU / 0.5), 0.05, 0.95, 0.01);
         float rail = bayBox(vPaneP.y, -0.005, 0.025, 0.004);
         float head = step(0.27, vPaneP.y);
-        float sill = step(vPaneP.y, -0.25);
+        float sill = step(vPaneP.y, -0.21);
         float frame = clamp(upright + rail + head + sill, 0.0, 1.0);
         float drop = vPaneH < 0.3 ? 0.25 + 0.4 * fract(vPaneH * 7.0) : 0.0;
-        float blind = step(0.32 - drop * 0.62, vPaneP.y) * (1.0 - head);
+        float blind = step(0.32 - drop * 0.58, vPaneP.y) * (1.0 - head);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.4, 0.36), frame);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.5, 0.46, 0.4), blind * (1.0 - frame));
         vBayFrame = frame;
         vBayBlind = blind;`,
       )
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= (1.0 - vBayFrame) * mix(1.0, 0.3, vBayBlind) * (0.55 + 0.7 * fract(vPaneH * 3.0));')
+      // The room behind the panes: its ceiling light falls toward the sill, so a bay's glass is never a flat slab, lit or not.
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= (1.0 - vBayFrame) * mix(1.0, 0.3, vBayBlind) * (0.55 + 0.7 * fract(vPaneH * 3.0)) * (0.55 + 0.75 * smoothstep(-0.26, 0.32, vPaneP.y));')
       .replace('void main() {', 'float vBayFrame = 0.0;\nfloat vBayBlind = 0.0;\nvoid main() {');
   };
   return m;
@@ -301,8 +312,10 @@ function awningGeometry(): THREE.BufferGeometry {
   return g;
 }
 
-type PartBatches = Record<Exclude<PartKind, `wall:${string}`>, Batch>;
+type PartBatches = Record<Exclude<PartKind, `wall:${string}` | 'tree'>, Batch>;
 
+/** The lamp posts' own two levels: the kit post this near the eye, the square post and box arm beyond (a shorter band than the roof kit's, as a post is slimmer). */
+export const LAMP_LOD = { near: 200, far: 260 } as const;
 /** The roof kit parts drawn at two levels (lod.ts AMBIENT_LOD): the kit near the eye, a box of its bulk farther off. */
 const HEAVY = ['bulkhead', 'penthouse', 'screen', 'unit', 'car', 'tank', 'tankCap', 'stand'] as const;
 type Heavy = (typeof HEAVY)[number];
@@ -332,13 +345,17 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const need = new Map<PartKind, number>();
   const count = (k: PartKind): void => void need.set(k, (need.get(k) ?? 0) + 1);
   for (let i = -radius; i <= radius; i++) for (let j = -radius; j <= radius; j++) for (const lot of blockLots(i, j)) for (const p of lotParts(lot)) count(p.kind);
-  for (let i = -farRadius; i <= farRadius; i++) for (let j = -farRadius; j <= farRadius; j++) if (Math.max(Math.abs(i), Math.abs(j)) > radius) count(`wall:${farLot(i, j).archetype}`);
+  for (let i = -farRadius; i <= farRadius; i++) {
+    for (let j = -farRadius; j <= farRadius; j++) {
+      if (Math.max(Math.abs(i), Math.abs(j)) <= radius) continue;
+      for (const lot of farLots(i, j)) for (const p of lotParts(lot)) if (p.kind.startsWith('wall:')) count(p.kind);
+    }
+  }
   const cap = (k: PartKind): number => Math.ceil((need.get(k) ?? 0) * 1.3) + 64;
 
   const box = new THREE.BoxGeometry(1, 1, 1);
   const stackGeo = new THREE.CylinderGeometry(0.8, 1, 1, 10);
   const prismGeo = prismGeometry();
-  const treeGeo = new THREE.IcosahedronGeometry(1, 0);
   // The Blender roof and massing kit (kits.py): timber water tanks on braced stands, bulkheads with copings and
   // doors, louvred penthouses, finned plant screens, rooftop units, cars, oriel bays and cut-corner walls.
   // The tank and its roof are authored at radius 0.5 and drawn at the radius-1 scale the cylinders used.
@@ -352,9 +369,13 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const kitCar = kitShared('car');
   const kitBay = kitShared('bay');
   const kitBayGlass = kitShared('bay_glass');
+  const kitBayFoot = kitShared('bay_foot');
+  const kitBayRoof = kitShared('bay_roof');
   const kitChamfer = kitShared('chamfer_box');
   const kitRound = kitShared('round_box');
   const facadeMats = Object.fromEntries(ARCHETYPES.map((a) => [a, facadeMaterial(a)])) as Record<Archetype, THREE.MeshStandardMaterial>;
+  // The cut-corner walls take the same program with CUT set (facade.ts): their windows map by arc length round the cut.
+  const cutMats = Object.fromEntries(ARCHETYPES.map((a) => [a, facadeMaterial(a, a === 'midcentury' ? 'round' : 'chamfer')])) as Record<Archetype, THREE.MeshStandardMaterial>;
   const trimMat = trimMaterial();
   const roofboxMat = roofboxMaterial();
   // Weathered cedar staves: grey-brown, not new timber.
@@ -364,17 +385,18 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const kitMetal = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.45, vertexColors: true });
   const kitPaint = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.32, metalness: 0.5, vertexColors: true, envMapIntensity: 1.4 });
   const kitBayMat = bayBodyMaterial();
+  // The bay's lead roof: weathered grey lead, a little sheen.
+  const leadMat = new THREE.MeshStandardMaterial({ color: 0x4a4d52, roughness: 0.5, metalness: 0.35, vertexColors: true });
   const sawMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.35 });
   // Clerestory and sawtooth glass: lit ones glow warm (HDR, so bloom finds them), dark ones mirror the sky.
   // Lit glass over a warm room, glossy enough to hold a little of the sky, rather than a flat orange panel.
   const glazeLitMat = new THREE.MeshStandardMaterial({ color: 0x0a0806, roughness: 0.1, metalness: 0, envMapIntensity: 1.2, emissive: new THREE.Color(1.0, 0.64, 0.36), emissiveIntensity: 0.5 });
   // Unlit glass still holds a little of the room behind it: without the faint warmth, a stack of dark oriel bays read
   // as flat black slabs down a street front (AUD-C).
-  const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.12, metalness: 0.25, envMapIntensity: 1.5, emissive: new THREE.Color(0.25, 0.19, 0.13), emissiveIntensity: 0.16 });
+  const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.12, metalness: 0.25, envMapIntensity: 1.5, emissive: new THREE.Color(0.3, 0.28, 0.26), emissiveIntensity: 0.26 });
   const bayLitMat = bayPaneMaterial(glazeLitMat);
   const bayDarkMat = bayPaneMaterial(glazeDarkMat);
   const planterMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.95 });
-  const treeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
   const deckLightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.3, 2.5) });
   // Awning cloth: matte canvas, seen from under as much as from above, in each front's own colour (instance colour).
   const awningMat = awningMaterial();
@@ -383,7 +405,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   type Batches = { walls: Record<Archetype, Batch>; cuts: Record<Archetype, Batch>; parts: PartBatches };
   function batchesFor(capOf: (k: PartKind) => number, shadows: boolean, cutOf: (a: Archetype) => number): Batches {
     const walls = Object.fromEntries(ARCHETYPES.map((a) => [a, new Batch(box, facadeMats[a], capOf(`wall:${a}`), shadows, true)])) as Record<Archetype, Batch>;
-    const cuts = Object.fromEntries(ARCHETYPES.map((a) => [a, new Batch(a === 'midcentury' ? kitRound : kitChamfer, facadeMats[a], cutOf(a), shadows, true)])) as Record<Archetype, Batch>;
+    const cuts = Object.fromEntries(ARCHETYPES.map((a) => [a, new Batch(a === 'midcentury' ? kitRound : kitChamfer, cutMats[a], cutOf(a), shadows, true)])) as Record<Archetype, Batch>;
     const parts: PartBatches = {
       trim: new Batch(box, trimMat, capOf('trim'), shadows),
       roofbox: new Batch(box, roofboxMat, capOf('roofbox'), shadows),
@@ -395,6 +417,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       bay: new Batch(kitBay, kitBayMat, capOf('bay'), shadows),
       bayGlass: new Batch(kitBayGlass, bayDarkMat, capOf('bayGlass'), false),
       bayLit: new Batch(kitBayGlass, bayLitMat, capOf('bayLit'), false),
+      bayFoot: new Batch(kitBayFoot, kitBayMat, capOf('bayFoot'), shadows),
+      bayRoof: new Batch(kitBayRoof, leadMat, capOf('bayRoof'), shadows),
       tank: new Batch(kitTank, tankMat, capOf('tank'), shadows),
       tankCap: new Batch(kitCap, M.darkMetal, capOf('tankCap'), shadows),
       stand: new Batch(kitStand, M.darkMetal, capOf('stand'), shadows),
@@ -403,7 +427,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       glazeLit: new Batch(box, glazeLitMat, capOf('glazeLit'), false),
       glazeDark: new Batch(box, glazeDarkMat, capOf('glazeDark'), false),
       planter: new Batch(box, planterMat, capOf('planter'), false),
-      tree: new Batch(treeGeo, treeMat, capOf('tree'), shadows),
       deckLight: new Batch(box, deckLightMat, capOf('deckLight'), false),
       awning: new Batch(awningGeo, awningMat, capOf('awning'), shadows),
       pole: new Batch(box, M.darkMetal, capOf('pole'), false),
@@ -432,8 +455,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   };
   const proxyGeos: THREE.BufferGeometry[] = [];
   const lodMats: THREE.Material[] = [];
-  const lod = <T extends THREE.Material>(m: T, level: 'near' | 'far'): T => {
-    const l = lodMaterial(m, level);
+  const lod = <T extends THREE.Material>(m: T, level: 'near' | 'far', band: { near: number; far: number } = AMBIENT_LOD): T => {
+    const l = lodMaterial(m, level, band);
     lodMats.push(l);
     return l;
   };
@@ -471,15 +494,18 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     parts[k] = new Batch(proxyOf(k), lod(KIT[k].mat, 'far'), kitPools[k].mesh.instanceMatrix.count, KIT[k].shadow);
   }
 
-  // Street lamp: a slim pole, an arm reaching over the road, a housing and a sodium lens underneath.
+  // Street lamp: a post from the kit (kits.py lamp_post: a cast base, a tapered shaft, a bracket arm and the lantern's
+  // housing; lantern_post for the plazas' lanterns, a cage on top), and a sodium lens under the housing.
   const lampCap = blocks * LAMP_OFFSETS.length * 2 + 64 * PLAZA_LAMPS;
-  const poleGeo = new THREE.CylinderGeometry(0.09, 0.14, 1, 8);
-  // A pole's round shaft draws near the eye (lod.ts); farther off a square post of its size stands in for it, which
-  // still reads as the street's line of lamp posts from home.
+  const poleGeo = kitShared('lamp_post');
+  const lanternGeo = kitShared('lantern_post');
+  // The kit post draws near the eye (lod.ts); farther off a square post of its size and a box for its arm stand in, which
+  // still read as the street's line of lamp posts from home.
   const poles = new Batch(poleGeo, M.darkMetal, lampCap);
+  const lanterns = new Batch(lanternGeo, M.darkMetal, lampCap);
   const poleFarGeo = new THREE.BoxGeometry(0.23, 1, 0.23);
-  const polesFar = new Batch(poleFarGeo, lod(M.darkMetal, 'far'), lampCap, false);
-  const arms = new Batch(box, M.darkMetal, lampCap, false);
+  const polesFar = new Batch(poleFarGeo, lod(M.darkMetal, 'far', LAMP_LOD), lampCap, false);
+  const arms = new Batch(box, lod(M.darkMetal, 'far', LAMP_LOD), lampCap, false);
   // A bankrupt firm's court lanterns go out with its towers (lightsout.ts).
   const lensMat = lightsOutEmitter(new THREE.MeshBasicMaterial({ color: 0xffffff }));
   const lenses = new Batch(box, lensMat, lampCap, false);
@@ -488,7 +514,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const bollardLights = new Batch(bollardGeo, lensMat, 64 * BOLLARDS, false);
 
   /** Everything filled by a build (the near kit's sources among them). */
-  const batches = [...Object.values(walls), ...Object.values(cuts), ...Object.values(parts), ...Object.values(kitPools), poles, polesFar, arms, lenses, bollards, bollardLights];
+  const batches = [...Object.values(walls), ...Object.values(cuts), ...Object.values(parts), ...Object.values(kitPools), poles, lanterns, polesFar, arms, lenses, bollards, bollardLights];
   /** What the view draws city-wide: everything but the near kit's sources. */
   const drawn = [...Object.values(walls), ...Object.values(cuts), ...Object.values(parts), polesFar, arms, lenses, bollards, bollardLights];
   for (const [k, b] of Object.entries(walls)) b.mesh.name = `wall:${k}`;
@@ -497,6 +523,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   Object.assign(lenses.mesh, { name: 'lamp-lens' });
   Object.assign(arms.mesh, { name: 'lamp-arm' });
   Object.assign(polesFar.mesh, { name: 'lamp-pole:far' });
+  // Named, so each view copy is known by its batch's name (and the breakdown can tell them apart).
+  Object.assign(bollards.mesh, { name: 'bollard' });
+  Object.assign(bollardLights.mesh, { name: 'bollard-light' });
   for (const b of drawn) {
     // The view draws the city-wide set; the shadow map and the AO draw local copies of it (below).
     setLayers(b.mesh, LAYER.view);
@@ -522,18 +551,45 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
 
   // ------------------------------------------------ the passes' copies
   /** Instances of `sources` copied for the blocks selected, in one mesh of one shape, for one pass. */
+  const squash = new THREE.Matrix4();
+  const scratchM = new THREE.Matrix4();
+  const riseM = new THREE.Matrix4();
   class Copy {
     mesh: THREE.InstancedMesh;
     count = 0;
     private bake: Array<THREE.Matrix4 | null>;
+    /** The source geometry's own instanced attributes (a facade's accent, style and shop), copied with the matrices. */
+    private extra: Array<{ name: string; size: number; to: THREE.InstancedBufferAttribute }> = [];
+    private follow: boolean;
+    /** When set, only the blocks it marks are ever written, whatever a fill or an append selects. */
+    private only: Uint8Array | null;
+    /** Where the rising blocks' instances landed in the last fill: [source, first, end, at], four numbers a run. */
+    private segs: number[] = [];
     constructor(
       geo: THREE.BufferGeometry,
       mat: THREE.Material,
       readonly sources: Batch[],
       layer: number,
-      opts: { shadow?: boolean; colour?: boolean; bake?: Array<THREE.Matrix4 | null>; name: string },
+      opts: { shadow?: boolean; colour?: boolean; bake?: Array<THREE.Matrix4 | null>; name: string; whole?: boolean; only?: Uint8Array },
     ) {
+      this.only = opts.only ?? null;
       const cap = Math.max(1, sources.reduce((n, b) => n + b.mesh.instanceMatrix.count, 0));
+      this.follow = !!opts.whole;
+      if (opts.whole) {
+        // The view's copy of one batch, drawn as the batch drew: its geometry shared but for the instanced attributes.
+        const own = new THREE.BufferGeometry();
+        own.setIndex(geo.index);
+        for (const [name, a] of Object.entries(geo.attributes)) {
+          if ((a as THREE.InstancedBufferAttribute).isInstancedBufferAttribute) {
+            const to = new THREE.InstancedBufferAttribute(new Float32Array(cap * a.itemSize), a.itemSize);
+            to.setUsage(THREE.DynamicDrawUsage);
+            own.setAttribute(name, to);
+            this.extra.push({ name, size: a.itemSize, to });
+          } else own.setAttribute(name, a);
+        }
+        for (const g of geo.groups) own.addGroup(g.start, g.count, g.materialIndex);
+        geo = own;
+      }
       this.mesh = new THREE.InstancedMesh(geo, mat, cap);
       this.mesh.name = opts.name;
       this.mesh.count = 0;
@@ -546,13 +602,41 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       this.mesh.visible = false;
       group.add(this.mesh);
     }
+    /** Instances written by fills and appends, all told (tests: a turn copies only what it newly meets). */
+    writes = 0;
+    private lo = [Infinity, Infinity, Infinity];
+    private hi = [-Infinity, -Infinity, -Infinity];
     fill(selected: Uint8Array): void {
+      if (deferFills) {
+        // Mid-rebuild: taken a copy a step (buildSteps). The selection is read when the fill runs, not now: the frames
+        // between may add the blocks the eye newly meets to it, and a snapshot would drop them.
+        deferFills.push(() => {
+          this.fill(selected);
+          // A freed plot's blocks stand where the rise has got to, from the frame they are drawn in.
+          if (rising) this.rise(riseK);
+        });
+        return;
+      }
+      this.lo = [Infinity, Infinity, Infinity];
+      this.hi = [-Infinity, -Infinity, -Infinity];
+      this.write(selected, 0);
+    }
+    /** Adds the instances of the `added` blocks after those held (none of them held yet). */
+    append(added: Uint8Array): void {
+      this.write(added, this.count);
+    }
+    private write(selected: Uint8Array, from: number): void {
       const dst = this.mesh.instanceMatrix.array as Float32Array;
+      const m = scratchM;
+      const lo = this.lo;
+      const hi = this.hi;
+      let n = from;
+      if (this.follow && !this.mesh.instanceColor && this.sources[0].mesh.instanceColor) {
+        this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.mesh.instanceMatrix.count * 3), 3);
+        this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      }
       const dstC = this.mesh.instanceColor?.array as Float32Array | undefined;
-      const m = new THREE.Matrix4();
-      const lo = [Infinity, Infinity, Infinity];
-      const hi = [-Infinity, -Infinity, -Infinity];
-      let n = 0;
+      if (from === 0) this.segs.length = 0;
       this.sources.forEach((src, s) => {
         const from = src.mesh.instanceMatrix.array as Float32Array;
         const fromC = src.mesh.instanceColor?.array as Float32Array | undefined;
@@ -560,7 +644,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         const r = src.runs;
         for (let q = 0; q < r.length; q += 3) {
           const blk = r[q];
-          if (blk < 0 || !selected[blk]) continue;
+          if (blk < 0 || !selected[blk] || (this.only && !this.only[blk])) continue;
           const b = boxes[blk];
           lo[0] = Math.min(lo[0], b.minX);
           lo[1] = Math.min(lo[1], b.minY);
@@ -570,6 +654,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
           hi[2] = Math.max(hi[2], b.maxZ);
           const k0 = r[q + 1];
           const k1 = r[q + 2];
+          if (rising?.[blk]) this.segs.push(s, k0, k1, n);
           if (bake) {
             for (let k = k0; k < k1; k++, n++) m.fromArray(from, k * 16).multiply(bake).toArray(dst, n * 16);
           } else {
@@ -577,20 +662,31 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
             // A part laid without a colour of its own draws in its material's (white instance colour).
             if (dstC && fromC) dstC.set(fromC.subarray(k0 * 3, k1 * 3), n * 3);
             else if (dstC) dstC.fill(1, n * 3, (n + k1 - k0) * 3);
+            for (const e of this.extra) {
+              const fromE = (src.mesh.geometry.attributes[e.name] as THREE.InstancedBufferAttribute).array as Float32Array;
+              (e.to.array as Float32Array).set(fromE.subarray(k0 * e.size, k1 * e.size), n * e.size);
+            }
             n += k1 - k0;
           }
         }
       });
+      this.writes += n - from;
       this.count = n;
       this.mesh.count = n;
       this.mesh.visible = n > 0;
+      // Only what was written goes to the GPU: all of it after a fill, the new end after an append.
       const im = this.mesh.instanceMatrix;
-      im.clearUpdateRanges();
-      im.addUpdateRange(0, n * 16);
+      if (from === 0) im.clearUpdateRanges();
+      im.addUpdateRange(from * 16, (n - from) * 16);
       im.needsUpdate = true;
+      for (const e of this.extra) {
+        if (from === 0) e.to.clearUpdateRanges();
+        e.to.addUpdateRange(from * e.size, (n - from) * e.size);
+        e.to.needsUpdate = true;
+      }
       if (this.mesh.instanceColor) {
-        this.mesh.instanceColor.clearUpdateRanges();
-        this.mesh.instanceColor.addUpdateRange(0, n * 3);
+        if (from === 0) this.mesh.instanceColor.clearUpdateRanges();
+        this.mesh.instanceColor.addUpdateRange(from * 3, (n - from) * 3);
         this.mesh.instanceColor.needsUpdate = true;
       }
       // The copy's bounds are its blocks' boxes, so each pass's camera culls it whole.
@@ -600,7 +696,39 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         this.mesh.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
       }
     }
+    endRise(): void {
+      this.segs.length = 0;
+    }
+    /** Writes the rising blocks' instances at `k` of their height, from the ground up (a freed plot filling). */
+    rise(k: number): void {
+      if (this.segs.length === 0) return;
+      const dst = this.mesh.instanceMatrix.array as Float32Array;
+      const im = this.mesh.instanceMatrix;
+      // Never quite flat: a zero height would leave the shading's normals undefined.
+      squash.makeScale(1, Math.max(k, 0.001), 1);
+      for (let q = 0; q < this.segs.length; q += 4) {
+        const from = this.sources[this.segs[q]].mesh.instanceMatrix.array as Float32Array;
+        const bake = this.bake[this.segs[q]];
+        const k0 = this.segs[q + 1];
+        const k1 = this.segs[q + 2];
+        for (let i = k0, n = this.segs[q + 3]; i < k1; i++, n++) {
+          riseM.fromArray(from, i * 16);
+          if (bake) riseM.multiply(bake);
+          riseM.premultiply(squash).toArray(dst, n * 16);
+        }
+        im.addUpdateRange(this.segs[q + 3] * 16, (k1 - k0) * 16);
+      }
+      im.needsUpdate = true;
+    }
     dispose(): void {
+      // A view copy's own geometry holds its own instanced buffers but shares the batch's index and vertices (a kit's
+      // shared shape among them): those are let go of first, so disposing it frees only its own.
+      if (this.follow) {
+        const own = this.mesh.geometry;
+        own.setIndex(null);
+        for (const name of Object.keys(own.attributes)) if (!this.extra.some((e) => e.name === name)) own.deleteAttribute(name);
+        own.dispose();
+      }
       this.mesh.dispose();
     }
   }
@@ -614,7 +742,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     new Copy(kitRound, plain, [cuts.midcentury], LAYER.shadow, { shadow: true, name: 'shadow:round' }),
     new Copy(stackGeo, plain, [parts.chimney], LAYER.shadow, { shadow: true, name: 'shadow:stack' }),
     new Copy(prismGeo, plain, [parts.sawtooth], LAYER.shadow, { shadow: true, name: 'shadow:prism' }),
-    new Copy(treeGeo, plain, [parts.tree], LAYER.shadow, { shadow: true, name: 'shadow:tree' }),
     new Copy(kitBay, plain, [parts.bay], LAYER.shadow, { shadow: true, name: 'shadow:bay' }),
   ];
   // The far boxes of the roof kit cast too, as boxes, where the eye is too far for the kit's own shadow.
@@ -630,6 +757,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const farShadow = new Copy(box, plain, casting.map((k) => parts[k]), LAYER.shadow, { shadow: true, bake: casting.map(unitBox), name: 'shadow:far-kit' });
   farShadow.mesh.customDepthMaterial = lodDepthMaterial();
   shadowCopies.push(farShadow);
+  /** The blocks past the near kit's reach from where the AO's blocks were last chosen: the far kit's boxes join the AO there. */
+  const aoFar = new Uint8Array(boxes.length);
   // The AO: everything the view draws city-wide, in the blocks near enough for the AO to show, one copy per shape.
   const aoCopies = [
     new Copy(box, plain, [...wallBatches, parts.glazeLit, parts.glazeDark, parts.planter, parts.deckLight, parts.pole, arms, lenses], LAYER.ao, { name: 'ao:box' }),
@@ -637,19 +766,56 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     new Copy(kitRound, plain, [cuts.midcentury], LAYER.ao, { name: 'ao:round' }),
     new Copy(stackGeo, plain, [parts.chimney], LAYER.ao, { name: 'ao:stack' }),
     new Copy(prismGeo, plain, [parts.sawtooth], LAYER.ao, { name: 'ao:prism' }),
-    new Copy(treeGeo, plain, [parts.tree], LAYER.ao, { name: 'ao:tree' }),
     new Copy(kitBay, plain, [parts.bay], LAYER.ao, { name: 'ao:bay' }),
     new Copy(kitBayGlass, plain, [parts.bayGlass, parts.bayLit], LAYER.ao, { name: 'ao:bay-glass' }),
     new Copy(bollardGeo, plain, [bollards, bollardLights], LAYER.ao, { name: 'ao:bollard' }),
+    // The roof kit past its near level (Task 15): its far boxes, so the AO the roofs carry reaches AO_NEAR (1,250 m)
+    // rather than ending where the near kit does; only blocks past the near kit's reach, which the near kit's own
+    // parts (every pass, layer 0) already give the AO.
+    new Copy(box, plain, HEAVY.map((k) => parts[k]), LAYER.ao, { bake: HEAVY.map(unitBox), name: 'ao:far-kit', only: aoFar }),
   ];
   // The near level: the roof kit and the lamp poles and arms, in every pass, for the blocks near the eye.
   const nearCopies = [
     ...HEAVY.map((k) => new Copy(KIT[k].geo, lod(KIT[k].mat, 'near'), [kitPools[k]], 0, { shadow: KIT[k].shadow, colour: true, name: k })),
-    new Copy(poleGeo, lod(M.darkMetal, 'near'), [poles], 0, { shadow: true, name: 'lamp-pole' }),
   ];
+  // The lamp posts' near level, for the blocks within their own shorter band.
+  const lampCopies = [
+    new Copy(poleGeo, lod(M.darkMetal, 'near', LAMP_LOD), [poles], 0, { shadow: true, name: 'lamp-pole' }),
+    new Copy(lanternGeo, lod(M.darkMetal, 'near', LAMP_LOD), [lanterns], 0, { shadow: true, name: 'lantern-pole' }),
+  ];
+  // The view (Task 12): each city-wide batch drawn through a copy of the blocks the eye's frustum meets (lod.ts
+  // frustumBlocks), each block its own cluster with its own box, so a close view draws only what it sees, in the same
+  // call. The batch itself stays, hidden, as the source of every copy and for the name plates' line of sight.
+  const viewCopies = drawn.map((b) => {
+    const c = new Copy(b.mesh.geometry, b.mesh.material as THREE.Material, [b], LAYER.view, { name: b.mesh.name, whole: true });
+    c.mesh.castShadow = false;
+    c.mesh.receiveShadow = b.mesh.receiveShadow;
+    c.mesh.renderOrder = b.mesh.renderOrder;
+    b.mesh.visible = false;
+    return c;
+  });
 
   const near = new Uint8Array(boxes.length);
+  /** The blocks of a plot given back, rising (lots.ts plotRise) since `riseFrom` (ms); null when none is. */
+  let rising: Uint8Array | null = null;
+  let riseFrom = 0;
+  let riseK = 0;
+  /** True while a rebuild is under way across frames: the copies keep drawing what they hold until it is done. */
+  let building = false;
+  /** While set, a copy's fill is queued here rather than done (buildSteps spreads the refill after a rebuild). */
+  let deferFills: Array<() => void> | null = null;
+  /** This grid's own keys on the city's re-merge queue (batch.ts), cancelled when it is disposed. */
+  const owner = remergeOwner('grid');
+  const allCopies = (): Copy[] => [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies, ...viewCopies];
+  const nearLamps = new Uint8Array(boxes.length);
   const ao = new Uint8Array(boxes.length);
+  /** The blocks the view's copies hold, and the AO's (its near blocks, cut to the frustum when the eye is known). */
+  const viewHeld = new Uint8Array(boxes.length);
+  const aoHeld = new Uint8Array(boxes.length);
+  const viewFrustum = new THREE.Frustum();
+  const viewMatrix = new THREE.Matrix4();
+  let viewFills = 0;
+  let lastCamera: THREE.Camera | undefined;
   const shadow = new Uint8Array(boxes.length);
   const nearEye = new THREE.Vector3(Infinity, 0, 0);
   const aoEye = new THREE.Vector3(Infinity, 0, 0);
@@ -661,6 +827,18 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
    */
   const NEAR_STEP = 40;
   const AO_STEP = 120;
+  const added = new Uint8Array(boxes.length);
+  /** Refills these copies to what `held` says when each one's turn comes on the queue (it reads `held` then, not now). */
+  function letGo(copies: Copy[], held: Uint8Array, pass: string): void {
+    copies.forEach((c, k) =>
+      scheduleRemerge(`${owner}${pass}:${k}`, () => {
+        // Mid-rebuild there is nothing to let go: the build refills every copy when it is done.
+        if (building) return;
+        c.fill(held);
+        if (pass === 'view') viewFills++;
+      }),
+    );
+  }
   function select(into: Uint8Array, keep: (b: BlockBox) => boolean): boolean {
     let changed = false;
     for (let k = 0; k < boxes.length; k++) {
@@ -672,8 +850,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     }
     return changed;
   }
-  function update(eye: THREE.Vector3, target: THREE.Vector3, force = false): boolean {
+  function update(eye: THREE.Vector3, target: THREE.Vector3, force = false, camera?: THREE.Camera, now = performance.now()): boolean {
     LOD_EYE.value.copy(eye);
+    // Mid-rebuild the batches are half laid: the copies hold on to what they drew until the build is done.
+    if (building) return false;
     let shadowChanged = false;
     if (force || eye.distanceTo(nearEye) > NEAR_STEP) {
       nearEye.copy(eye);
@@ -681,10 +861,51 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         for (const c of nearCopies) c.fill(near);
         shadowChanged = true;
       }
+      if (select(nearLamps, (b) => boxDistance(eye, b) < LAMP_LOD.far + NEAR_STEP) || force) {
+        for (const c of lampCopies) c.fill(nearLamps);
+        shadowChanged = true;
+      }
     }
+    let aoMoved = false;
     if (force || eye.distanceTo(aoEye) > AO_STEP) {
       aoEye.copy(eye);
-      if (select(ao, (b) => boxDistance(eye, b) < AO_NEAR + AO_STEP) || force) for (const c of aoCopies) c.fill(ao);
+      aoMoved = select(ao, (b) => boxDistance(eye, b) < AO_NEAR + AO_STEP) || force;
+      // The far kit's boxes in the AO stand only past the near kit's reach, chosen from the same eye.
+      if (select(aoFar, (b) => boxDistance(eye, b) >= AMBIENT_LOD.far)) aoMoved = true;
+    }
+    if (camera && clusterCulling()) {
+      camera.updateMatrixWorld();
+      viewFrustum.setFromProjectionMatrix(viewMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem, (camera as THREE.Camera & { reversedDepth?: boolean }).reversedDepth);
+      // What the frustum newly meets is copied in at once (only it); what it has left is let go over the frames after,
+      // a copy a piece of work on the re-merge queue (batch.ts), since what the copies hold meanwhile is a superset.
+      if (force) {
+        frustumBlocks(boxes, used, viewFrustum, eye, viewHeld);
+        for (const c of viewCopies) c.fill(viewHeld);
+        viewFills++;
+      } else {
+        const d = frustumDelta(boxes, used, viewFrustum, eye, viewHeld, added);
+        if (d === 'grow' || d === 'both') for (const c of viewCopies) c.append(added);
+        if (d === 'shrink' || d === 'both') letGo(viewCopies, viewHeld, 'view');
+      }
+      if (force || aoMoved) {
+        frustumBlocks(boxes, ao, viewFrustum, eye, aoHeld);
+        for (const c of aoCopies) c.fill(aoHeld);
+      } else {
+        const d = frustumDelta(boxes, ao, viewFrustum, eye, aoHeld, added);
+        if (d === 'grow' || d === 'both') for (const c of aoCopies) c.append(added);
+        if (d === 'shrink' || d === 'both') letGo(aoCopies, aoHeld, 'ao');
+      }
+    } else {
+      // No eye to cut to (a test, or the culling off for a before-and-after): the view draws every block and the AO all it reaches.
+      if (force || viewHeld.some((v, k) => v !== used[k])) {
+        viewHeld.set(used);
+        for (const c of viewCopies) c.fill(viewHeld);
+        viewFills++;
+      }
+      if (aoMoved || aoHeld.some((v, k) => v !== ao[k])) {
+        aoHeld.set(ao);
+        for (const c of aoCopies) c.fill(aoHeld);
+      }
     }
     if (force || !target.equals(shadowAt)) {
       shadowAt.copy(target);
@@ -693,6 +914,21 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         shadowChanged = true;
       }
     }
+    if (rising) {
+      // The rise's clock starts at the first frame drawn after the build; the build's own refill stands them at the ground.
+      if (Number.isNaN(riseFrom) && !Number.isNaN(now)) riseFrom = now;
+      const k = Number.isNaN(riseFrom) ? 0 : plotRise((now - riseFrom) / 1000);
+      riseK = k;
+      for (const c of allCopies()) c.rise(k);
+      if (k >= 1) {
+        rising = null;
+        // Done: no later rise may write over what these instances' places hold by then.
+        for (const c of allCopies()) c.endRise();
+      }
+      // The shadow map is redrawn once, when the blocks stand: a redraw a few times a second during the rise cost a
+      // frame each on high (Task 13), and the rising blocks' shadows are the least of what is seen of them.
+      if (k >= 1) shadowChanged = true;
+    }
     return shadowChanged;
   }
 
@@ -700,11 +936,15 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     const blk = blockOf(lot.x, lot.z);
     for (const p of lotParts(lot)) {
       // Bays and rooftop units are street- and roof-scale detail: drawn only in the nearer city.
-      if (!near && (p.kind === 'bay' || p.kind === 'bayGlass' || p.kind === 'bayLit' || p.kind === 'unit' || p.kind === 'awning')) continue;
+      if (!near && (p.kind === 'bay' || p.kind === 'bayGlass' || p.kind === 'bayLit' || p.kind === 'bayFoot' || p.kind === 'bayRoof' || p.kind === 'unit' || p.kind === 'awning')) continue;
       if (p.kind.startsWith('wall:')) {
         const b = (p.chamfer ? into.cuts : into.walls)[lot.archetype];
         b.add(p.x, p.y, p.z, p.sx, p.sy, p.sz, p.colour, 0, blk);
         b.dress(lot.accent, lot.style, lot.shop);
+      } else if (p.kind === 'tree') {
+        // A roof garden's tree: planted in the shared trees (trees.ts), from the city's own build only.
+        if (!wallsOnly && into.parts === parts && Math.max(Math.abs(Math.round(lot.x / PITCH)), Math.abs(Math.round(lot.z / PITCH))) <= ROOF_TREE_RADIUS[quality]) roofTrees.push(roofTree(p));
+        continue;
       } else if (!wallsOnly) {
         const kind = p.kind as keyof PartBatches;
         // In the city the roof kit's parts go to both levels: the near kit's source and the far boxes.
@@ -719,9 +959,66 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   };
 
   const lampColor = new THREE.Color();
+  /** The roof gardens' trees and the street trees, as the last build planted them. */
+  let roofTrees: TreeSpot[] = [];
+  let streetTrees: TreeSpot[] = [];
 
+  let plazasNow: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
+  /** The plazas the copies were last filled for: a rebuild overtaken half way never sets it, so the next one sees what was drawn. */
+  let drawnPlazas: Array<{ x: number; z: number }> = plazasNow;
   function build(plazas: Plaza[]): void {
+    finish(buildSteps(plazas));
+  }
+  /**
+   * The ambient city rebuilt round these plazas a row of blocks at a time
+   * (steps.ts), the copies holding what they drew until it is done; then
+   * the blocks of any plot given back rise from the ground (plotRise).
+   */
+  function* buildSteps(plazas: Plaza[]): Steps<void> {
+    const before = drawnPlazas;
+    // A rise still under way from an earlier rebuild ends here: its positions are into the batches about to be laid again.
+    if (rising) {
+      rising = null;
+      for (const c of allCopies()) c.endRise();
+    }
+    building = true;
+    try {
+      yield* layout(plazas);
+    } finally {
+      building = false;
+    }
+    // The plots given back: every block within a plaza's reach that no plaza now holds rises.
+    const freed = before.filter((p) => !plazasNow.some((q) => q.x === p.x && q.z === p.z));
+    if (freed.length && Number.isFinite(nearEye.x)) {
+      const reach = RESERVE_RADIUS + PITCH;
+      rising = new Uint8Array(boxes.length);
+      boxes.forEach((b, k) => {
+        const cx = (b.minX + b.maxX) / 2;
+        const cz = (b.minZ + b.maxZ) / 2;
+        if (used[k] && freed.some((p) => Math.hypot(cx - p.x, cz - p.z) < reach)) rising![k] = 1;
+      });
+      riseFrom = NaN;
+      riseK = 0;
+    }
+    // Every copy is refilled from the new build, at the eye and shadow centre last seen: the selections at once,
+    // the copies a few a frame (each copy's fill copies all it holds), their blocks rising if a plot was freed.
+    if (Number.isFinite(nearEye.x)) {
+      deferFills = [];
+      update(nearEye.clone(), shadowAt.clone(), true, lastCamera, NaN);
+      const fills = deferFills;
+      deferFills = null;
+      for (const f of fills) {
+        f();
+        yield;
+      }
+    }
+    drawnPlazas = plazasNow;
+  }
+  function* layout(plazas: Plaza[]): Steps<void> {
     const all = [{ x: 0, z: 0 }, ...plazas];
+    plazasNow = all;
+    roofTrees = [];
+    streetTrees = streetTreeSpots(quality, plazas);
     for (const b of batches) b.reset();
     used.fill(0);
     for (const b of boxes) b.maxY = 0;
@@ -733,7 +1030,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       const blk = blockOf(x, z);
       used[blk] = 1;
       boxes[blk].maxY = Math.max(boxes[blk].maxY, h + 0.5);
-      poles.add(x, h / 2, z, 1, h, 1, undefined, 0, blk);
+      // The kit's arm reaches along +x: turned to the street it lights.
+      if (dir === 'none') lanterns.add(x, h / 2, z, 1, h, 1, undefined, 0, blk);
+      else poles.add(x, h / 2, z, 1, h, 1, undefined, dir === 'z' ? -Math.PI / 2 : 0, blk);
       polesFar.add(x, h / 2, z, 1, h, 1, undefined, 0, blk);
       const reach = dir === 'none' ? 0 : 1.3;
       const ax = dir === 'x' ? reach : 0;
@@ -765,6 +1064,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         }
         const nearBlock = Math.max(Math.abs(i), Math.abs(j)) <= DETAIL_RADIUS;
         for (const lot of standingLots(i, j, all)) draw({ walls, cuts, parts }, lot, false, nearBlock);
+        yield;
       }
     }
 
@@ -772,9 +1072,11 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       for (let j = -farRadius; j <= farRadius; j++) {
         if (Math.max(Math.abs(i), Math.abs(j)) <= radius) continue;
         if (!farLotStands(i, j)) continue;
-        const lot = farLot(i, j);
-        if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
-        draw({ walls, cuts, parts }, lot, true);
+        for (const lot of farLots(i, j)) {
+          if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
+          draw({ walls, cuts, parts }, lot, true);
+        }
+        yield;
       }
     }
 
@@ -808,9 +1110,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       }
     });
 
-    for (const b of batches) b.finish();
-    // Every copy is refilled from the new build, at the eye and shadow centre last seen.
-    if (Number.isFinite(nearEye.x)) update(nearEye.clone(), shadowAt.clone(), true);
+    for (const b of batches) {
+      b.finish();
+      yield;
+    }
   }
 
   build([]);
@@ -819,13 +1122,38 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     group,
     blockers: [...Object.values(walls), ...Object.values(cuts)].map((b) => b.mesh),
     setPlazas: build,
-    update: (eye, target) => update(eye, target),
+    setPlazasSteps: buildSteps,
+    update: (eye, target, camera, now) => {
+      lastCamera = camera;
+      return update(eye, target, false, camera, now);
+    },
     lod: () => ({
-      near: nearCopies.reduce((n, c) => n + c.count, 0),
+      near: [...nearCopies, ...lampCopies].reduce((n, c) => n + c.count, 0),
       shadow: shadowCopies.reduce((n, c) => n + c.count, 0),
       ao: aoCopies.reduce((n, c) => n + c.count, 0),
+      view: viewCopies.reduce((n, c) => n + c.count, 0),
+      viewWrites: viewCopies.reduce((n, c) => n + c.writes, 0),
+      city: drawn.reduce((n, b) => n + b.n, 0),
+      viewFills,
     }),
     buildings: () => [...Object.values(walls), ...Object.values(cuts)].reduce((n, b) => n + b.n, 0),
+    treeSpots: () => [...streetTrees, ...roofTrees],
+    lots(x, z, r) {
+      const out: LotSummary[] = [];
+      const bi = Math.round(x / PITCH);
+      const bj = Math.round(z / PITCH);
+      const reach = Math.ceil(r / PITCH) + 1;
+      for (let i = bi - reach; i <= bi + reach; i++)
+        for (let j = bj - reach; j <= bj + reach; j++) {
+          if (Math.max(Math.abs(i), Math.abs(j)) > radius) continue;
+          for (const lot of standingLots(i, j, plazasNow)) {
+            if (Math.hypot(lot.x - x, lot.z - z) > r) continue;
+            const parts = lotParts(lot);
+            out.push({ x: lot.x, z: lot.z, w: lot.w, d: lot.d, h: lot.h, archetype: lot.archetype, front: [...lot.front], style: [...lot.style], cut: parts.some((p) => p.chamfer), bays: parts.filter((p) => p.kind === 'bay').length });
+          }
+        }
+      return out;
+    },
     board(lots) {
       const n = new Map<PartKind, number>();
       for (const lot of lots) for (const p of lotParts(lot)) n.set(p.kind, (n.get(p.kind) ?? 0) + 1);
@@ -848,12 +1176,14 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         },
       };
     },
+    rising: () => rising !== null || building,
     dispose() {
-      for (const g of [box, stackGeo, prismGeo, treeGeo, poleGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
+      cancelRemerges(owner);
+      for (const g of [box, stackGeo, prismGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
-      for (const m of [...Object.values(facadeMats), trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
+      for (const m of [...Object.values(facadeMats), ...Object.values(cutMats), leadMat, trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
       for (const b of batches) b.mesh.dispose();
-      for (const c of [...shadowCopies, ...aoCopies, ...nearCopies]) c.dispose();
+      for (const c of [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies, ...viewCopies]) c.dispose();
     },
   };
 }

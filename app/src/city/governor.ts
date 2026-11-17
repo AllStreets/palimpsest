@@ -151,3 +151,25 @@ export function qualityGovernor(o: GovernorOptions = {}): Governor {
     },
   };
 }
+
+/** The hitches in a run of frame times: the longest, the 99th percentile and how many ran over 33 ms. */
+export interface FrameStats {
+  max: number;
+  p99: number;
+  over33: number;
+}
+
+/**
+ * Frame times in ms (the debug handle's frameLog) read for hitches: the
+ * longest frame, the 99th percentile by nearest rank, and the frames over
+ * 33 ms (two refreshes missed at 60 Hz). Zeros for no frames.
+ */
+export function frameStats(ms: readonly number[]): FrameStats {
+  if (ms.length === 0) return { max: 0, p99: 0, over33: 0 };
+  const sorted = [...ms].sort((a, b) => a - b);
+  return {
+    max: sorted[sorted.length - 1],
+    p99: sorted[Math.ceil(sorted.length * 0.99) - 1],
+    over33: ms.filter((t) => t > 33).length,
+  };
+}

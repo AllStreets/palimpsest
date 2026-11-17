@@ -24,8 +24,30 @@ export const CROWN_ALLOWANCE = 12;
 const FOOTPRINT = 40;
 /** Half the width of a crown, a little over a top floor's. */
 const CROWN_HALF = 16;
-/** The haze the city was designed in: thick enough to swallow the horizon into the sky. */
-export const HERO_FOG = 0.00055;
+/**
+ * The haze the city was designed in: thick enough to swallow the horizon
+ * into the sky. 0.00055 until Phase 5 Task 6, which graded the haze by
+ * height and took it down by an eighth (the parked "hazed less" note);
+ * 0.00048 until Task 15a, which judged it on true stills (Task 6 was graded
+ * through the brief's scrim) and found the middle city a milky veil: now,
+ * with HAZE_POWER, the ground is 3% hazed at 900 m, 31% at 2 km and 72% at
+ * 3 km. Aerial perspective without milk: the near and middle city keep their
+ * contrast, the far city lifts toward the sky, the horizon is all haze.
+ */
+export const HERO_FOG = 0.00036;
+/**
+ * The haze's falloff (Task 15a): the share of the air between the eye and a
+ * surface d metres off is 1 - exp(-(density * d) ^ HAZE_POWER). Cubed rather
+ * than squared, the haze stays thin through the middle distance and closes
+ * past it, as a dusk haze does when it is seen across a city.
+ */
+export const HAZE_POWER = 3;
+/** The haze's share at `d` metres for `density` (the shader's fog factor, before its height layer). */
+export function hazeAt(density: number, d: number): number {
+  return 1 - Math.exp(-Math.pow(Math.max(0, density * d), HAZE_POWER));
+}
+/** The density that leaves `share` of haze at `d` metres. */
+const densityFor = (share: number, d: number): number => Math.pow(-Math.log(1 - share), 1 / HAZE_POWER) / d;
 /** How far the camera could always fly out over the ambient city; it only ever widens. */
 const MIN_MAX_DISTANCE = 2600;
 /** The far plane never comes in closer than this: the horizon is always haze, never a clipped edge. */
@@ -43,10 +65,10 @@ const HOME_TOP = 0.84;
 const FAR_TOP = 0.9;
 const BOTTOM = -0.97;
 const SIDE = 0.94;
-/** Haze on the far edge of the city, seen from home, that still reads as a silhouette. */
-const FAR_EDGE_HAZE = 0.58;
-/** Density times distance that leaves the horizon about 92% haze (exponential squared). */
-const HORIZON_HAZE = 1.6;
+/** Haze on the far edge of the city, seen from home (Task 15a: the sample's own at HERO_FOG), that still reads as architecture. */
+const FAR_EDGE_HAZE = 0.29;
+/** Density times distance that leaves the horizon about 92% haze (hazeAt). */
+const HORIZON_HAZE = densityFor(0.92, 1);
 /** Seconds-based rate the limits ease at: most of the way in a second, settled in two. */
 const EASE_RATE = 3;
 
@@ -200,8 +222,20 @@ function fitDistance(pts: V3[], target: V3, dir: V3, aspect: number, top: number
   return hi;
 }
 
+/**
+ * What a fresh home (no repos, nothing standing of his) is framed on: the
+ * ambient city round the civic plaza, its tallest glass slabs (lots.ts, 54
+ * storeys at most) as the crowns, out to the ring of blocks a district's
+ * plot would take. The home framing then looks over the skyline from the
+ * hero's height of view, as a populated home does, instead of down into a
+ * street from the rig's starting place (the screens audit).
+ */
+export const EMPTY_EXTENT: CityExtent = { cx: 0, cz: 0, radius: 320, height: 230, count: 0 };
+
 /** Every limit of the view, for a city of this extent seen through a window of this shape. */
-export function viewLimits(e: CityExtent, aspect: number): ViewLimits {
+export function viewLimits(extent: CityExtent, aspect: number): ViewLimits {
+  // Nothing of his standing: framed on the ambient city's own skyline.
+  const e = extent.count === 0 ? EMPTY_EXTENT : extent;
   const height = Math.max(e.height, 40);
   const pts = hull(e, height);
   // Home: aimed at the height that lets every crown, with sky above, and every plaza in from nearest.
@@ -225,7 +259,7 @@ export function viewLimits(e: CityExtent, aspect: number): ViewLimits {
   const rim = e.radius + FOOTPRINT;
   const farEdge: V3 = away > 1e-6 ? [e.cx - ((eye[0] - e.cx) / away) * rim, height * 0.5, e.cz - ((eye[2] - e.cz) / away) * rim] : [e.cx, 0, e.cz];
   const toFarEdge = Math.hypot(eye[0] - farEdge[0], eye[1] - farEdge[1], eye[2] - farEdge[2]);
-  const fogDensity = Math.min(HERO_FOG, Math.sqrt(-Math.log(1 - FAR_EDGE_HAZE)) / toFarEdge);
+  const fogDensity = Math.min(HERO_FOG, densityFor(FAR_EDGE_HAZE, toFarEdge));
 
   const far = Math.max(MIN_FAR, (maxDistance + e.radius + GROUND_REACH) * 1.1);
   return { home: { eye, target }, homeDistance, maxDistance, fogDensity, far };
@@ -253,6 +287,65 @@ export function fogFor(density: number, homeDistance: number, cameraDistance: nu
   if (cameraDistance <= homeDistance) return density;
   const horizon = Math.min(density, HORIZON_HAZE / (cameraDistance + 8000));
   return Math.max(density * (homeDistance / cameraDistance), horizon);
+}
+
+/** Density times distance that leaves the ground's far edge 98% haze (hazeAt): the least a thinned haze may hold. */
+const CLEAR_HORIZON = densityFor(0.98, 1);
+
+/**
+ * The least haze density for an eye `cameraDistance` from the city's home
+ * target when the haze is thinned on purpose (the clear-air still, scene.ts
+ * haze(k)): the ground's edge, 8 km past the eye's distance, stays 98%
+ * haze, so a clear-air still never shows the ground ending in a hard line
+ * against the dome.
+ */
+export function clearAirFloor(cameraDistance: number): number {
+  return CLEAR_HORIZON / (cameraDistance + 8000);
+}
+
+/** The home the haze is measured from: its distance and its target, eased together as the city grows. */
+export interface EasedHome {
+  distance: number;
+  target: V3;
+}
+
+/**
+ * One frame of easing the home the haze is measured from toward the city's
+ * new home (the framing itself jumps at once, since it is only used when
+ * asked for). Both the distance and the target ease, at the limits' rate,
+ * so no frame measures the eye against a target that moved in a step. A dt
+ * of Infinity snaps to the new home (the first placement).
+ */
+export function easeHome(cur: EasedHome, to: { homeDistance?: number; distance?: number; target: ArrayLike<number> }, dt: number, out?: EasedHome): EasedHome {
+  // Written into `out` when given (the scene passes its own, so a frame allocates nothing); a fresh one otherwise.
+  const o = out ?? { distance: 0, target: [0, 0, 0] };
+  const distance = to.distance ?? to.homeDistance ?? cur.distance;
+  if (!Number.isFinite(dt)) {
+    o.distance = distance;
+    o.target[0] = to.target[0];
+    o.target[1] = to.target[1];
+    o.target[2] = to.target[2];
+    return o;
+  }
+  const k = 1 - Math.exp(-EASE_RATE * dt);
+  const step = (a: number, b: number): number => (Math.abs(b - a) <= Math.max(1e-6, Math.abs(b) * 1e-5) ? b : a + (b - a) * k);
+  const d = step(cur.distance, distance);
+  const x = step(cur.target[0], to.target[0]);
+  const y = step(cur.target[1], to.target[1]);
+  const z = step(cur.target[2], to.target[2]);
+  o.distance = d;
+  o.target[0] = x;
+  o.target[1] = y;
+  o.target[2] = z;
+  return o;
+}
+
+/** The haze density for an eye at `eye` (anything with x, y, z, or a tuple), measured from the eased home (fogFor against its distance and its target). */
+export function fogFrom(density: number, home: EasedHome, eye: { x: number; y: number; z: number } | V3): number {
+  const ex = Array.isArray(eye) ? eye[0] : eye.x;
+  const ey = Array.isArray(eye) ? eye[1] : eye.y;
+  const ez = Array.isArray(eye) ? eye[2] : eye.z;
+  return fogFor(density, home.distance, Math.hypot(ex - home.target[0], ey - home.target[1], ez - home.target[2]));
 }
 
 /**

@@ -3,7 +3,8 @@
  * engine (port UI_PORT, default 4779, a temp home) once the sample economy is seeded. The
  * economy's clock is ticked on demand with the board on (test safety rule
  * 8), a little at a time, so the runs the later checks expect are where the
- * seed left them: no step past the clock's first 30 script seconds runs.
+ * seed left them: no step past the clock's first 55 script seconds runs
+ * (eleven ticks at most; the next run step is at 60).
  *
  * Saves jobs.png, jobs-bidding.png, jobs-lower.png and jobs-post.png at
  * 1600 x 1000 for the quality rounds.
@@ -26,6 +27,22 @@ async function within(page: Page, ms: number, ok: () => Promise<boolean>): Promi
 }
 
 /**
+ * Withdraws every job awarded since `since` that has no run yet, but an
+ * audit's proposals, which the audit checks read as he left them: the board
+ * clock awards a round once its time is up, and a later check's clock would
+ * otherwise start those runs beside the ones it watches.
+ */
+export async function withdrawAwardedSince(page: Page, since: string): Promise<void> {
+  await page.evaluate(async (t) => {
+    const jobs = (await fetch('/api/jobs').then((r) => r.json())) as Array<{ id: string; status: string; source: string; runId: string | null }>;
+    for (const j of jobs.filter((x) => x.status === 'awarded' && !x.runId && x.source !== 'proposal')) {
+      const d = (await fetch(`/api/jobs/${j.id}`).then((r) => r.json())) as { ledger: Array<{ at: string; kind: string }> };
+      if (d.ledger.some((e) => e.kind === 'job.awarded' && e.at >= t)) await fetch(`/api/jobs/${j.id}/withdraw`, { method: 'POST', headers: { 'x-palimpsest': '1' } });
+    }
+  }, since);
+}
+
+/**
  * Returns how many refusals it provoked on purpose: each shows in the
  * browser's console as a failed resource (409), which the caller excuses.
  */
@@ -35,6 +52,7 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
   const before = page.viewportSize();
   await page.setViewportSize(SIZE);
   // Five script seconds a tick: the board answers each round once every three ticks.
+  const started = new Date().toISOString();
   const clock = economyClock({ now: () => Date.now(), speed: 20, board: true });
   const tick = async (): Promise<void> => {
     clock.tick(250);
@@ -65,17 +83,35 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
     const clockText = (await page.locator('.sec-bidding .round-clock').first().getAttribute('aria-label')) ?? '';
     check(/^closes in \d+:\d\d$|^closing$/.test(clockText), `each round shows its clock (${clockText})`);
     check((await page.locator('.sec-bidding .round-lamps i.bid').count()) >= counts.reduce((a, b) => a + b, 0), 'a lamp is lit for every bid');
+    // Each section's count says the rows it stands over: grouped proposals count as the rows they make (Phase 5 Task 17).
+    const proposedJobs = ((await page.evaluate(() => fetch('/api/jobs?status=proposed').then((r) => r.json()))) as unknown[]).length;
+    const proposedRows = await page.locator('.sec-proposed .job-list > li').count();
+    const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
+    const want = proposedRows < proposedJobs ? `${plural(proposedRows, 'row')}, ${plural(proposedJobs, 'job')}` : plural(proposedJobs, 'job');
+    const countSaid = (await page.locator('.sec-proposed .repos-sec-count').textContent()) ?? '';
+    check(countSaid === want, `the Proposed count says the rows it shows (${countSaid}; ${proposedRows} rows of ${proposedJobs} jobs)`);
+    // Where the jobs come from, said once at the board's foot, above the form.
+    const sources = page.locator('.jobs-sources');
+    const placedSources = await sources.evaluate((p) => {
+      const form = document.querySelector('.post-job')!;
+      const board = document.querySelector('.jobs-board')!;
+      return !!(board.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(p.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }).catch(() => false);
+    check(/issues labelled palimpsest/.test((await sources.textContent().catch(() => '')) ?? '') && placedSources, 'the board says where its jobs come from, between the board and Post a job');
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'jobs.png') });
 
-    // A bid arrives live.
-    const total = (): Promise<number> => page.locator('.sec-bidding .bids tbody tr[data-bid]').count();
-    const was = await total();
+    // The seeded rounds closed before this clock started: the next tick awards them and adds no answer, so no
+    // round reads "closing" while its bids still climb (Phase 5 Task 17).
+    const answers = async (id: string): Promise<number> => {
+      const d = (await page.evaluate((x) => fetch(`/api/jobs/${x}`).then((r) => r.json()), id)) as { bids: unknown[]; satOut: unknown[] };
+      return d.bids.length + d.satOut.length;
+    };
+    const seededAnswers = await Promise.all(ids.map((id) => answers(id)));
     await tick();
-    const arrived = await within(page, 4000, async () => (await total()) > was);
-    check(arrived, `a bid arrives on the board without a reload (${was} then ${await total()})`);
-    check((await page.locator('.bids tr.fresh').count()) >= 1, 'the new bid is marked as it comes in');
-    await page.locator('.sec-bidding').first().screenshot({ path: join(shots, 'jobs-bidding.png') });
+    const after = await Promise.all(ids.map((id) => answers(id)));
+    check(after.every((n, i) => n <= seededAnswers[i]), `a round past its close takes no more answers (${seededAnswers.join(', ')} then ${after.join(', ')})`);
+    check(await within(page, 4000, async () => (await page.locator('.sec-bidding .round-clock[aria-label="closing"]').count()) === 0), 'and is awarded, so no round on the board reads closing');
 
     // The running job's progress words change with its counts.
     const running = page.locator('.sec-running .job-row[data-status="running"] .run-counts').first();
@@ -103,6 +139,21 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
     await tick();
     const roundOpen = await within(page, 4000, async () => (await page.locator(`.sec-bidding .job-row[data-job="${harness}"]`).getAttribute('data-status')) === 'bidding');
     check(roundOpen, 'and its round opens on the next tick');
+
+    // A bid arrives live on the open round, inside its window.
+    const bidRows = page.locator(`.job-row[data-job="${harness}"] .bids tbody tr[data-bid]`);
+    const bidsOf = async (): Promise<number> => ((await page.evaluate((x) => fetch(`/api/jobs/${x}`).then((r) => r.json()), harness)) as { bids: unknown[] }).bids.length;
+    await within(page, 3000, async () => (await bidRows.count()) === (await bidsOf()));
+    const was = await bidRows.count();
+    let grew = false;
+    for (let i = 0; harness && i < 5 && !grew; i++) {
+      await tick();
+      grew = (await bidsOf()) > was;
+    }
+    const arrived = grew && (await within(page, 4000, async () => (await bidRows.count()) > was));
+    check(arrived, `a bid arrives on the board without a reload (${was} then ${await bidRows.count()})`);
+    check((await page.locator('.bids tr.fresh').count()) >= 1, 'the new bid is marked as it comes in');
+    await page.locator('.sec-bidding').first().screenshot({ path: join(shots, 'jobs-bidding.png') });
 
     // Post a job: it appears under Bidding, its title shown as plain text however it was written.
     await page.locator('.post-job').scrollIntoViewIfNeeded();
@@ -173,6 +224,10 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
     check((await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload)) === true, 'nothing on the board reloaded the page');
     await page.keyboard.press('Escape');
     check(await within(page, 3000, async () => (await page.evaluate(() => document.body.dataset.route)) === 'city'), 'Escape returns to the city');
+    // Rounds close by their time now, so this board's ticks award rounds a later check's clock would start runs
+    // for, beside runs those checks watch (a second site on kumo beside Ola's waiting run). Withdrawn here, as he
+    // could, so the later checks find the runs where the seed left them.
+    await withdrawAwardedSince(page, started);
   } finally {
     clock.stop();
     if (before) await page.setViewportSize(before);

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, test } from 'node:test';
+import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import { installProposals, proposeAgain, proposeFromAudit } from '../engine/audit/proposals.js';
 import { audit as storedAudit, saveAudit } from '../engine/audit/store.js';
@@ -175,6 +175,21 @@ test('an audit with three gaps posts three proposed jobs with the marker, the ti
 
   assert.deepEqual(proposeFromAudit(stored), [], 'the same audit posts nothing twice');
   assert.equal(proposedOf().length, 3);
+});
+
+test('proposals posted in the same instant list in their audit\'s finding order, not by their random ids', () => {
+  // Phase 5 Task 20: the sample seeds the same ledger every run, so the board and the report read them in one order.
+  seq = 0;
+  mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-11T09:00:00.000Z') });
+  try {
+    const claims = Array.from({ length: 12 }, (_, i) => `Claim number ${i + 1}`);
+    const a = auditOf(claims.map((c) => gap(c)));
+    const posted = proposeFromAudit(a);
+    assert.equal(new Set(posted.map((j) => j.postedAt)).size, 1, 'one instant');
+    assert.deepEqual(proposedOf().map((j) => j.title), claims.map((c) => `Build: ${c}`));
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test('replay learns each proposal\'s job id from job.proposed, so a done audit still compares whole', () => {

@@ -16,6 +16,8 @@ import { join } from 'node:path';
 
 import type { Page } from 'playwright';
 
+import { withdrawAwardedSince } from './ui-test-jobs.js';
+
 import type { FirmView, Job, JobDetail } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
@@ -47,6 +49,7 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
   const { emit } = await import('../engine/events.js');
   const before = page.viewportSize();
   await page.setViewportSize(SIZE);
+  const started = new Date().toISOString();
   const clock = economyClock({ now: () => Date.now(), speed: 20, board: true });
   const tick = async (): Promise<void> => {
     clock.tick(250);
@@ -60,7 +63,7 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
 
     // ------------------------------------------------------------ the running job's page
     const running = jobs.find((j) => j.status === 'running' && j.repo === 'tidewater/harbor-ledger');
-    check(!!running?.runId, `the economy has the harbour job running (${running?.title ?? 'none'})`);
+    check(!!running?.runId, `the economy has the harbor job running (${running?.title ?? 'none'})`);
     if (!running?.runId) return;
     const rd = await api<JobDetail>(page, `/api/jobs/${running.id}`);
     await go(page, `#/jobs/${running.id}`);
@@ -70,7 +73,12 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     const winner = rd.award?.chosen;
     const prose = (await page.locator('.jobpage .job-award').first().textContent()) ?? '';
     check(!!winner && prose.startsWith(`${firmName(winner.firmId)} won at `) && prose.includes(`${agentName(winner.agentId)} does the work`), `the award reads as prose naming the winner (${prose.slice(0, 90)})`);
-    check(/calibrated [\d.]+/.test(prose) && /expected value of [\d.]+/.test(prose), 'and gives the calibrated chance and the expected value');
+    check(/the \d+% chance the city gives/.test(prose) && /expected value of [\d.]+: the \d+ credit job, times/.test(prose), 'and says what the expected value is made of');
+    // The market's terms are glossed at the point of use (audit 2026-11-17): a line above the bids, and each head's own definition.
+    const terms = await page.locator('.jobpage .bid-terms dt').allTextContents();
+    check(JSON.stringify(terms) === JSON.stringify(['Stated', 'Calibrated', 'EV, expected value']), `the bids carry a plain line glossing Stated, Calibrated and EV (${terms.join(', ')})`);
+    const termHeads = await page.locator('.jobpage .job-bids th abbr.bid-term').evaluateAll((els) => els.map((e) => [e.textContent, (e as HTMLElement).title]));
+    check(termHeads.length === 4 && termHeads.every(([, t]) => (t ?? '').length > 20), `each term's column head defines it on hover (${termHeads.map(([h]) => h).join(', ')})`);
     check((await page.locator('.jobpage .md-code').count()) >= 1 && (await page.locator('.jobpage .job-glob').count()) === running.scope.length, 'the issue renders as markdown, with its scope listed');
     check((await page.locator('.jobpage .job-checklist li').count()) === running.acceptance.length, 'the acceptance reads as a checklist');
     check((await page.locator('.jobpage .job-kill').count()) === 1, 'a running job offers Kill');
@@ -115,6 +123,10 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
       return { head, stages: top('.run-stages'), figures: top('.run-figures'), log: top('.run-log'), h: innerHeight };
     })()`)) as { head: number; stages: number; figures: number; log: number; h: number };
     check(firstView.stages >= firstView.head && firstView.figures > firstView.stages && firstView.log > firstView.figures && firstView.log < firstView.h - 160, `a live run's first view shows its stage, figures and transcript together (${JSON.stringify(firstView)})`);
+    // What the credits mean stands in the page, under the figures, not only in a tooltip (Phase 5 Task 17).
+    const note = (await page.locator('.runpage .run-gauge .run-credits-note').textContent().catch(() => null)) ?? '';
+    check(/^What the work has cost so far\.|^Over its bid: /.test(note) && (await page.locator('.runpage .run-credits-note').isVisible()), `the credits explanation is in the page (${note})`);
+    check((await page.locator('.runpage .run-fig-credits[title]').count()) === 0, 'and not in a tooltip');
     await page.waitForTimeout(600);
     await page.screenshot({ path: join(shots, 'run-live.png') });
     check((await page.locator('.runpage .log-hold').getAttribute('aria-pressed')) === 'false' && /Following/.test((await page.locator('.runpage .log-state').textContent()) ?? ''), 'it follows the live tail');
@@ -211,8 +223,8 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     check(await within(page, 5000, async () => (await page.evaluate(() => location.hash)) === `#/inspections/${insp.id}` && (await page.locator('.insppage .check-row').count()) === 8), `the inspection page shows eight checks (${await page.locator('.insppage .check-row').count()})`);
     const fails = await page.locator('.insppage .check-row.s-fail').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.check));
     check(JSON.stringify(fails) === JSON.stringify(['scope', 'review']), `fail on two: scope and review (${fails.join(', ')})`);
-    check((await page.locator('.insppage .check-row.s-fail .status-word').first().textContent()) === 'fail' && (await page.locator('.insppage .check-row.s-fail .status-shape').count()) === 2, 'each status is a word with a small shape');
-    check(((await page.locator('.insppage .sheet-title').textContent()) ?? '').trim() === 'Failed: scope, review', 'the verdict line reads Failed: scope, review');
+    check((await page.locator('.insppage .check-row.s-fail .status-word').first().textContent()) === 'failed' && (await page.locator('.insppage .check-row.s-fail .status-shape').count()) === 2, 'each status is a word with a small shape');
+    check(((await page.locator('.insppage .sheet-title').textContent()) ?? '').trim() === 'Failed the scope and the review', 'the title reads Failed the scope and the review');
     // The table keeps its cells on fixed column tracks: nothing is drawn over its neighbour, Took stands under Took, and the rows do not overlap.
     // The sheet slides in over 0.34 s (translateX from -14 px): a rect read while it moves is off by up to that much, and the head and the
     // rows used to be read in separate calls. Wait for the slide to end, then read the head and every row in the one call.
@@ -258,20 +270,18 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     });
     check(span.full && span.below, 'the open Log row spans every track, under its check');
 
-    // A notice the city makes for itself stands as one line on the running head's line, beside the sheet and over no part of it, and fades.
+    // A notice the city makes for itself stands at the lower left beside the sheet, over no part of it, and fades.
     await page.evaluate(() => (window as unknown as { __palimpsest: { say(t: string, k?: string): void } }).__palimpsest.say('The city stepped down to medium quality: 41 fps and 13.2M triangles from home.', 'quality'));
-    const headNotice = page.locator('.runhead .city-notice');
+    const headNotice = page.locator('.city-notice');
     const newest = headNotice.locator('.city-notice-line').first();
     await page.waitForTimeout(400);
     const placed = await newest.evaluate((li) => {
       const b = li.getBoundingClientRect();
       const sheet = document.querySelector('.insppage')!.getBoundingClientRect();
-      const body = document.querySelector('.insppage .sheet-body')!.getBoundingClientRect();
-      const link = document.querySelector('.runhead-link')!.getBoundingClientRect();
       const list = li.closest('.city-notice-list')!;
-      return { shown: getComputedStyle(list).visibility === 'visible', oneLine: b.height < 24, onHeadLine: Math.abs(b.bottom - link.bottom) < 8, clear: b.left >= sheet.right || b.bottom <= body.top + 1, width: b.width };
+      return { shown: getComputedStyle(list).visibility === 'visible', twoLines: b.height < 48, low: b.top > innerHeight / 2, clear: b.left >= sheet.right, width: b.width };
     });
-    check(placed.shown && placed.oneLine && placed.onHeadLine, `the notice is one line on the running head's line (${placed.width.toFixed(0)} px wide)`);
+    check(placed.shown && placed.twoLines && placed.low, `the notice stands at the lower left in two lines at most (${placed.width.toFixed(0)} px wide)`);
     check(placed.clear, 'and covers no part of the sheet');
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'inspection-notice.png') });
@@ -307,6 +317,16 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
       });
       check(await within(page, 4000, async () => (await page.locator('.runpage .diff-text', { hasText: 'line19999 ' }).count()) === 1), 'scrolling to its end draws the last line');
       check((await page.locator('.runpage .diff-line').count()) <= 1200, `and the top blocks are emptied again (${await page.locator('.runpage .diff-line').count()} rows)`);
+      // Find in the page reaches an emptied row: the block keeps its lines hidden until found, and a search that
+      // lands there draws it (Phase 5 Task 17).
+      const top = page.locator('.runpage .diff-block').first();
+      const kept = await top.evaluate((b) => {
+        const t = b.querySelector('.diff-find');
+        return { hidden: t?.getAttribute('hidden') ?? null, rows: b.querySelectorAll('.diff-line').length, text: t?.textContent ?? '' };
+      });
+      check(kept.rows === 0 && kept.hidden === 'until-found' && kept.text.includes('export const line5 = 5;'), `an emptied block keeps its lines for find in the page (${kept.rows} rows, hidden ${kept.hidden})`);
+      await top.locator('.diff-find').evaluate((t) => t.dispatchEvent(new Event('beforematch')));
+      check(await within(page, 3000, async () => (await page.locator('.runpage .diff-text', { hasText: 'line5 = 5;' }).count()) === 1), 'a search that lands on it draws its rows');
     }
 
     // Fly to the floor: the city comes back and goes to it.
@@ -317,6 +337,8 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     await page.keyboard.press('Escape');
   } finally {
     clock.stop();
+    // Rounds this clock closed by their time: withdrawn, so the construction checks' clock starts no run beside theirs.
+    await withdrawAwardedSince(page, started).catch(() => {});
     if (before) await page.setViewportSize(before);
   }
 }

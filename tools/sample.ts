@@ -5,7 +5,9 @@
  *
  *   npx tsx tools/sample.ts <dir> [--economy]
  *
- * writes a complete PALIMPSEST_HOME at <dir>, marked as a sample home. With
+ * writes a complete PALIMPSEST_HOME at <dir>, marked as a sample home
+ * (seedSample writes the marker before anything else). `npm run sample`
+ * (tools/sample-run.ts) seeds and serves it in one command. With
  * --economy it also writes the sample economy (engine/market/sample-economy.ts):
  * eight days of a fictional market and a board in every state, and the
  * university's school (nets, voyages, a graduate, grants); serve it with
@@ -22,8 +24,8 @@
  * and subjects every run. Only the usage reading is stamped with the time it
  * is written, so it reads as fresh.
  *
- * tools/ui-test.ts and tools/capture.ts call seedSample() after setting
- * PALIMPSEST_HOME, and use sampleGh (engine/sample.ts) as a stand-in for
+ * tools/ui-test.ts, tools/perf.ts and tools/capture.ts call seedSample() after
+ * setting PALIMPSEST_HOME, which marks their temp home as a sample's, and use sampleGh (engine/sample.ts) as a stand-in for
  * every gh and git call.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -43,6 +45,13 @@ export { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh } from '../engine/sa
 
 /** When the Claude co-authored stretch can begin in any repo. */
 const CLAUDE_SINCE = Date.parse('2025-03-01T00:00:00Z');
+
+/**
+ * The hour every README still, capture and perf view is seeded at, and what
+ * `npm run sample` seeds unless SAMPLE_NOW=1: the same city, the same books
+ * and the same ledger on every run. tools/perf.ts holds the same instant.
+ */
+export const SEED_AT = Date.parse('2026-11-10T17:30:00Z');
 
 /** When the sample repos were connected. */
 const CONNECTED = Date.parse('2026-11-02T10:00:00Z');
@@ -126,6 +135,13 @@ export const SAMPLE_TALL: SampleRepo[] = SAMPLE.map((s) => {
  * into the current PALIMPSEST_HOME. Call it after setting PALIMPSEST_HOME.
  */
 export async function seedSample(now: number = Date.now(), repos: SampleRepo[] = SAMPLE): Promise<void> {
+  // The mark first (Phase 5 ruling 23), before the database or anything else is written, so every caller's home is a
+  // sample's from its first file on: an engine on it answers GitHub from the stand-in and keeps every reader of his
+  // folders inside it, and seedEconomy and the school accept it with no step of their own.
+  const { home } = await import('../engine/home.js');
+  const dir = home();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, SAMPLE_MARKER), `${JSON.stringify({ sample: true, written: new Date(now).toISOString() })}\n`);
   const { openDb } = await import('../engine/db.js');
   const { foundingFloors } = await import('../engine/history.js');
   const db = openDb();
@@ -215,11 +231,8 @@ async function main(): Promise<void> {
     console.error('refusing to write the sample over the real data home');
     process.exit(2);
   }
-  mkdirSync(home, { recursive: true });
   process.env.PALIMPSEST_HOME = home;
-  // The mark that makes an engine on this folder answer GitHub from the sample and keep the usage hook
-  // and every reader of his folders inside it. Written first, so the economy below already runs as a sample.
-  writeFileSync(join(home, SAMPLE_MARKER), `${JSON.stringify({ sample: true, economy, written: new Date().toISOString() })}\n`);
+  // seedSample marks the folder before it writes anything, so the economy below already runs as a sample.
   await seedSample();
   if (economy) {
     const { seedEconomy } = await import('../engine/market/sample-economy.js');

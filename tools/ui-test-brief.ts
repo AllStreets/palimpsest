@@ -178,7 +178,19 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       check(job.status !== 'proposed' && job.status !== 'withdrawn', `the job is posted (${job.status})`);
       check((await row.locator('.brief-act[data-action="accept"]').count()) === 0, 'and the row offers it no more');
       check(await page.evaluate(() => document.activeElement?.classList.contains('brief-acted') ?? false), 'focus lands on what the row now says');
-      check((await sheet.locator('.brief-item').first().getAttribute('data-item')) === shownIds[0], 'the acted item stays in place');
+      // Settled, it leaves the rows that need a click for the quieter Handled today under them (audit 2026-11-17).
+      const waiting = sheet.locator('.brief-sec[data-sec="waiting"]');
+      check(await within(page, 3000, async () => (await waiting.locator(`.brief-handled .brief-item[data-item="${toAccept.id}"]`).count()) === 1), 'the posted proposal moves to Handled today');
+      check(((await waiting.locator('.brief-handled-head').textContent()) ?? '').trim() === 'Handled today' && (await waiting.locator('.brief-handled-head').isVisible()), 'under its own quiet heading');
+      const order = await waiting.locator('.brief-item').evaluateAll((els) => els.map((e) => !!e.closest('.brief-handled')));
+      check(order.indexOf(true) === -1 || order.slice(order.indexOf(true)).every(Boolean), `every row that waits comes before every handled one (${JSON.stringify(order)})`);
+      // No named helper inside the page function: tsx names it with __name, which the page does not have.
+      const sizes = await waiting.evaluate((w) => {
+        const open = w.querySelector('.brief-list:not(.brief-handled) .brief-head');
+        const handled = w.querySelector('.brief-handled .brief-head');
+        return { open: open ? parseFloat(getComputedStyle(open).fontSize) : 99, handled: handled ? parseFloat(getComputedStyle(handled).fontSize) : NaN };
+      });
+      check(sizes.handled < sizes.open, `and set smaller than the rows that wait (${sizes.handled} against ${sizes.open})`);
     }
 
     // ------------------------------------------------------------ Dismiss on the failed job: marked, and taught

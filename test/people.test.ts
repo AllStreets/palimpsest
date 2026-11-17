@@ -4,10 +4,14 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { extentBlocks, network, route } from '../shared/commute.js';
+import { extentBlocks, network, PIERS, route, streetLine } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 import type { Agent, Trip } from '../shared/types.js';
-import { createPeople, strideRate } from '../app/src/city/people.js';
+import { createPeople, paceOf, phaseOf, SEAT, SEATED, strideRate } from '../app/src/city/people.js';
+import { clearSkin, figureLevel } from '../app/src/city/figures.js';
+import { createAmbient, FIGURE_CODE, skinPoint } from '../app/src/city/ambient.js';
+import { pontoonOf } from '../app/src/city/river-bed.js';
+import { signalAt, signalJunction, signalsOf, type SignalJunction, type Signals } from '../app/src/city/signals.js';
 import { createVehicles } from '../app/src/city/vehicles.js';
 import { FOUNTAIN } from '../app/src/city/exchange.js';
 
@@ -430,8 +434,8 @@ test('walkers walk their path as given, carry no plate and survive a set of trip
   people.setWalkers([{ id: 'student:1', path, speed: 1.2 }]);
   people.update(5);
   const p = people.positionOf('student:1')!;
-  // Six metres in, on the path's own line (no pavement offset), at its height.
-  assert.ok(Math.abs(p.x - 106) < 0.3 && Math.abs(p.z - 100) < 0.05 && Math.abs(p.y - 6) < 1e-6, `walks the line given (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`);
+  // Six metres in (at its own pace, within 12% either way), on the path's own line (no pavement offset), at its height.
+  assert.ok(Math.abs(p.x - 100 - 6 * paceOf('student:1')) < 0.3 && Math.abs(p.x - 106) < 6 * 0.12 + 0.3 && Math.abs(p.z - 100) < 0.05 && Math.abs(p.y - 6) < 1e-6, `walks the line given (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`);
   assert.deepEqual(people.walkers(), [{ id: 'student:1', arrived: false }]);
   // A set of trips (the live ones) does not take the walkers away.
   people.set([tripOf('ada', { x: 440, z: 200 }, { x: 440, z: 320 })], [agentOf('ada')]);
@@ -461,4 +465,293 @@ test('walkers walk their path as given, carry no plate and survive a set of trip
   people.setWalkers([]);
   assert.equal(people.positionOf('student:1'), null);
   people.dispose();
+});
+
+// ---------------------------------------------------------------- their own pace (Phase 5 Task 3)
+
+test('two walkers side by side are out of phase', () => {
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => 0 });
+  // Two students on parallel lines a metre apart, the same speed, set off together.
+  people.setWalkers([
+    { id: 'student:a', path: [[100, 6, 100], [160, 6, 100]], speed: 1.3 },
+    { id: 'student:b', path: [[100, 6, 101], [160, 6, 101]], speed: 1.3 },
+  ]);
+  people.update(6);
+  const [a, b] = ['student:a', 'student:b'].map((id) => people.figures().find((f) => f.agentId === id)!);
+  const wrap = (x: number): number => Math.atan2(Math.sin(x), Math.cos(x));
+  assert.ok(Math.abs(wrap(a.phase - b.phase)) > 0.5, `their strides differ in phase (${a.phase.toFixed(2)} against ${b.phase.toFixed(2)})`);
+  // And in pace: each within 12% of the speed given, and not the same.
+  const pa = people.positionOf('student:a')!;
+  const pb = people.positionOf('student:b')!;
+  for (const [id, p] of [['a', pa], ['b', pb]] as const) {
+    const walked = p.x - 100;
+    assert.ok(walked >= 6 * 1.3 * 0.88 - 0.3 && walked <= 6 * 1.3 * 1.12 + 0.3, `${id} walked ${walked.toFixed(2)} m in 6 s at 1.3 m/s, within 12%`);
+  }
+  assert.ok(Math.abs(pa.x - pb.x) > 0.05, `they do not keep abreast (${pa.x.toFixed(2)} against ${pb.x.toFixed(2)})`);
+  assert.ok(Math.abs(paceOf('student:a') - 1) <= 0.12 && Math.abs(paceOf('student:b') - 1) <= 0.12, 'the spread is plus or minus 12%');
+  people.dispose();
+});
+
+test('stride phase is stable per id across reloads', () => {
+  assert.equal(phaseOf('dagny-hollis'), phaseOf('dagny-hollis'));
+  assert.ok(phaseOf('dagny-hollis') >= 0 && phaseOf('dagny-hollis') < Math.PI * 2, 'a phase in one turn');
+  assert.notEqual(phaseOf('dagny-hollis'), phaseOf('hal-meridian'));
+  // Two pages (two people sets) give the same figure the same phase at the same moment of its trip.
+  const trip = tripOf('ada', { x: 440, z: 200 }, { x: 440, z: 320 });
+  const start = Date.parse(trip.startedAt);
+  const phases = [0, 1].map(() => {
+    const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
+    people.set([trip], [agentOf('ada')]);
+    people.update(0);
+    const ph = people.figures().find((f) => f.agentId === 'ada')!.phase;
+    people.dispose();
+    return ph;
+  });
+  assert.equal(phases[0], phases[1]);
+  assert.equal(phases[0], phaseOf('ada'));
+  // Many ids spread over the turn, not bunched.
+  const sample = Array.from({ length: 64 }, (_, i) => phaseOf(`agent-${i}`));
+  const bins = new Set(sample.map((p) => Math.floor((p / (Math.PI * 2)) * 8)));
+  assert.ok(bins.size >= 6, `phases fall in ${bins.size} of 8 bins`);
+});
+
+test('the skin atlas is not fetched until a close figure is drawn', async () => {
+  const asked: string[] = [];
+  clearSkin();
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    asked.push(String(url));
+    return new Response(new Uint8Array(0));
+  }) as typeof fetch;
+  try {
+    const trip = tripOf('cy', { x: 440, z: 200 }, { x: 440, z: 320 });
+    const start = Date.parse(trip.startedAt);
+    const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
+    people.set([trip], [agentOf('cy')]);
+    const camera = new THREE.PerspectiveCamera(36, 1.6, 0.5, 20000);
+    const look = (d: number): void => {
+      camera.position.set(440 + d, 1.7 + d * 0.3, 200);
+      camera.lookAt(440, 1, 200);
+      camera.updateMatrixWorld();
+      people.update(0.016, camera);
+    };
+    look(60);
+    look(250);
+    assert.equal(asked.filter((u) => u.includes('figures-skin')).length, 0, 'the near and far levels never ask for the skin');
+    look(3);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(asked.filter((u) => u.endsWith('kits/figures-skin.webp')).length, 1, `the first close figure fetches the atlas once (${asked.join(', ')})`);
+    look(3);
+    look(2);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(asked.filter((u) => u.includes('figures-skin')).length, 1, 'and never again');
+    people.dispose();
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("a seated figure's hip sits on the seat", () => {
+  // The seated pose (PERSONA_RIG with aPose.x = 1): hips and knees at SEATED.hip and SEATED.knee, the body dropped by
+  // SEATED.drop so the seat of the trousers rests on the seat, the figure's origin being set at the seat's height (aboard()).
+  const g = figureLevel('hi');
+  assert.ok(g, 'the modelled figure');
+  const p = g.attributes.position;
+  const skin = g.attributes.aSkin;
+  const surf = g.attributes.aSurf;
+  const pose = { hipL: SEATED.hip, hipR: SEATED.hip, kneeL: SEATED.knee, kneeR: SEATED.knee };
+  let lowest = Infinity;
+  let kneeFront = -Infinity;
+  let ankleY = Infinity;
+  for (let i = 0; i < p.count; i++) {
+    if (Math.round(surf.getX(i)) !== FIGURE_CODE.legs) continue;
+    const rest = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+    const at = skinPoint(rest, skin.getX(i), skin.getY(i), skin.getZ(i) / 255, pose);
+    at.y -= SEATED.drop;
+    // Under the hips (the seat of the trousers), the lowest point rests on the seat.
+    if (rest.y > 0.8 && Math.abs(rest.x) < 0.1) lowest = Math.min(lowest, at.y);
+    // The thighs run forward to the knees, which stand ahead of the seat's edge; the shins come down to the floor.
+    if (rest.y > 0.46 && rest.y < 0.54) kneeFront = Math.max(kneeFront, at.x);
+    if (rest.y < 0.1) ankleY = Math.min(ankleY, at.y);
+  }
+  assert.ok(Math.abs(lowest) < 0.03, `the seat of the trousers rests on the seat (${lowest.toFixed(3)} m)`);
+  assert.ok(kneeFront > 0.3, `the knees are ahead of the seat (${kneeFront.toFixed(2)} m)`);
+  assert.ok(ankleY < -(SEAT.bench - 0.08) && ankleY > -(SEAT.bench + 0.08), `the feet reach a bench's floor ${SEAT.bench} m below (${ankleY.toFixed(2)} m)`);
+  // A rider in a cab or a carriage sits at its seat's height (its origin), and the rig puts its hips there.
+  const trip = tripOf('bo', { x: 446.5, z: 330 }, { x: 1100, z: -200 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  assert.ok(k >= 0, 'a cab trip');
+  const v = createVehicles(NET, 'high');
+  const people = createPeople({ vehicles: () => v, net: () => NET, now: () => Date.parse(trip.startedAt) });
+  people.set([trip], [agentOf('bo')]);
+  people.update(0);
+  const cab = v.vehicles('cab').find((c) => c.id === people.rideOf('bo')!.id)!;
+  for (let t = 0; t < 600 && cab.phase() !== 'carrying'; t++) {
+    v.update(1);
+    people.update(1);
+  }
+  const fig = people.figures().find((f) => f.agentId === 'bo')!;
+  assert.equal(fig.stage, 'ride');
+  assert.ok(Math.abs(fig.position[1] - (cab.floorY() + SEAT.cab)) < 1e-6, `seated at the cab's bench height (${fig.position[1].toFixed(2)} against floor ${cab.floorY().toFixed(2)} + ${SEAT.cab})`);
+  assert.ok(fig.sit > 0.99 && fig.walking === 0, 'sitting, not walking');
+  people.dispose();
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 4: the kerb and the pier
+
+/** Every junction of the street grid out to the rail's loop, with signals, on the given clock. */
+const gridSignals = (clock: () => number): Signals => {
+  const js: SignalJunction[] = [];
+  for (let x = -760; x <= 760; x += 80) for (let z = -760; z <= 760; z += 80) js.push(signalJunction(x, z));
+  return signalsOf(js, clock);
+};
+/**
+ * The traffic a point on a carriageway stands in the way of, at a signalled
+ * junction: along x when it is on the street along x (and off the one along
+ * z), and the other way about; null on a pavement, in the box, or at a
+ * junction without signals.
+ */
+function crossedAt(x: number, z: number, sig: Signals): { j: SignalJunction; traffic: 'x' | 'z' } | null {
+  const sx = streetLine(x);
+  const sz = streetLine(z);
+  const onX = Math.abs(z - sz) < 3.6;
+  const onZ = Math.abs(x - sx) < 3.6;
+  if (onX === onZ) return null;
+  const j = sig.at(sx, sz);
+  return j && Math.abs(x - sx) < 14 && Math.abs(z - sz) < 14 ? { j, traffic: onX ? 'x' : 'z' } : null;
+}
+
+test('walkers do not cross on go for traffic', () => {
+  // Personas on foot: three walks that cross signalled streets, on the lights' own clock.
+  let t = 0;
+  const sig = gridSignals(() => t);
+  const trips = [tripOf('ann', { x: 440, z: 215 }, { x: 440, z: 350 }), tripOf('ben', { x: 100, z: -100 }, { x: 225, z: -40 }), tripOf('cat', { x: -200, z: 330 }, { x: -200, z: 190 })];
+  for (const trip of trips) assert.equal(trip.legs[0].mode, 'walk');
+  const start = Date.parse(trips[0].startedAt);
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start + t * 1000, signals: () => sig });
+  people.set(trips, ['ann', 'ben', 'cat'].map((id) => agentOf(id)));
+  const crossings = new Set<string>();
+  let waited = 0;
+  const last = new Map<string, { x: number; z: number }>();
+  for (let i = 0; i < 2400; i++) {
+    t += 0.25;
+    people.update(0.25);
+    for (const id of ['ann', 'ben', 'cat']) {
+      const p = people.positionOf(id)!;
+      const was = last.get(id);
+      last.set(id, { x: p.x, z: p.z });
+      const f = people.figures().find((x) => x.agentId === id)!;
+      // (Arrived, a figure stands at its trip's end as the engine gives it, wherever that is.)
+      const c = f.stage === 'walk' ? crossedAt(p.x, p.z, sig) : null;
+      if (c) {
+        crossings.add(`${id}@${c.j.x},${c.j.z}`);
+        assert.equal(signalAt(c.j, t, c.traffic), 'stop', `${id} is on the road across the ${c.traffic} traffic at (${c.j.x}, ${c.j.z}) only while it stands at red`);
+      }
+      if (was && f.stage === 'walk' && Math.hypot(p.x - was.x, p.z - was.z) < 1e-6 && f.walking < 0.5) waited++;
+    }
+  }
+  assert.ok(crossings.size >= 3, `they crossed signalled streets (${[...crossings].join(' ')})`);
+  assert.ok(waited > 0, 'and some stood at the kerb for the light');
+  for (const trip of trips) {
+    const end = people.positionOf(trip.agentId)!;
+    assert.ok(Math.hypot(end.x - trip.to.x, end.z - trip.to.z) < 0.5, `${trip.agentId} still gets where it was going`);
+  }
+  people.dispose();
+
+  // The crowd: nobody on a crossing while the traffic it crosses has go.
+  const a = createAmbient(NET, 'high', { seed: 5 });
+  a.setDensity(1);
+  const lights = a.signals();
+  let seen = 0;
+  for (let i = 0; i < 1500; i++) {
+    a.update(0.1);
+    for (const p of a.people()) {
+      if (p.state !== 'crossing') continue;
+      const c = crossedAt(p.x, p.z, lights);
+      if (!c) continue;
+      seen++;
+      assert.equal(signalAt(c.j, lights.now(), c.traffic), 'stop', `a walker on the crossing at (${c.j.x}, ${c.j.z}) only while the ${c.traffic} traffic stands`);
+    }
+  }
+  assert.ok(seen > 100, `the crowd crossed at signals (${seen})`);
+  a.dispose();
+});
+
+test('a ferry rider waits on the pontoon at its deck, not up on the quay', () => {
+  const pier = PIERS.find((p) => p.bank === 'west')!;
+  const other = [...PIERS].filter((p) => p.bank === 'east').sort((p, q) => Math.abs(p.z - pier.z) - Math.abs(q.z - pier.z))[0];
+  const trip = tripOf('fay', { x: pier.x - 40, z: pier.z }, { x: other.x + 40, z: other.z });
+  const k = trip.legs.findIndex((l) => l.mode === 'ferry');
+  assert.ok(k >= 0, `the trip takes the ferry (${trip.legs.map((l) => l.mode).join(', ')})`);
+  const v = createVehicles(NET, 'high');
+  const start = Date.parse(trip.startedAt);
+  let t = 0;
+  const people = createPeople({ vehicles: () => v, net: () => NET, now: () => start + t * 1000 });
+  people.set([trip], [agentOf('fay')]);
+  for (let i = 0; i < 2000 && people.figures().find((f) => f.agentId === 'fay')!.stage !== 'wait'; i++) {
+    t += 0.5;
+    v.update(0.5);
+    people.update(0.5);
+  }
+  const fig = people.figures().find((f) => f.agentId === 'fay')!;
+  assert.equal(fig.stage, 'wait', 'it comes to wait for the ferry');
+  const p = people.positionOf('fay')!;
+  const deck = pontoonOf(pier);
+  assert.ok(Math.abs(p.y - deck.deck) < 0.1, `at the pontoon's deck height (${p.y.toFixed(2)} against ${deck.deck.toFixed(2)})`);
+  assert.ok(Math.abs(p.x - deck.x) < deck.half.x && Math.abs(p.z - deck.z) < deck.half.z, `on the pontoon (${p.x.toFixed(1)}, ${p.z.toFixed(1)} against its centre ${deck.x.toFixed(1)}, ${deck.z.toFixed(1)})`);
+  people.dispose();
+  v.dispose();
+});
+
+test("the exchange's bidders stand in a queue at the hall's stair, each in a place of its own (Task 15a)", async () => {
+  const mod = (await import('../app/src/city/people.js')) as unknown as { queueSpot?: (i: number) => { x: number; z: number; heading: number } };
+  const { FOUNTAIN } = await import('../app/src/city/exchange.js');
+  assert.equal(typeof mod.queueSpot, 'function', 'the bidders have places in a queue');
+  const spots = Array.from({ length: 16 }, (_, i) => mod.queueSpot!(i));
+  for (let i = 0; i < spots.length; i++) {
+    const p = spots[i];
+    // On the forecourt between the stair's foot (z 21) and the fountain's basin, facing the doors (toward -z).
+    assert.ok(p.z > 21 && Math.hypot(p.x - FOUNTAIN.x, p.z - FOUNTAIN.z) > FOUNTAIN.radius + 1, `place ${i} at (${p.x.toFixed(2)}, ${p.z.toFixed(2)})`);
+    assert.ok(Math.abs(p.heading + Math.PI / 2) < 1e-9, `place ${i} faces the doors`);
+    // No two bidders stand on one another.
+    for (let j = 0; j < i; j++) assert.ok(Math.hypot(p.x - spots[j].x, p.z - spots[j].z) > 0.6, `places ${j} and ${i} apart`);
+  }
+});
+
+test('bidders arriving at the exchange take distinct places in the queue, a new trip frees one, and other trips keep their stand (Task 15a)', async () => {
+  const { queueSpot } = (await import('../app/src/city/people.js')) as unknown as { queueSpot: (i: number) => { x: number; z: number; heading: number } };
+  const EXCHANGE = { x: 0, z: 27 };
+  const bid = (agentId: string, from: P, id = `trip-${agentId}`): Trip => ({ ...tripOf(agentId, from, EXCHANGE), id, reason: 'bid' });
+  const a = bid('ana', { x: 0, z: 140 });
+  const b = bid('ben', { x: 60, z: 140 });
+  // An inspector bound for the forecourt's centre (in the fountain) keeps the fountain's stand on the paving off its rim.
+  const c: Trip = { ...tripOf('cal', { x: -60, z: 140 }, { x: FOUNTAIN.x, z: FOUNTAIN.z }), reason: 'inspect' };
+  const t0 = Date.parse(a.startedAt);
+  let now = t0 + 3600_000;
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => now });
+  const agents = [agentOf('ana'), agentOf('ben'), agentOf('cal'), agentOf('dee')];
+  people.set([a, b, c], agents);
+  people.update(1);
+  const at = (id: string) => people.figures().find((f) => f.agentId === id)!;
+  const spots = [queueSpot(0), queueSpot(1)];
+  const near = (f: { position: number[] }, q: { x: number; z: number }) => Math.hypot(f.position[0] - q.x, f.position[2] - q.z) < 0.05;
+  const placeOf = (id: string) => spots.findIndex((q) => near(at(id), q));
+  assert.ok(placeOf('ana') >= 0 && placeOf('ben') >= 0, `both bidders stand in the queue (${at('ana').position}, ${at('ben').position})`);
+  assert.notEqual(placeOf('ana'), placeOf('ben'), 'each in a place of its own');
+  assert.equal(at('ana').reason, 'bid');
+  const cal = at('cal');
+  assert.equal(cal.reason, 'inspect');
+  assert.ok(Math.abs(Math.hypot(cal.position[0] - FOUNTAIN.x, cal.position[2] - FOUNTAIN.z) - (FOUNTAIN.radius + 1.8)) < 0.05, `the inspector stands off the basin's rim (${cal.position})`);
+  // Ana's next trip takes her away and frees her place; a new bidder arriving takes it.
+  const freed = placeOf('ana');
+  const away: Trip = { ...tripOf('ana', EXCHANGE, { x: 0, z: 140 }, new Date(now).toISOString()), id: 'trip-ana-2', reason: 'home' };
+  people.set([away, b, c], agents);
+  people.update(1);
+  assert.ok(!near(at('ana'), spots[freed]), 'her new trip moved her out of the queue');
+  const d = bid('dee', { x: 0, z: 140 }, 'trip-dee');
+  now += 3600_000;
+  people.set([away, b, c, { ...d, startedAt: new Date(now - 1800_000).toISOString() }], agents);
+  people.update(1);
+  assert.ok(near(at('dee'), spots[freed]), `the next bidder takes the freed place (${at('dee').position})`);
+  assert.ok(placeOf('ben') !== freed, 'and Ben keeps his');
 });

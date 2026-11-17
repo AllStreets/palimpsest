@@ -257,9 +257,11 @@ test('the brief lists what merged, failed and waits since the previous open day,
   assert.deepEqual([...item(b, 'audit-due:acme/gears').actions].sort(), ['audit', 'dismiss']);
   assert.ok(!allItems(b).some((x) => x.id === `audit-due:${FULL}`));
 
-  // The lead counts the window in two sentences, and nothing in it is a dash or an emoji.
+  // The lead says the window in two short sentences of at most three counts: what waits on him, what merged,
+  // what the city spent (audit 2026-11-17); the failed run is its own row overnight. No dash, no emoji.
   assert.match(b.lead, /1 merged/);
-  assert.match(b.lead, /1 failed/);
+  assert.match(b.lead, /^\d+ (thing waits|things wait) on you|^Nothing waits on you/, b.lead);
+  assert.ok((b.lead.match(/\d+(?:[.,]\d+)*/g) ?? []).length <= 3, `at most three counts: ${b.lead}`);
   assert.equal(b.lead.split(/(?<=\.)\s+/).length, 2, b.lead);
   for (const it of allItems(b)) assert.doesNotMatch(`${it.title} ${it.text}`, /\u2014|\u2013|--|\p{Extended_Pictographic}/u);
   assert.equal(b.usage.todayCapPct, null);

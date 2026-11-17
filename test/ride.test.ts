@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import * as THREE from 'three';
 
 import { dossierFloors, dossierOf, dossierParts, dossierWords, RIDE, rideAt, rideLength, rideNextStop, ridePlan, type Dossier, type RideKey } from '../shared/ride.js';
 import { layoutTower } from '../shared/tower-layout.js';
@@ -7,8 +8,8 @@ import type { Bid, Floor, InspectionView, Job, RunView, SiteState, TowerSpec } f
 
 function floor(i: number, p: Partial<Floor> = {}): Floor {
   return {
-    id: `acme/harbour#${i}`,
-    repo: 'acme/harbour',
+    id: `acme/harbor#${i}`,
+    repo: 'acme/harbor',
     kind: 'commits',
     refs: [`abc${String(i).padStart(4, '0')}`],
     title: `Change ${i}`,
@@ -24,7 +25,7 @@ function floor(i: number, p: Partial<Floor> = {}): Floor {
 }
 
 function tower(floors: Floor[], datumIndex = floors.length, kind: TowerSpec['kind'] = 'founding'): TowerSpec {
-  return { id: 'acme/harbour', repo: 'acme/harbour', kind, root: 'beauxarts', floors, datumIndex };
+  return { id: 'acme/harbor', repo: 'acme/harbor', kind, root: 'beauxarts', floors, datumIndex };
 }
 
 const earned = (state: 'lit' | 'scar' | 'waiting') => ({ jobId: 'job-1', runId: 'run-1', agentId: 'priya-rao', firmId: 'quickset', state, reverted: false });
@@ -54,7 +55,7 @@ test('ridePlan slows at the datum and dwells on scars and Claude floors', () => 
   const spec = tower(floors, 20);
   const lay = layoutTower(spec);
   const names = { agents: new Map([['priya-rao', 'Priya Rao']]), firms: new Map([['quickset', 'Quickset']]) };
-  const keys = ridePlan(lay, floors, { live: null, names, name: 'harbour', root: 'Beaux-Arts root' });
+  const keys = ridePlan(lay, floors, { live: null, names, name: 'harbor', root: 'Beaux-Arts root' });
 
   // Times and heights only climb.
   for (let i = 1; i < keys.length; i++) {
@@ -116,7 +117,7 @@ test('ridePlan slows at the datum and dwells on scars and Claude floors', () => 
 test('a live site ends the ride at the work with its caption', () => {
   const floors = Array.from({ length: 12 }, (_, i) => floor(i));
   const lay = layoutTower(tower(floors));
-  const live: SiteState = { repo: 'acme/harbour', runId: 'run-9', jobId: 'job-9', agentId: 'priya-rao', firmId: 'quickset', stage: 'framing', progress: 0.4, size: 'medium', since: '2026-11-10T18:00:00.000Z' };
+  const live: SiteState = { repo: 'acme/harbor', runId: 'run-9', jobId: 'job-9', agentId: 'priya-rao', firmId: 'quickset', stage: 'framing', progress: 0.4, size: 'medium', since: '2026-11-10T18:00:00.000Z' };
   const keys = ridePlan(lay, floors, { live, names: { agents: new Map([['priya-rao', 'Priya Rao']]), firms: new Map([['quickset', 'Quickset']]) } });
   const last = keys[keys.length - 1];
   assert.equal(last.caption?.mark, 'live');
@@ -133,7 +134,7 @@ test('a live site ends the ride at the work with its caption', () => {
 test('a root-only tower rides the root and the roof', () => {
   const spec = tower([]);
   const lay = layoutTower(spec);
-  const keys = ridePlan(lay, [], { live: null, root: 'Beaux-Arts root', name: 'harbour' });
+  const keys = ridePlan(lay, [], { live: null, root: 'Beaux-Arts root', name: 'harbor' });
   assert.equal(keys.length, 2, 'two stops: the street and the roof');
   assert.ok(keys[0].y < 2);
   assert.equal(keys[0].caption?.title, 'Beaux-Arts root');
@@ -187,7 +188,7 @@ test('skipping goes to the next stop', () => {
 
 // ---------------------------------------------------------------- the floor dossier (Phase 3 Task 18)
 
-const job = (p: Partial<Job> = {}): Job => ({ id: 'job-1', repo: 'acme/harbour', source: 'issue', title: 'Uploads lose their place', status: 'merged', ...p }) as unknown as Job;
+const job = (p: Partial<Job> = {}): Job => ({ id: 'job-1', repo: 'acme/harbor', source: 'issue', title: 'Uploads lose their place', status: 'merged', ...p }) as unknown as Job;
 const run = (p: Partial<RunView> = {}): RunView => ({ id: 'run-1', jobId: 'job-1', bidId: 'bid-1', progress: { toolCalls: 9, filesChanged: 4, testsRun: 2, turns: 6, weightedTokens: 1000, credits: 12, refusals: 0 }, summary: null, ...p }) as unknown as RunView;
 const bid = (p: Partial<Bid> = {}): Bid => ({ id: 'bid-1', jobId: 'job-1', plan: 'Add the missing retry to the uploader.', ...p }) as unknown as Bid;
 const inspection = (p: Partial<InspectionView> = {}): InspectionView => ({ id: 'insp-1', runId: 'run-1', passed: true, pushable: true, checks: [], inconclusive: null, ...p }) as unknown as InspectionView;
@@ -279,4 +280,45 @@ test('dossierFloors picks the scars, the proposals and the newest earned floors,
   for (const f of floors.slice(-3)) assert.ok(picked.includes(f.id), 'the newest three');
   assert.ok(picked.every((id) => !floors.slice(0, 4).some((f) => f.id === id)), 'no founding floor');
   assert.ok(picked.length <= 6);
+});
+
+// ---------------------------------------------------------------- the car's lamps (Phase 5 Task 5)
+
+import { carMaterials, RIDE_GLASS, RIDE_LAMPS } from '../app/src/city/ride.js';
+import { BLOOM_THRESHOLD } from '../app/src/city/post.js';
+
+test("the ride car's lamp colours stay under BLOOM_THRESHOLD", () => {
+  const under = (c: readonly number[], what: string): void => {
+    for (const ch of c) assert.ok(ch > 0 && ch < BLOOM_THRESHOLD, `${what} at ${c.map((x) => x.toFixed(3)).join(', ')} stays under the threshold`);
+  };
+  under(RIDE_LAMPS.ceiling, 'the ceiling panel');
+  under(RIDE_LAMPS.downlight, 'a downlight');
+  under(RIDE_LAMPS.halo, 'the halo');
+  // The halo is added over the lamps: the brightest lamp and the halo's peak together stay under too, so the glass in
+  // front of them never flares.
+  for (let i = 0; i < 3; i++) {
+    assert.ok(Math.max(RIDE_LAMPS.ceiling[i], RIDE_LAMPS.downlight[i]) + RIDE_LAMPS.halo[i] < BLOOM_THRESHOLD, 'lamp and halo together stay under the threshold');
+    assert.ok(RIDE_LAMPS.glass[i] < 0.1, 'the glass carries only a trace of the light');
+  }
+  // Warm: more red than blue in every lamp.
+  for (const c of [RIDE_LAMPS.ceiling, RIDE_LAMPS.downlight, RIDE_LAMPS.halo]) assert.ok(c[0] > c[2]);
+});
+
+test("the car's materials carry those colours, and its glass is too rough to flare the sun", () => {
+  const m = carMaterials();
+  // The low sun's reflection in a polished pane blew a flare across the car (rounds 2 and 3): the glass stays rough
+  // and barely metallic.
+  assert.ok(RIDE_GLASS.roughness >= 0.2 && RIDE_GLASS.metalness <= 0.1, `glass roughness ${RIDE_GLASS.roughness}, metalness ${RIDE_GLASS.metalness}`);
+  assert.equal(m.glass.roughness, RIDE_GLASS.roughness);
+  assert.equal(m.glass.metalness, RIDE_GLASS.metalness);
+  assert.ok(m.glass.transparent && m.glass.opacity === RIDE_GLASS.opacity);
+  const near = (c: { r: number; g: number; b: number }, want: readonly number[]): boolean => Math.abs(c.r - want[0]) < 1e-6 && Math.abs(c.g - want[1]) < 1e-6 && Math.abs(c.b - want[2]) < 1e-6;
+  assert.ok(near(m.lamp.color, RIDE_LAMPS.ceiling), 'the ceiling panel is RIDE_LAMPS.ceiling');
+  assert.ok(near(m.downlight.color, RIDE_LAMPS.downlight), 'a downlight is RIDE_LAMPS.downlight');
+  assert.ok(near(m.halo.color, RIDE_LAMPS.halo) && m.halo.transparent && m.halo.blending === THREE.AdditiveBlending, 'the halo is RIDE_LAMPS.halo, added by its fade');
+  assert.ok(near(m.glass.emissive, RIDE_LAMPS.glass) && m.glass.emissiveIntensity === 1, 'the glass carries its trace');
+  // The lamps' colours are what the frame holds, so bloom (which reads the linear frame) never catches them.
+  for (const mat of [m.lamp, m.downlight]) for (const ch of [mat.color.r, mat.color.g, mat.color.b]) assert.ok(ch < BLOOM_THRESHOLD);
+  for (const x of [m.glass, m.lamp, m.downlight, m.halo]) x.dispose();
+  m.haloTex.dispose();
 });

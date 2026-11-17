@@ -24,6 +24,35 @@ import type { CollarPlaza } from './collar.js';
 /** What the page knows of a repo: enough to place it. */
 export type RepoState = Pick<Repo, 'fullName' | 'slot' | 'connected' | 'status'>;
 
+/** What the page keeps of a repo between events: its state, the step its analysis reached, and the done-hold. */
+export interface KnownRepo extends RepoState {
+  step: string;
+  /** A first analysis finished (repo.analyzed): the scaffold stays, as analyzing, until the refresh after it lands. */
+  done?: boolean;
+}
+
+/**
+ * A repo as a repo event or a listing stores it, folded onto what the page
+ * knew: an analyzing repo keeps the step it reached unless the event names
+ * a new one, and a repo under the done-hold stays analyzing (and held)
+ * through any event that still has it connected and ready, so a repo event
+ * between repo.analyzed and the refresh never drops the scaffold. Off,
+ * failed, or analyzing afresh, the hold goes.
+ */
+export function takeRepoState(was: KnownRepo | undefined, r: Repo, step?: string): KnownRepo {
+  const hold = !!was?.done && r.connected && r.status === 'ready';
+  const status = hold ? 'analyzing' : r.status;
+  const next: KnownRepo = {
+    fullName: r.fullName,
+    slot: r.slot,
+    connected: r.connected,
+    status,
+    step: step ?? (status === 'analyzing' ? (was?.step ?? '') : ''),
+  };
+  if (hold) next.done = true;
+  return next;
+}
+
 /** A connected repo's first analysis, still running: its plot carries a scaffold. */
 export interface SiteSpot {
   repo: string;
@@ -39,12 +68,27 @@ export interface Occupancy {
   quarters: Quarter[];
 }
 
-export function occupancy(repos: Iterable<RepoState>, districts: District[], quarters: Quarter[] = []): Occupancy {
+/**
+ * `kept` holds the last tower the engine served for each repo (main.ts
+ * remembers them across refreshes): a repo turned off and on again stands
+ * that tower from the moment it is on, rather than nothing until the refresh
+ * after the toggle lists it again.
+ */
+export function occupancy(repos: Iterable<RepoState>, districts: District[], quarters: Quarter[] = [], kept?: ReadonlyMap<string, District>): Occupancy {
   const known = new Map<string, RepoState>();
   for (const r of repos) known.set(r.fullName, r);
   // The engine serves only connected repos' towers; one the page has not read yet is taken at its word.
   const standing = districts.filter((d) => known.get(d.repo)?.connected !== false);
   const towered = new Set(standing.map((d) => d.repo));
+  if (kept) {
+    for (const r of known.values()) {
+      const d = kept.get(r.fullName);
+      if (d && r.connected && (r.status === 'ready' || r.status === 'analyzing') && !towered.has(r.fullName)) {
+        standing.push(d);
+        towered.add(r.fullName);
+      }
+    }
+  }
   const sites: SiteSpot[] = [];
   for (const r of known.values()) {
     if (r.connected && r.status === 'analyzing' && !towered.has(r.fullName)) sites.push({ repo: r.fullName, origin: districtOrigin(r.slot) });

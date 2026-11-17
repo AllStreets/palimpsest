@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
-import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
-import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types';
-import { batchPieces, type Batched } from './batch.js';
+import { FLOOR_HEIGHT, layoutTower } from '../../../shared/tower-layout.js';
+import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types.js';
+import { REMERGE_BUDGET_MS, batchPiecesSteps, cancelRemerges, flushRemerges, longestRemerge, pendingRemerges, rebuildTarget, remergeOwner, runRemerges, scheduleRemerge, type Batched } from './batch.js';
+import { finish, stepper, type Steps } from './steps.js';
 import { plainBatch } from './plain-batch.js';
 import { schoolBatch, type SchoolBatch } from './school-towers.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
-import { createCameraRig, type ScriptPose } from './camera';
+import { createCameraRig, type ScriptPose } from './camera.js';
 import { CAMPUS_INSPECT, createCampus, type Campus, type CampusAnchors } from './campus/index.js';
 import { campusLife, EMPTY_LIFE, type CampusLife, type CampusLifeView, type LifeState } from './campus/life.js';
 import type { ObservatoryState, ObservatoryView } from './campus/observatory.js';
@@ -18,32 +19,37 @@ import { HALL } from './campus/halls.js';
 import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
-import type { BoardJob, Exchange } from './exchange.js';
-import { createGrid } from './grid';
-import { createGround, makePlinth } from './ground';
-import { createPlates, type Plate } from './labels';
-import type { Lot } from './lots';
-import { configureMaterials, texturesSettled } from './materials';
+import { campanileStands, type BoardJob, type Exchange } from './exchange.js';
+import { createGrid, type LotSummary } from './grid.js';
+import { createGround, makePlinth } from './ground.js';
+import { createPlates, type Plate } from './labels.js';
+import type { Lot } from './lots.js';
+import { configureMaterials, firstTexturesIn, texturesSettled } from './materials.js';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
-import { qualityGovernor, type DropReading } from './governor';
-import { setFacadeRooms } from './facade';
+import { qualityGovernor, type DropReading } from './governor.js';
+import { setFacadeRooms } from './facade.js';
 import { lightsOutTree } from './lightsout.js';
-import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
+import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers, shadowBoxMoves } from './lod.js';
+import { VIEW_PX } from './lod-shader.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
-import { quarterBuildKey, type QuarterShow } from './quarters.js';
-import { createPost, EXPOSURE, FLICKER } from './post';
+import { quarterBuildKey, quarterTreeSpots, rebuildDebounce, type QuarterShow } from './quarters.js';
+import { clearOfTransit, createTrees, type TreeSpot } from './trees.js';
+import { createPost, EXPOSURE, FLICKER, focusModeFor, type FocusMode, type LensState } from './post.js';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
 import { createVehicles, type Vehicles } from './vehicles.js';
 import { createPeople, type People } from './people.js';
-import type { Agent, Trip } from '../../../shared/types';
+import type { Agent, Trip } from '../../../shared/types.js';
 import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
+import { createSignalHeads } from './signal-heads.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
-import { makeScaffold, type Scaffold } from './scaffold';
+import { makeScaffold, type Scaffold } from './scaffold.js';
 import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
 import type { TowerMaterials } from './tower/kit.js';
-import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
-import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
+import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky.js';
+import { createContactShadows } from './contact-shadow.js';
+import { ROOT_TOP_HALF } from './tower/roots.js';
+import { cityExtent, clearAirFloor, easeHome, easeLimits, fogFrom, opensHome, viewLimits, type EasedHome, type EasedLimits, type ViewLimits } from './view.js';
 
 /** What a click in the city landed on: a district's tower (a floor, or its root), an agent's tower in a quarter, or a firm's plinth. */
 export type PickHit =
@@ -67,8 +73,17 @@ export interface Centerpiece {
   dispose?(): void;
 }
 
-export type CenterpieceFactory = (d: District) => Centerpiece;
-export type QuarterFactory = (q: Quarter) => Centerpiece;
+/** The longest a rebuild's shadow redraw waits for the rest of the rebuild, in seconds (askShadow). */
+export const SHADOW_COALESCE_S = 0.6;
+/** A factory may build at once or in steps (steps.ts), so the city can build a tower between frames. */
+export type CenterpieceFactory = (d: District) => Centerpiece | Steps<Centerpiece>;
+export type QuarterFactory = (q: Quarter) => Centerpiece | Steps<Centerpiece>;
+const isSteps = <T>(x: T | Steps<T>): x is Steps<T> => typeof (x as { next?: unknown }).next === 'function';
+/** A piece built in steps, or at once, as steps (one step, nothing to wait for). */
+function* stepsOf<T>(x: T | Steps<T>): Steps<T> {
+  return isSteps(x) ? yield* x : x;
+}
+
 
 export interface CityOptions {
   quality: 'high' | 'medium';
@@ -89,7 +104,8 @@ export interface CityOptions {
   /** Anything beyond the quarter's own data that changes what the factory builds (its name, its looks); a change rebuilds it. */
   quarterKey?: (q: Quarter) => string;
   /** Builds the civic exchange on the plaza at the origin (exchange.ts); without it the plaza stands empty. */
-  makeExchange?: (quality: 'high' | 'medium') => Exchange;
+  /** The exchange at a quality, with or without its campanile (exchange.ts campanileStands). */
+  makeExchange?: (quality: 'high' | 'medium', campanile: boolean) => Exchange;
   /** A persona's plate's second line for its trip (people.ts): "to <district> for <job title>". */
   describeTrip?: (trip: Trip, agent: Agent) => string;
   /** A persona's coat, linear RGB: its firm's colour. */
@@ -159,24 +175,52 @@ export interface City {
   home(): void;
   /** The view's limits now: the home framing, and how far, how hazy and how deep, as eased this frame (tests and debugging). */
   limits(): { home: { eye: number[]; target: number[] }; maxDistance: number; fogDensity: number; far: number; settled: boolean };
+  /** Multiplies the haze by k (the clear-air still shoots at 0.4 of the home value, Decision 5); null restores the city's own (debug and captures). */
+  haze(k: number | null): void;
   onPick(fn: (hit: PickHit) => void): void;
   dispose(): void;
-  /** Resolves once textures have loaded and the first frames are on screen. */
+  /** Resolves once the first texture sets (materials.ts FIRST_SETS) have loaded and the first frames are on screen. */
   ready: Promise<void>;
   /** Jumps the camera to an eye and target (tests and debugging). */
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Draw calls and triangles in the last whole frame, every pass included. */
   stats(): { calls: number; triangles: number };
+  /** The geometries and textures the renderer holds on the GPU now (renderer.info.memory): a disposed one leaves the count. */
+  memory(): { geometries: number; textures: number };
+  /** Rebuilds still under way or waiting (the re-merge queue and the quarters' debounce): 0 once the city stands as asked. */
+  rebuilding(): number;
+  /** Runs `fn` once the districts and quarters stand as last asked (at once if nothing is being rebuilt); the latest only. */
+  whenBuilt(fn: () => void): void;
+  /** The longest single rebuild step since last asked, and its key (the UI test's hitch hunt). */
+  longestStep(): { key: string; ms: number };
+  /** How many floors the tower drawn for a repo now has (its floors' picks), or -1 when none is drawn. */
+  drawnFloors(repo: string): number;
+  /** Starts (true) or ends (false) a per-frame trace of the loop's own work, returning what the last one recorded (debug). */
+  trace(on: boolean): Array<{ update: number; render: number; shadow: boolean; triangles: number }>;
   /** The next frame's draw calls and triangles by subsystem and pass, with the shadow map redrawn in it (debug and tests). */
   breakdown(detail?: boolean): Promise<Breakdown>;
+  /**
+   * An ID pass of one breakdown root (`campus`) against the city from where the camera stands (Phase 5 Task 10):
+   * the share of its own projected area in the frame that the city in front of it leaves visible, 0 to 1.
+   */
+  visibleShare(key: string): Promise<number>;
+  /**
+   * How far from the eye each pixel's surface stands (Phase 5 Task 15a), at a small size of the frame's shape:
+   * row-major from the top, in metres to DISTANCE_STEP, 0 where only sky stands (the haze's mid-distance band read).
+   */
+  distances(): Promise<{ width: number; height: number; metres: number[] }>;
   /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
+  /** The ambient lots standing within `r` of a point (grid.ts lots). */
+  ambientLots(x: number, z: number, r: number): LotSummary[];
   /** The transit network (transit.ts): what of it the camera draws now, and how much of it stands (tests and captures). */
   transit(): TransitView;
   /** The trams, trains, pods, ferries and cabs running on the network (vehicles.ts), or null before it is laid. */
   vehicles(): Vehicles | null;
+  /** The signal heads at the junctions (signal-heads.ts): how many stand and how many draw near the eye. */
+  signalHeads(): { heads: number; drawn: number };
   /** The network as laid now (shared/commute.ts), or null before the city has districts. */
   transitNetwork(): Network | null;
   /** The ambient traffic and crowd (ambient.ts), or null before the network is laid. */
@@ -194,8 +238,12 @@ export interface City {
   /** The crew's hoist on the site at work on a repo's tower, in the world, or null when no crane stands there. */
   siteHoist(repo: string): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
   /** Hands the camera to a scripted path (the ride) until a drag, a scroll, unscript() or the path's end; see camera.ts. */
-  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void, focus?: 'ride' | 'tour'): void;
   unscript(): void;
+  /** The lens as it stands this frame (post.ts): its close mode, how far on, the subject's distance, the background's blur. */
+  lens(): LensState & { focus: number };
+  /** Holds the lens in a close mode for a still staged without one (tools/perf.ts); undefined gives the camera's own mode back. */
+  lensAs(mode: FocusMode | null | undefined): void;
   /** Something that casts a shadow moved (the ride's car): the cached shadow map is drawn again. */
   redrawShadows(): void;
   /** Glides to an eye and a target. */
@@ -234,10 +282,16 @@ export interface City {
    * and its true top. Null when no such tower stands.
    */
   towerPiece(towerId: string): TowerPiece | null;
-  /** The engine's milestones (GET /api/milestones?active=1, then milestone.reached): the spire and the finial stand on their towers. */
+  /** The engine's milestones (GET /api/milestones?active=1, then milestone.reached and milestone.changed): the spire and the finial stand on their towers. */
   setMilestones(ms: ReadonlyArray<Milestone>): void;
   /** Each milestone as it shows now, by id (tests and captures). */
   milestoneShows(): Map<string, MilestoneShow>;
+  /** Hides or shows the ribbons (tests). */
+  showRibbons(on: boolean): void;
+  /** Hides or shows every tree (tests: the crowns read against the frame without them). */
+  showTrees(on: boolean): void;
+  /** The trees as planted (tests and captures): every spot, and how many draw at each level now. */
+  trees(): { spots: TreeSpot[]; trees: number; near: number; far: number };
   /**
    * Stands the university on its plot (GET /api/school/campus, Phase 4
    * Task 34): the terrace, its quads and the four halls, with the ambient
@@ -320,6 +374,8 @@ export function plinthCenterpiece(): Centerpiece {
 }
 
 const SHADOW_HALF = 320;
+/** The distance pass's step in metres (one 8-bit level): it reads 0 to 2,550 m, the haze's mid band well inside. */
+const DISTANCE_STEP = 10;
 /** The sun's shadow camera stands this far up the sun's direction from the shadow's centre. */
 const SUN_OFFSET = 800;
 /** Below this eye height the skyline hides name plates behind it. */
@@ -397,15 +453,26 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const sunNeedsUpdate = (): void => {
     sun.shadow.needsUpdate = true;
   };
-  const ground = createGround();
-  scene.add(ground.mesh);
+  const ground = createGround(quality);
+  scene.add(ground.group);
   const grid = createGrid(quality, { sun: SUN_DIRECTION, half: SHADOW_HALF, offset: SUN_OFFSET, near: 10, far: 1600 });
   scene.add(grid.group);
+  // The towers past the shadow map's box stand on their own baked contact shadows (Task 15, contact-shadow.ts).
+  const contact = createContactShadows(SUN_DIRECTION, SHADOW_HALF);
+  scene.add(contact.object);
+  // The trees (trees.ts): the streets', the roof gardens', the quarters' garths' and the campus's, one draw per
+  // species and level for all of them; planted again (once a frame at most) whenever any of those changes.
+  const trees = createTrees(quality);
+  scene.add(trees.object);
+  let treesDirty = true;
+  let treeSpots: TreeSpot[] = [];
   // The river, its quays, bridges and piers (river.ts); its water is drawn by a pass straight after the scene.
   const river = createRiver(quality);
   scene.add(river.group);
 
   let post = createPost(renderer, scene, camera, quality, [river.pass(camera)]);
+  /** A close mode held for a staged still (lensAs), or undefined for the camera's own. */
+  let lensOverride: FocusMode | null | undefined;
   // The tram, the elevated rail, the pods and the cab ranks (transit.ts), laid for the city as it stands.
   const transit = createTransit();
   scene.add(transit.group);
@@ -414,6 +481,30 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   vehicleRoot.name = 'vehicles';
   scene.add(vehicleRoot);
   let vehicles: Vehicles | null = null;
+  /** Whether the cabs have been given the traffic to queue behind. */
+  let trafficSet = false;
+  /** The network laid on this extent, and the vehicles, the traffic and the crowd laid again on it, a step at a time. */
+  function* transitSteps(extent: { blocks: ReturnType<typeof extentBlocks>; districts: Array<{ x: number; z: number }> }, target: string): Steps<void> {
+    try {
+      yield* transitLay(extent);
+    } finally {
+      transitTarget.end(target);
+    }
+  }
+  function* transitLay(extent: { blocks: ReturnType<typeof extentBlocks>; districts: Array<{ x: number; z: number }> }): Steps<void> {
+    if (!(yield* transit.setSteps(extent))) return;
+    askShadow();
+    // The asphalt darkens with oil under the cab ranks' bays (transit.ts cabRank: three bays of 6.5 m).
+    ground.setRanks((transit.network()?.ranks ?? []).map((r) => ({ x: r.x, z: r.z, dir: r.dir, length: 19.5 })));
+    yield;
+    const net = transit.network();
+    if (vehicles && ambient && net) {
+      yield* vehicles.relaySteps(net);
+      yield;
+      yield* ambient.relaySteps(net);
+    } else layVehicles();
+    treesDirty = true;
+  }
   function layVehicles(): void {
     const net = transit.network();
     if (!net) return;
@@ -436,6 +527,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         vehicles: () => vehicles,
         net: () => transit.network(),
         lampLight: (x, y, z, out) => ambient?.lampLight(x, y, z, out),
+        floorAt: (x, z) => ambient?.floorAt(x, z) ?? 0,
+        // The lights the traffic keeps to: a persona on foot waits at the kerb for them.
+        signals: () => ambient?.signals() ?? null,
         describe: opts.describeTrip,
         coatOf: opts.coatOf,
         onActivate: (agentId) => {
@@ -462,6 +556,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const ambientRoot = new THREE.Group();
   ambientRoot.name = 'traffic';
   scene.add(ambientRoot);
+  // The signal heads at the junctions with lights (signal-heads.ts), counted with the traffic.
+  const signalHeads = createSignalHeads();
+  ambientRoot.add(signalHeads.group);
   let ambient: Ambient | null = null;
   let ambientPlazas: AmbientPlaza[] = [{ x: 0, z: 0, kind: 'civic' }];
   let forcedDensity: number | null = null;
@@ -486,19 +583,24 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let exchange: Exchange | null = null;
   let board: ReadonlyArray<BoardJob> = [];
   let stopped = false;
+  /** Whether the campanile stands: only once a district rises 20 m over it (campanileStands), so it never tops a small new city. */
+  let campanile = false;
   function buildExchange(): void {
     if (!opts.makeExchange) return;
     if (exchange) {
       scene.remove(exchange.object);
       exchange.dispose();
     }
-    exchange = opts.makeExchange(quality);
+    exchange = opts.makeExchange(quality, campanile);
     exchange.setBoard(board);
     exchange.setStopped(stopped);
     scene.add(exchange.object);
     sunNeedsUpdate();
+    exchangeRev++;
     rebatchQuarters();
   }
+  /** Bumped when the exchange is rebuilt: a quarters' batch merged from its old statics is merged again at its swap. */
+  let exchangeRev = 0;
 
   // ---------------------------------------------------------------- districts
   const districtGroup = new THREE.Group();
@@ -574,6 +676,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campusRoot.add(campus.group);
     campusLiving = campusLife(campus, { people: () => people, quality });
     campusLiving.setState(lifeState);
+    treesDirty = true;
     sun.shadow.needsUpdate = true;
   }
 
@@ -584,21 +687,25 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let extent = cityExtent([]);
   let limits: ViewLimits = viewLimits(extent, width() / height());
   let eased: EasedLimits = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
-  /** The home distance the haze thins against, eased with the rest so a growing city never makes it jump. */
-  let easedHome = limits.homeDistance;
+  /** The home the haze thins against (its distance and its target), eased with the rest so a growing city never makes it jump. */
+  const easedHome: EasedHome = easeHome({ distance: 0, target: [0, 0, 0] }, { distance: limits.homeDistance, target: limits.home.target }, Infinity);
+  /** A debug multiplier on the haze (the clear-air still, Decision 5): 1 is the city's own. */
+  let hazeScale = 1;
   function relimit(snap: boolean): void {
     limits = viewLimits(extent, width() / height());
     if (snap) {
       eased = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
-      easedHome = limits.homeDistance;
+      easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, Infinity, easedHome);
     }
   }
-  const homeTarget = new THREE.Vector3();
   const applyLimits = (): void => {
     rig.controls.maxDistance = eased.maxDistance;
-    // Flown out past home the haze thins, so the whole city still reads from as far as the camera may go.
-    const fromCity = camera.position.distanceTo(homeTarget.set(limits.home.target[0], limits.home.target[1], limits.home.target[2]));
-    fog.density = fogFor(eased.fogDensity, easedHome, fromCity);
+    // Flown out past home the haze thins, so the whole city still reads from as far as the camera may go: measured
+    // from the eased home, never from a home that just jumped (Task 6).
+    // A haze thinned on purpose (haze(k), the clear-air still) never drops under the clear-air floor, so the ground's
+    // far edge stays in haze; haze(0) alone means none (the tests' clear-air read).
+    const own = fogFrom(eased.fogDensity, easedHome, camera.position);
+    fog.density = hazeScale === 1 ? own : hazeScale > 0 ? Math.max(own * hazeScale, clearAirFloor(camera.position.distanceTo(rig.controls.target))) : 0;
     if (camera.far !== eased.far) {
       camera.far = eased.far;
       camera.updateProjectionMatrix();
@@ -606,6 +713,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   };
   applyLimits();
   const toV = (v: number[]): THREE.Vector3 => new THREE.Vector3(v[0], v[1], v[2]);
+  // Before anything of his stands, the camera waits on the empty city's home (view.ts EMPTY_EXTENT): over the
+  // skyline, never down a street. The first placement with districts still opens on the city's own framing.
+  rig.view(toV(limits.home.eye), toV(limits.home.target));
 
   /** Spots the board stands on, cleared like plots. */
   let boardSpots: Array<{ x: number; z: number }> = [];
@@ -617,8 +727,24 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots). The
     // campus's block is cleared like a quarter's court but never paved: its terrace is its own ground.
     const plazas: CollarPlaza[] = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z })), ...(campusOrigin ? [campusPlaza(campusOrigin)] : [])];
+    // Once the city is showing, the ambient blocks are laid a row at a time over the next frames (Task 13) and the
+    // rest follows when they are done; a freed plot's blocks then rise from the ground (grid.ts).
+    if (spreading()) {
+      scheduleRemerge(`${owner}plazas`, stepper(plazaSteps(plazas, occ), () => {}));
+      return;
+    }
     grid.setPlazas(plazas);
-    ground.setPlazas(plazas.filter((p) => !p.terrace));
+    finish(afterPlazas(plazas, occ));
+  }
+  function* plazaSteps(plazas: CollarPlaza[], occ: Occupancy): Steps<void> {
+    yield* grid.setPlazasSteps(plazas);
+    yield;
+    yield* afterPlazas(plazas, occ);
+  }
+  function* afterPlazas(plazas: CollarPlaza[], occ: Occupancy): Steps<void> {
+    // The terrace goes in too: the kerb tiles sink to the plane under it, though the ground is not paved there (street.ts).
+    ground.setPlazas(plazas);
+    yield;
     // The ambient traffic keeps off every plaza, court and site; the crowd walks the districts' and the civic plaza's.
     ambientPlazas = [
       { x: 0, z: 0, kind: 'civic' },
@@ -628,44 +754,171 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...boardSpots.map((b) => ({ x: b.x, z: b.z, kind: 'site' as const })),
       ...(campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, kind: 'court' as const, court: campusPlaza(campusOrigin).court }] : []),
     ];
-    ambient?.setPlazas(ambientPlazas);
+    if (ambient) yield* ambient.setPlazasSteps(ambientPlazas);
+    yield;
+    treesDirty = true;
     searchLitTree(grid.group);
     // Towers, scaffolds and the skyline around them may all have changed.
-    sun.shadow.needsUpdate = true;
+    askShadow();
   }
 
+  /**
+   * Whether a rebuild may be spread over frames (Task 13): once the city has
+   * shown its first frames; before that it is built at once. A quality drop
+   * spreads its rebuild too (Task 15).
+   */
+  const spreading = (): boolean => framesAfterLoad >= 3;
+  /**
+   * Waits, a frame at a time, while the programs of what a rebuild built are
+   * compiled off the main thread (compileAsync, with the scene's lights): a
+   * new look's material compiled at the swap cost a 116 ms frame (Task 13).
+   */
+  function* compiled(roots: THREE.Object3D[]): Steps<void> {
+    // Built at once (before the city shows, or in a quality drop): there are no frames to wait in, so the first draw
+    // compiles them, as before.
+    if (!spreading()) return;
+    let done = false;
+    const all = roots.filter((r) => r.parent === null);
+    if (all.length === 0) return;
+    const holder = new THREE.Group();
+    for (const r of all) holder.add(r);
+    // Compiled as the frame draws them: into the composer's scene target (no tone mapping), as warmUp() does.
+    const was = renderer.getRenderTarget();
+    renderer.setRenderTarget(post.sceneTarget);
+    renderer.compileAsync(holder, camera, scene).then(
+      () => (done = true),
+      () => (done = true),
+    );
+    renderer.setRenderTarget(was);
+    for (const r of all) holder.remove(r);
+    // At most two seconds of frames (and never forever, should the queue be flushed while it waits).
+    for (let waits = 0; !done && waits < 120; waits++) yield;
+  }
+  /** When a rebuild first asked for the shadow map to be redrawn (seconds on the city's clock), or -1. */
+  let shadowAsked = -1;
+  function askShadow(): void {
+    if (!spreading()) {
+      sun.shadow.needsUpdate = true;
+      return;
+    }
+    if (shadowAsked < 0) shadowAsked = clock.elapsedTime;
+  }
+  /** This city's own keys on the re-merge queue (batch.ts): cancelled on dispose, never another city's. */
+  const owner = remergeOwner('city');
+  /** What the districts, the quarters and the network are being rebuilt toward, while a rebuild is in flight. */
+  const districtTarget = rebuildTarget();
+  const quarterTarget = rebuildTarget();
+  const transitTarget = rebuildTarget();
+  /**
+   * What waits for the city to stand as last asked (main.ts: the plates and
+   * the inspector, so what he sees and clicks follows what is drawn, not
+   * what is still being built). The latest only; run at once when nothing
+   * is being rebuilt.
+   */
+  let builtWaiter: (() => void) | null = null;
+  const structureBuilding = (): boolean => districtTarget.busy() || quarterTarget.busy() || quarterWait.waiting();
+  function settle(): void {
+    if (!builtWaiter || structureBuilding()) return;
+    const fn = builtWaiter;
+    builtWaiter = null;
+    fn();
+  }
+  /** Bumped whenever a pending rebuild is overtaken, so a job that is no longer wanted never commits. */
+  let districtJob = 0;
   function placeDistricts(districts: District[]): number {
     // A district whose data is unchanged keeps its built tower; only new or changed ones are built.
     const old = new Map(centerpieces.map((c) => [c.repo, c]));
-    let built = 0;
-    centerpieces = districts.map((d) => {
+    const wanted = districts.map((d) => {
       const key = JSON.stringify(d) + (opts.centerpieceKey?.(d) ?? '');
       const kept = old.get(d.repo);
-      if (kept && kept.key === key) {
-        old.delete(d.repo);
-        return { ...kept, d };
-      }
-      const piece = makeCenterpiece(d);
-      piece.object.position.set(d.origin.x, 0, d.origin.z);
-      piece.object.userData.repo = d.repo;
-      districtGroup.add(piece.object);
-      built++;
-      return { repo: d.repo, key, piece, d };
+      return kept && kept.key === key ? { d, key, kept } : { d, key, kept: null };
     });
-    for (const { piece } of old.values()) {
+    const built = wanted.filter((w) => !w.kept).length;
+    const removed = centerpieces.filter((c) => !wanted.some((w) => w.kept === c)).length;
+    if (built === 0 && removed === 0) {
+      // Nothing to build: the districts' data (their floors' states) moves on in place.
+      centerpieces = wanted.map((w) => ({ ...w.kept!, d: w.d }));
+      districtJob++;
+      cancelRemerges(`${owner}districts`);
+      districtTarget.end(districtTarget.current() ?? '');
+      return 0;
+    }
+    // The same change again while it is being built (refreshes come in bursts): the rebuild in flight goes on.
+    const target = wanted.map((w) => w.key).join('\n');
+    if (spreading() && districtTarget.same(target)) return built;
+    const job = ++districtJob;
+    districtTarget.start(target);
+    const steps = districtSteps(wanted, job, target);
+    if (spreading()) scheduleRemerge(`${owner}districts`, stepper(steps, () => {}));
+    else finish(steps);
+    return built;
+  }
+  /** Builds the changed towers and re-merges their plain meshes a step at a time, then swaps them all in at once. */
+  function* districtSteps(wanted: Array<{ d: District; key: string; kept: (typeof centerpieces)[number] | null }>, job: number, target: string): Steps<void> {
+    const made: Array<(typeof centerpieces)[number]> = [];
+    const fresh: Centerpiece[] = [];
+    for (const w of wanted) {
+      if (w.kept) {
+        made.push({ ...w.kept, d: w.d });
+        continue;
+      }
+      const piece = yield* stepsOf(makeCenterpiece(w.d));
+      fresh.push(piece);
+      piece.object.position.set(w.d.origin.x, 0, w.d.origin.z);
+      piece.object.userData.repo = w.d.repo;
+      made.push({ repo: w.d.repo, key: w.key, piece, d: w.d });
+    }
+    districtGroup.updateMatrixWorld(true);
+    for (const c of made) c.piece.object.updateMatrixWorld(true);
+    const picks = new Set(made.flatMap(({ piece }) => [...piece.pickables.keys()]));
+    yield* compiled(fresh.map((p) => p.object));
+    const commit = yield* towerPlains.prepare(
+      made.map(({ piece }) => piece.object),
+      (o) => picks.has(o),
+    );
+    if (job !== districtJob) {
+      // Overtaken: a later placement builds what is wanted now. What this one built never drew.
+      for (const p of fresh) p.dispose?.();
+      districtTarget.end(target);
+      return;
+    }
+    const keep = new Set(made.map((c) => c.piece));
+    for (const { piece } of centerpieces) {
+      if (keep.has(piece)) continue;
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    if (built > 0 || old.size > 0) {
-      const picks = new Set(centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]));
-      towerPlains.set(
-        centerpieces.map(({ piece }) => piece.object),
-        (o) => picks.has(o),
-      );
-      lodRevision++;
-    }
+    for (const p of fresh) districtGroup.add(p.object);
+    centerpieces = made;
+    commit();
+    lodRevision++;
     if (highlighted) applyHighlight();
-    return built;
+    // Its tower stands: a scaffold kept for it comes down in the same frame.
+    placeSites(sitesStanding(occNow));
+    afterSwap([...fresh.map((p) => p.object), towerPlains.group]);
+    // What he sees and clicks follows in the same frame as the swap.
+    districtTarget.end(target);
+    settle();
+    yield;
+    afterSwapLater();
+  }
+  /** What follows any rebuild once it stands: the sites move onto new roofs, the searchlights and the dust find it, the shadow is redrawn. */
+  /** In the frame of the swap: what draws the new pieces as the old drew (the searchlights' streak, a dark tower's dust). */
+  function afterSwap(roots: THREE.Object3D[]): void {
+    // Only what was swapped in: the materials of what already stood were given the searchlights' streak and the dust
+    // when it was swapped in itself (walking the whole district group is a frame's worth of work on its own).
+    for (const r of roots) {
+      searchLitTree(r);
+      lightsOutTree(r);
+    }
+    askShadow();
+  }
+  /** A frame later: the sites onto the new roofs, the skyline's milestones, the trees round the courts. */
+  function afterSwapLater(): void {
+    placeConstructions();
+    placeMilestones();
+    treesDirty = true;
+    askShadow();
   }
 
   /**
@@ -677,21 +930,36 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
    */
   let quarterBatch: Batched | null = null;
   function rebatchQuarters(): void {
-    if (quarterBatch) {
-      districtGroup.remove(quarterBatch.group);
-      quarterBatch.dispose();
-      quarterBatch = null;
-    }
-    const roots = [...quarterPieces.map(({ piece }) => piece.object), ...(exchange?.statics ?? [])];
-    if (roots.length === 0) return;
-    for (const r of roots) r.visible = true;
+    finish(rebatchSteps(quarterPieces.map(({ piece }) => piece.object)))();
+  }
+  /**
+   * The quarters' batch over these roots and the exchange's statics, merged
+   * a step at a time (batch.ts); nothing drawn changes until the returned
+   * commit swaps it in. The roots stay hidden throughout: batchPieces merges
+   * a hidden root as it would a shown one.
+   */
+  function* rebatchSteps(pieces: THREE.Object3D[]): Steps<() => void> {
+    const roots = [...pieces, ...(exchange?.statics ?? [])];
+    const rev = exchangeRev;
     districtGroup.updateMatrixWorld(true);
     exchange?.object.updateMatrixWorld(true);
-    quarterBatch = batchPieces(roots);
-    quarterBatch.group.name = 'quarters';
-    lodRevision++;
     for (const r of roots) r.visible = false;
-    districtGroup.add(quarterBatch.group);
+    const next = roots.length ? yield* batchPiecesSteps(roots) : null;
+    return () => {
+      if (quarterBatch) {
+        districtGroup.remove(quarterBatch.group);
+        quarterBatch.dispose();
+      }
+      quarterBatch = next;
+      if (next) {
+        next.group.name = 'quarters';
+        districtGroup.add(next.group);
+      }
+      lodRevision++;
+      // The exchange was rebuilt while this batch was merged from its old statics (the campanile came or went): merged
+      // again now, at once, from the pieces just swapped in (rare: only when a district crosses the campanile's height).
+      if (rev !== exchangeRev) finish(rebatchSteps(pieces))();
+    };
   }
 
   /**
@@ -716,35 +984,100 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (schoolTowers.set(towers)) sun.shadow.needsUpdate = true;
   }
 
-  function placeQuarters(quarters: Quarter[]): number {
+  let quarterJob = 0;
+  /** A quarter rebuild waiting out its debounce (quarters.ts rebuildDebounce). */
+  const quarterWait = rebuildDebounce<Steps<void>>();
+  /**
+   * The quarters as wanted: a changed one is rebuilt (quarters.ts, a floor
+   * at a time once the city is showing), the school's towers taken out of
+   * it, and the quarters' batch re-merged, all swapped in at once. `debounce`
+   * holds the start until no change has come for QUARTER_DEBOUNCE_S (hires
+   * and sales come in bursts); a re-clad, behind its scaffold, starts at once.
+   */
+  function placeQuarters(quarters: Quarter[], debounce = false): number {
     const old = new Map(quarterPieces.map((c) => [c.firmId, c]));
-    let built = 0;
-    quarterPieces = quarters.map((q) => {
+    const wanted = quarters.map((q) => {
       // Built the same lit or dark (the lights are a uniform): only what the build depends on rebuilds it.
       const key = quarterBuildKey(q) + (opts.quarterKey?.(q) ?? '');
       const kept = old.get(q.firmId);
-      if (kept && kept.key === key) {
-        old.delete(q.firmId);
-        return { ...kept, q };
-      }
-      const piece = opts.makeQuarterCenterpiece?.(q) ?? { object: new THREE.Group(), pickables: new Map() };
-      piece.object.position.set(q.origin.x, 0, q.origin.z);
-      piece.object.userData.firmId = q.firmId;
-      districtGroup.add(piece.object);
-      built++;
-      return { firmId: q.firmId, key, piece, q };
+      return kept && kept.key === key ? { q, key, kept } : { q, key, kept: null };
     });
-    const removed = old.size;
-    for (const { piece } of old.values()) {
+    const built = wanted.filter((w) => !w.kept).length;
+    const removed = quarterPieces.filter((c) => !wanted.some((w) => w.kept === c)).length;
+    treesDirty = true;
+    if (built === 0 && removed === 0) {
+      quarterPieces = wanted.map((w) => ({ ...w.kept!, q: w.q }));
+      quarterJob++;
+      quarterWait.clear();
+      cancelRemerges(`${owner}quarters`);
+      quarterTarget.end(quarterTarget.current() ?? '');
+      return 0;
+    }
+    // The same change again, waiting or under way: left to finish (the debounce is not restarted for a repeat).
+    const target = wanted.map((w) => w.key).join('\n');
+    if (spreading() && quarterTarget.same(target)) return built;
+    const job = ++quarterJob;
+    quarterTarget.start(target);
+    // A newer change: whatever was under way is let go before it does any more work.
+    cancelRemerges(`${owner}quarters`);
+    const steps = quarterSteps(wanted, job, target);
+    if (!spreading()) {
+      quarterWait.clear();
+      finish(steps);
+    } else if (debounce) quarterWait.touch(clock.elapsedTime, steps);
+    else {
+      quarterWait.clear();
+      scheduleRemerge(`${owner}quarters`, stepper(steps, () => {}));
+    }
+    return built;
+  }
+  function* quarterSteps(wanted: Array<{ q: Quarter; key: string; kept: (typeof quarterPieces)[number] | null }>, job: number, target: string): Steps<void> {
+    const made: Array<(typeof quarterPieces)[number]> = [];
+    const fresh: Centerpiece[] = [];
+    for (const w of wanted) {
+      if (w.kept) {
+        made.push({ ...w.kept, q: w.q });
+        continue;
+      }
+      const piece = yield* stepsOf(opts.makeQuarterCenterpiece?.(w.q) ?? { object: new THREE.Group(), pickables: new Map() });
+      piece.object.position.set(w.q.origin.x, 0, w.q.origin.z);
+      piece.object.userData.firmId = w.q.firmId;
+      piece.object.updateMatrixWorld(true);
+      fresh.push(piece);
+      made.push({ firmId: w.q.firmId, key: w.key, piece, q: w.q });
+    }
+    // The school's towers are drawn by their own batch (school-towers.ts), taken and merged off screen first: taking a
+    // tower hides its parts, so the quarters' merge after leaves them out, and both batches swap in the same frame.
+    const schoolTowersIn = made.flatMap(({ piece }) => piece.object.children.filter((c) => c.userData.school === true));
+    if (!schoolTowers && schoolTowersIn.length && opts.campusMaterials) {
+      campusMasonry ??= masonryMaterial();
+      schoolTowers = schoolBatch(campusMasonry, opts.campusMaterials.window);
+      schoolRoot.add(schoolTowers.group);
+    }
+    yield* compiled(fresh.map((p) => p.object));
+    const schoolSwap = schoolTowers ? yield* schoolTowers.prepare(schoolTowersIn) : null;
+    const swap = yield* rebatchSteps(made.map(({ piece }) => piece.object));
+    if (job !== quarterJob) {
+      for (const p of fresh) p.dispose?.();
+      quarterTarget.end(target);
+      return;
+    }
+    const keep = new Set(made.map((c) => c.piece));
+    for (const { piece } of quarterPieces) {
+      if (keep.has(piece)) continue;
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    if (built > 0 || removed > 0) {
-      // The school's towers are taken first, so the quarters' batch leaves their hidden parts alone.
-      batchSchoolTowers();
-      rebatchQuarters();
-    }
-    return built;
+    for (const p of fresh) districtGroup.add(p.object);
+    quarterPieces = made;
+    if (schoolSwap?.()) askShadow();
+    swap();
+    afterSwap([...fresh.map((p) => p.object), ...(quarterBatch ? [quarterBatch.group] : []), schoolRoot]);
+    // What he sees and clicks follows in the same frame as the swap.
+    quarterTarget.end(target);
+    settle();
+    yield;
+    afterSwapLater();
   }
 
   /**
@@ -810,6 +1143,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
   }
 
+  /**
+   * The scaffolds that stand: every site, and a scaffold whose repo's tower
+   * is being built and not yet swapped in (a scaffold leaves only when its
+   * tower lands).
+   */
+  function sitesStanding(occ: Occupancy): Site[] {
+    const waiting = occ.districts.filter((d) => scaffolds.has(d.repo) && !pieceOf(d.repo) && !occ.sites.some((s) => s.repo === d.repo));
+    return [...occ.sites, ...waiting.map((d) => ({ repo: d.repo, origin: d.origin }) as Site)];
+  }
   function placeSites(sites: Site[]): void {
     const next = new Map<string, Scaffold>();
     for (const s of sites) {
@@ -1088,15 +1430,30 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let lastPlazas = '';
   function setPlots(occ: Occupancy): number {
     occNow = occ;
-    const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters));
+    placed = true;
+    const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters), true);
+    const wants = campanileStands(occ.districts.map((d) => layoutTower(d.tower).top));
+    contact.set(occ.districts.map((d) => ({ x: d.origin.x, z: d.origin.z, half: ROOT_TOP_HALF[d.tower.root] ?? 14, height: layoutTower(d.tower).top })));
+    if (wants !== campanile) {
+      campanile = wants;
+      buildExchange();
+    }
     reframe(occ);
-    placeSites(occ.sites);
+    placeSites(sitesStanding(occ));
     // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
     // The campus too: the loop's street must run outside its terrace, never across it.
     const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin), ...(campusOrigin ? [campusOrigin] : [])];
-    if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) {
-      sun.shadow.needsUpdate = true;
-      layVehicles();
+    if (standing.length) {
+      const extent = { blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) };
+      const target = JSON.stringify(extent);
+      // Once the city is showing, the network is laid a stretch at a time over the next frames (Task 13); the same
+      // extent asked for again while it is being laid leaves that build to finish.
+      if (!(spreading() && transitTarget.same(target))) {
+        transitTarget.start(target);
+        const steps = transitSteps(extent, target);
+        if (spreading()) scheduleRemerge(`${owner}transit`, stepper(steps, () => {}));
+        else finish(steps);
+      }
     }
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
@@ -1113,7 +1470,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (key !== lastPlazas) {
       lastPlazas = key;
       updatePlazas(occ);
-    } else sun.shadow.needsUpdate = true;
+    } else askShadow();
     return built;
   }
 
@@ -1376,7 +1733,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const lightViewInverse = new THREE.Matrix4();
   const snapped = new THREE.Vector3();
   const shadowAt = new THREE.Vector3(NaN, NaN, NaN);
-  function followShadow(): void {
+  const lastTarget = new THREE.Vector3(NaN, NaN, NaN);
+  let stillFor = 0;
+  function followShadow(dt: number): void {
     // Snap the shadow box centre to whole texels in light space.
     sun.position.copy(rig.controls.target).add(sunOffset);
     sun.target.position.copy(rig.controls.target);
@@ -1388,22 +1747,60 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     snapped.x = Math.round(snapped.x / texel) * texel;
     snapped.y = Math.round(snapped.y / texel) * texel;
     snapped.applyMatrix4(lightView);
-    sun.target.position.copy(snapped);
-    sun.position.copy(snapped).add(sunOffset);
-    // The city stands still: the shadow map is redrawn only when its box moves or what stands in it changes.
-    if (!snapped.equals(shadowAt)) {
+    stillFor = rig.controls.target.equals(lastTarget) ? stillFor + dt : 0;
+    lastTarget.copy(rig.controls.target);
+    // The city stands still: the shadow map is redrawn only when its box moves or what stands in it changes. While the
+    // eye moves (a follow, the ride) the box follows it in steps of SHADOW_STEP rather than every texel, so the map is
+    // not redrawn every frame (Task 13): on whole texels a shadow falls exactly where it did, and only the box's far
+    // edge, SHADOW_HALF away, lags by under a step. Once the eye stops, the box comes to rest exactly where it would have.
+    if (!snapped.equals(shadowAt) && shadowBoxMoves(snapped.distanceTo(shadowAt), stillFor)) {
       shadowAt.copy(snapped);
       sun.shadow.needsUpdate = true;
     }
+    sun.target.position.copy(shadowAt);
+    sun.position.copy(shadowAt).add(sunOffset);
+    contact.follow(shadowAt);
   }
 
   let framesAfterLoad = -1;
+  /**
+   * The first draw (Task 14). Once the city stands (the first setPlots), its
+   * programs are compiled in parallel off the main thread (compileAsync)
+   * while nothing is drawn behind the veil; drawn at once, the first frame
+   * compiled them one after another on the main thread, two seconds of the
+   * first open. `warm` is null until then, false while compiling, true after.
+   * Nothing is drawn before the city stands either: the ground and the sky
+   * drawn alone first were another 0.6 s of programs compiled in line.
+   */
+  let placed = false;
+  let unplacedFrames = 0;
+  let warm: boolean | null = null;
+  let warmCap: ReturnType<typeof setTimeout> | undefined;
+  function warmUp(): void {
+    warm = false;
+    const was = renderer.getRenderTarget();
+    // Compiled for the target the frame draws the scene into (the composer's), so the first frame finds them made.
+    renderer.setRenderTarget(post.sceneTarget);
+    const done = (): void => {
+      if (warm) return;
+      river.compile(renderer, camera);
+      warm = true;
+    };
+    renderer.compileAsync(scene, camera).then(done, done);
+    // Never held behind the veil for long: past this the first draw compiles what is left, as before.
+    warmCap = setTimeout(done, 6000);
+    renderer.setRenderTarget(was);
+  }
   let resolveReady: () => void = () => {};
   const ready = new Promise<void>((resolve) => (resolveReady = resolve));
-  void texturesSettled().then(() => {
-    // The cached shadow map was drawn before the textures arrived (alpha-tested parts included): draw it again.
+  // The city is drawn once the stone, brick and glass are in (materials.ts FIRST_SETS); the paving and the metals land
+  // behind the first frame, in the order home needs them.
+  void firstTexturesIn().then(() => {
+    // The cached shadow map was drawn before the textures arrived (alpha-tested parts included): draw it again, and
+    // again once the last of them is in.
     sun.shadow.needsUpdate = true;
     framesAfterLoad = 0;
+    void texturesSettled().then(() => (sun.shadow.needsUpdate = true));
   });
 
   // ---------------------------------------------------------------- towers by distance (lod.ts)
@@ -1468,6 +1865,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
       else mesh.layers.mask = own;
     });
+    // The view's height for the pieces that hold a least size on screen (the exchange's tote board).
+    VIEW_PX.value = height();
     // Thin parts, judged whether shown or hidden now.
     for (const { piece } of centerpieces) {
       piece.object.traverse((o) => {
@@ -1487,7 +1886,119 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   }
 
   const lastFrame = { calls: 0, triangles: 0 };
+  /** Each frame's work while traced (debug): ms spent updating, ms submitting the passes, and whether the shadow map redrew. */
+  let traced: Array<{ update: number; render: number; shadow: boolean; triangles: number }> | null = null;
   const breakdownWanted: Array<{ detail: boolean; resolve: (b: Breakdown) => void }> = [];
+  const shareWanted: Array<{ key: string; resolve: (share: number) => void }> = [];
+  const distanceWanted: Array<(d: { width: number; height: number; metres: number[] }) => void> = [];
+  /**
+   * The distance pass behind distances(): the city drawn with one material that writes each surface's distance from
+   * the eye (instances and batches placed as drawn; a shader's own displacement is not honoured), the sky left out.
+   */
+  function distancePass(): { width: number; height: number; metres: number[] } {
+    const w = 480;
+    const h = Math.max(1, Math.round(w / Math.max(0.2, width() / height())));
+    const rt = new THREE.WebGLRenderTarget(w, h, { depthBuffer: true });
+    const mat = new THREE.ShaderMaterial({
+      toneMapped: false,
+      fog: false,
+      side: THREE.DoubleSide,
+      vertexShader: `
+        #include <common>
+        #include <batching_pars_vertex>
+        varying float vDist;
+        void main() {
+          #include <batching_vertex>
+          #include <begin_vertex>
+          #include <project_vertex>
+          vDist = length(mvPosition.xyz);
+        }`,
+      fragmentShader: `
+        varying float vDist;
+        void main() { gl_FragColor = vec4(min(vDist / ${(255 * DISTANCE_STEP).toFixed(1)}, 1.0), 1.0, 0.0, 1.0); }`,
+    });
+    const px = new Uint8Array(w * h * 4);
+    const was = { target: renderer.getRenderTarget(), override: scene.overrideMaterial, background: scene.background, colour: renderer.getClearColor(new THREE.Color()), alpha: renderer.getClearAlpha(), dome: sky.dome.visible };
+    try {
+      renderer.setRenderTarget(rt);
+      renderer.setClearColor(0x000000, 0);
+      sky.dome.visible = false;
+      scene.overrideMaterial = mat;
+      scene.background = null;
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+    } finally {
+      sky.dome.visible = was.dome;
+      scene.overrideMaterial = was.override;
+      scene.background = was.background;
+      renderer.setClearColor(was.colour, was.alpha);
+      renderer.setRenderTarget(was.target);
+      rt.dispose();
+      mat.dispose();
+    }
+    const metres = new Array<number>(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = ((h - 1 - y) * w + x) * 4;
+        metres[y * w + x] = px[i + 1] > 127 ? Math.max(1, px[i]) * DISTANCE_STEP : 0;
+      }
+    }
+    return { width: w, height: h, metres };
+  }
+  /**
+   * The ID pass behind visibleShare, at a small size of the frame's shape: the city drawn as it stands (its own
+   * shaders, so every fold, cut and level is honoured) with the root hidden, for its depth; then the root alone in
+   * white against that depth (what is visible), and again on a cleared depth (its projected area in the frame).
+   */
+  function idShare(key: string): number {
+    const roots = breakdownRoots().filter(([k]) => k === key).map(([, o]) => o);
+    if (!roots.length) return 0;
+    const w = 480;
+    const h = Math.max(1, Math.round(w / Math.max(0.2, width() / height())));
+    const rt = new THREE.WebGLRenderTarget(w, h, { depthBuffer: true });
+    const white = new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false });
+    const px = new Uint8Array(w * h * 4);
+    const was = { target: renderer.getRenderTarget(), autoClear: renderer.autoClear, override: scene.overrideMaterial, background: scene.background, colour: renderer.getClearColor(new THREE.Color()), alpha: renderer.getClearAlpha() };
+    const shown = roots.map((o) => o.visible);
+    const count = (): number => {
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+      let n = 0;
+      for (let i = 0; i < px.length; i += 4) if (px[i] > 127) n++;
+      return n;
+    };
+    try {
+      renderer.setRenderTarget(rt);
+      renderer.setClearColor(0x000000, 1);
+      renderer.autoClear = false;
+      renderer.clear(true, true, true);
+      roots.forEach((o) => (o.visible = false));
+      renderer.render(scene, camera);
+      roots.forEach((o, i) => (o.visible = shown[i]));
+      // The root alone, white, against the city's depth.
+      const others = scene.children.filter((c) => !roots.includes(c) && c.visible);
+      others.forEach((c) => (c.visible = false));
+      scene.overrideMaterial = white;
+      scene.background = null;
+      renderer.clear(true, false, false);
+      renderer.render(scene, camera);
+      const visible = count();
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+      const projected = count();
+      others.forEach((c) => (c.visible = true));
+      return projected > 0 ? visible / projected : 0;
+    } finally {
+      roots.forEach((o, i) => (o.visible = shown[i]));
+      scene.overrideMaterial = was.override;
+      scene.background = was.background;
+      renderer.autoClear = was.autoClear;
+      renderer.setClearColor(was.colour, was.alpha);
+      renderer.setRenderTarget(was.target);
+      rt.dispose();
+      white.dispose();
+    }
+  }
   const breakdownRoots = (): Array<[string, THREE.Object3D]> => [
     ['ambient', grid.group],
     ['river', river.group],
@@ -1495,7 +2006,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['vehicles', vehicleRoot],
     ['traffic', ambientRoot],
     ['people', peopleRoot],
-    ['ground', ground.mesh],
+    ['ground', ground.group],
     ['sky', sky.dome],
     ['construction', field.group],
     ['quarters', quarterBatch?.group ?? new THREE.Object3D()],
@@ -1505,14 +2016,45 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
     ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
     ['campus', campusRoot],
+    ['trees', trees.object],
     ['schoolTowers', schoolRoot],
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
   const clock = new THREE.Clock();
   const dropListeners: Array<(saw: QualityDrop) => void> = [];
   const governor = qualityGovernor({ start: opts.autoQuality === false ? 'medium' : quality });
+  /**
+   * A step down while the lens is on (the ride, a follow, a tour stop, the
+   * inspector's close view) first lets the depth of field ease off over
+   * DOF.ease as it does leaving a close mode, then steps down: medium has no
+   * lens, so stepping down at once would cut the blur off in one frame (Task 15).
+   */
+  let dropWaiting = false;
   function dropQuality(): void {
     if (quality === 'medium') return;
+    if (post.lens().on) {
+      dropWaiting = true;
+      return;
+    }
+    dropWaiting = false;
+    stepDown();
+  }
+  /** Set by a step down for the rest of its frame: the queue it filled waits for the next. */
+  let steppedThisFrame = false;
+  function stepDown(): void {
+    if (quality === 'medium') return;
+    steppedThisFrame = true;
+    // Whatever was being rebuilt at high is built again at medium below, at once: the waiting work is let go.
+    // The districts and quarters waiting or under way at high are dropped (they are built again at medium below, at
+    // once); the ambient blocks and the network, which the drop does not rebuild, are finished now.
+    districtJob++;
+    quarterJob++;
+    quarterWait.clear();
+    cancelRemerges(`${owner}districts`);
+    cancelRemerges(`${owner}quarters`);
+    districtTarget.end(districtTarget.current() ?? '');
+    quarterTarget.end(quarterTarget.current() ?? '');
+    flushRemerges();
     // What it saw: the window the governor judged, or the last second of frames for a drop asked for by hand.
     const reading = governor.saw ?? governor.reading() ?? { fps: 0, triangles: lastFrame.triangles };
     const fromHome = camera.position.distanceTo(toV(limits.home.eye)) < Math.max(1, limits.homeDistance * 0.05);
@@ -1522,10 +2064,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     renderer.setSize(width(), height());
     post.dispose();
     river.setQuality('medium');
-    vehicles?.setQuality('medium');
-    ambient?.setQuality('medium');
-    people?.setQuality('medium');
-    setFacadeRooms(false);
+    // The traffic, the streets' life and the facades' rooms step down on the queue, a frame each (Task 15): the rooms'
+    // programs recompile on the frame after, and all of it in the step's own frame ran it past 100 ms.
+    scheduleRemerge(`${owner}drop:vehicles`, () => vehicles?.setQuality('medium'));
+    scheduleRemerge(`${owner}drop:ambient`, () => ambient?.setQuality('medium'));
+    scheduleRemerge(`${owner}drop:people`, () => people?.setQuality('medium'));
+    scheduleRemerge(`${owner}drop:rooms`, () => setFacadeRooms(false));
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
@@ -1533,25 +2077,36 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sun.shadow.map = null;
     sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.needsUpdate = true;
-    buildExchange();
-    for (const { c } of constructions.values()) c.dispose();
-    constructions.clear();
-    rows.clear();
-    scene.remove(field.group);
-    field.dispose();
-    field = makeConstructionField('medium');
-    scene.add(field.group);
-    placeConstructions();
-    if (milestones && opts.milestoneMaterials) {
-      milestones.dispose();
-      milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials, firmColour: opts.firmColour });
-      scene.add(milestones.group);
-      placeMilestones();
-    }
-    placeCampus();
+    // The exchange keeps the build it has (Task 15): rebuilt here it was a fifth of a second in one frame, and its
+    // few draws at high are not what stepped the city down. It is built at medium the next time it is rebuilt.
+    // The rest is rebuilt at medium a piece a frame on the city's queue (Task 15): done all at once, the job sites,
+    // the milestones, the campus and every tower (the listeners' rebuild) were one frame of about a second in the
+    // middle of a ride.
+    // What stood at high draws until its medium build stands in its place.
+    scheduleRemerge(`${owner}drop:sites`, () => {
+      for (const { c } of constructions.values()) c.dispose();
+      constructions.clear();
+      rows.clear();
+      scene.remove(field.group);
+      field.dispose();
+      field = makeConstructionField('medium');
+      scene.add(field.group);
+      placeConstructions();
+    });
+    scheduleRemerge(`${owner}drop:milestones`, () => {
+      if (milestones && opts.milestoneMaterials) {
+        milestones.dispose();
+        milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials, firmColour: opts.firmColour });
+        scene.add(milestones.group);
+        placeMilestones();
+      }
+    });
+    scheduleRemerge(`${owner}drop:campus`, () => placeCampus());
+    trees.setQuality('medium');
     for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
+    const t0 = traced ? performance.now() : 0;
     const raw = clock.getDelta();
     const dt = Math.min(raw, 0.05);
     // Judged only once the city has loaded and shown its first frames, on the last whole frame's triangles.
@@ -1561,7 +2116,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       applyInset();
     }
     eased = easeLimits(eased, limits, dt, camera.position.distanceTo(rig.controls.target));
-    easedHome = THREE.MathUtils.damp(easedHome, limits.homeDistance, 3, dt);
+    easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, dt, easedHome);
     rig.update(dt);
     exchange?.update(dt);
     updateConstructions(dt);
@@ -1605,8 +2160,20 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         });
         ambient.setTrams(tramAt);
         ambient.setCabs(cabAt);
+        // One set of lights for the cars and the persona cabs, run on the vehicles' clock (which the cabs plan by),
+        // and the cabs queue behind the cars ahead of them.
+        ambient.syncSignals(vehicles.clock());
+        vehicles.setSignals(ambient.signals());
+        if (!trafficSet) {
+          const amb = ambient;
+          vehicles.setTraffic((x, z, h, reach) => amb.carAhead(x, z, h, reach));
+          trafficSet = true;
+        }
       }
       ambient.update(dt, camera, renderer.domElement.height);
+      // The signal heads at the junctions show the lights the traffic keeps to.
+      signalHeads.set(ambient.signals());
+      signalHeads.update(camera.position);
     }
     if (people) {
       people.update(dt, camera);
@@ -1619,23 +2186,58 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     plates.update();
     peoplePlates.update();
     sky.dome.position.copy(camera.position);
-    followShadow();
+    followShadow(dt);
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
-    if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
+    // And the eye's frustum (Task 12): the view and the AO draw only the blocks it meets.
+    if (grid.update(camera.position, sun.target.position, camera)) sun.shadow.needsUpdate = true;
+    if (treesDirty) {
+      treesDirty = false;
+      // Off the transit's stations, stops and ranks: their platforms, stairs and halls stand on those pavements.
+      treeSpots = clearOfTransit([...grid.treeSpots(), ...quarterPieces.flatMap(({ q }) => quarterTreeSpots(q.origin)), ...(campus?.treeSpots() ?? [])], transit.network());
+      trees.place(treeSpots);
+      askShadow();
+    }
+    if (trees.update({ time: clock.elapsedTime, eye: camera.position })) sun.shadow.needsUpdate = true;
+    ground.update(camera.position);
     if (districtLod()) sun.shadow.needsUpdate = true;
     campus?.update(dt, clock.elapsedTime, camera.position);
     campusLiving?.update(dt, clock.elapsedTime);
     schoolTowers?.update(camera.position);
+    for (const ask of shareWanted.splice(0)) ask.resolve(idShare(ask.key));
+    for (const ask of distanceWanted.splice(0)) ask(distancePass());
+    // The lens (ruling 16): the close mode the camera is in and how far its subject stands; none from home or the overview.
+    const mode = dropWaiting ? null : lensOverride !== undefined ? lensOverride : focusModeFor({ script: rig.scriptFocus(), following: rig.following(), inspecting: insetTarget > 0 });
+    post.setFocus({ mode, distance: camera.position.distanceTo(rig.controls.target), at: rig.controls.target });
+    // A step down waiting on the lens goes ahead once the lens is off.
+    if (dropWaiting && !post.lens().on) dropQuality();
+    // A rebuild waiting out its debounce starts; then the rebuilds take their few milliseconds of this frame (Task 13).
+    const due = quarterWait.take(clock.elapsedTime);
+    if (due) scheduleRemerge(`${owner}quarters`, stepper(due, () => {}));
+    // A rebuild's shadow redraw waits until the rebuilds stand (or SHADOW_COALESCE_S at most): on high one redraw of
+    // the 4096 map costs a frame, and a disconnect asked for five of them over a second (Task 13).
+    if (shadowAsked >= 0 && (pendingRemerges() === 0 || clock.elapsedTime - shadowAsked > SHADOW_COALESCE_S)) {
+      shadowAsked = -1;
+      sun.shadow.needsUpdate = true;
+    }
+    // On high the GPU's frame is near the refresh already: the rebuilds take half the CPU budget there.
+    // The frame a step down lands in has done its share: what it queued starts on the next (Task 15).
+    if (steppedThisFrame) steppedThisFrame = false;
+    else runRemerges(quality === 'high' ? REMERGE_BUDGET_MS / 2 : REMERGE_BUDGET_MS);
+    // A city that is never placed (nothing asked for in 3 s of frames) is drawn all the same.
+    if (warm === null && (placed || ++unplacedFrames > 180)) warmUp();
     renderer.info.reset();
+    const t1 = traced ? performance.now() : 0;
+    const shadowing = sun.shadow.needsUpdate;
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
       const asks = breakdownWanted.splice(0);
       const b = frameBreakdown(renderer, scene, camera, breakdownRoots, () => post.render(), asks.some((a) => a.detail));
       for (const a of asks) a.resolve(b);
-    } else post.render();
+    } else if (warm === true) post.render(dt);
     lastFrame.calls = renderer.info.render.calls;
     lastFrame.triangles = renderer.info.render.triangles;
-    if (framesAfterLoad >= 0 && ++framesAfterLoad === 3) resolveReady();
+    if (traced) traced.push({ update: t1 - t0, render: performance.now() - t1, shadow: shadowing, triangles: lastFrame.triangles });
+    if (framesAfterLoad >= 0 && warm === true && ++framesAfterLoad === 3) resolveReady();
   });
 
   return {
@@ -1683,17 +2285,41 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...eased,
       settled: eased.maxDistance === limits.maxDistance && eased.fogDensity === limits.fogDensity && eased.far === limits.far,
     }),
+    haze(k) {
+      hazeScale = k === null || !Number.isFinite(k) ? 1 : Math.max(0, k);
+      applyLimits();
+    },
     onPick(fn) {
       pickListeners.push(fn);
     },
     ready,
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
+    trace(on) {
+      const out = traced ?? [];
+      traced = on ? [] : null;
+      return out;
+    },
+    rebuilding: () => pendingRemerges() + (quarterWait.waiting() ? 1 : 0) + (grid.rising() ? 1 : 0),
+    longestStep: () => longestRemerge(),
+    drawnFloors(repo) {
+      const piece = pieceOf(repo);
+      return piece ? [...piece.pickables.values()].filter((v) => v !== null).length : -1;
+    },
+    whenBuilt(fn) {
+      builtWaiter = fn;
+      settle();
+    },
+    memory: () => ({ geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures }),
     breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
+    visibleShare: (key) => new Promise<number>((resolve) => shareWanted.push({ key, resolve })),
+    distances: () => new Promise((resolve) => distanceWanted.push(resolve)),
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
+    ambientLots: (x, z, r) => grid.lots(x, z, r),
     transit: () => transit.view(camera),
     vehicles: () => vehicles,
+    signalHeads: () => signalHeads.view(),
     transitNetwork: () => transit.network(),
     ambient: () => ambient,
     people: () => people,
@@ -1748,7 +2374,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       }
       return null;
     },
-    script: (path, onRelease) => rig.script(path, onRelease),
+    script: (path, onRelease, focus) => rig.script(path, onRelease, focus),
+    lens: () => post.lens(),
+    lensAs(mode) {
+      lensOverride = mode;
+    },
     unscript: () => rig.unscript(),
     redrawShadows() {
       sun.shadow.needsUpdate = true;
@@ -1786,6 +2416,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeMilestones();
     },
     milestoneShows: () => milestones?.shows() ?? new Map(),
+    showRibbons: (on) => milestones?.ribbons(on),
+    showTrees(on) {
+      trees.object.visible = on;
+      sun.shadow.needsUpdate = true;
+    },
+    trees: () => ({ spots: treeSpots, ...trees.counts() }),
     setCampusClock(ms) {
       campusClockAt = ms;
     },
@@ -1813,6 +2449,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       dropListeners.push(fn);
     },
     dispose() {
+      // Its waiting rebuilds go with it: the queue is shared, and they would run against what is disposed below.
+      cancelRemerges(owner);
+      clearTimeout(warmCap);
       renderer.setAnimationLoop(null);
       observer.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
@@ -1840,6 +2479,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       rig.dispose();
       post.dispose();
       grid.dispose();
+      contact.dispose();
+      trees.dispose();
       river.dispose();
       transit.dispose();
       vehicles?.dispose();
@@ -1848,6 +2489,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       campus?.dispose();
       campusMasonry?.dispose();
       ambient?.dispose();
+      signalHeads.dispose();
       ground.dispose();
       sky.dispose();
       renderer.dispose();

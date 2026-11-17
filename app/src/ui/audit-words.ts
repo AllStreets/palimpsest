@@ -6,8 +6,9 @@
  * stands, when "Propose again" may stand beside it, and why "Audit the
  * README" is held.
  */
-import type { Audit, AuditTrigger, Evidence, Job, Verdict } from '../../../shared/types.js';
-import { cleanText } from './board.js';
+import { TIER_VALUE } from '../../../shared/market-rules.js';
+import type { Audit, AuditTrigger, Evidence, Job, Tier, Verdict } from '../../../shared/types.js';
+import { cleanText, money } from './board.js';
 
 export type VerdictMark = 'full' | 'half' | 'empty' | 'hatched' | 'struck';
 
@@ -131,6 +132,24 @@ export function proposalWord(j: Pick<Job, 'status' | 'withdrawnBy'> | null): str
   if (!j) return 'not posted';
   if (j.status === 'withdrawn') return j.withdrawnBy === 'him' ? 'dismissed' : 'withdrawn';
   return STANDING[j.status] ?? j.status;
+}
+
+/**
+ * Where a proposal stands, as the one sentence every proposal on the audit
+ * page opens its second line with, whatever its state: "Waiting on you; no
+ * firm bids until you accept it." or "Dismissed, normal tier, 60 credits."
+ */
+export function proposalState(j: Pick<Job, 'status' | 'withdrawnBy' | 'tier' | 'value'> | null): string {
+  if (j?.status === 'proposed') return 'Waiting on you; no firm bids until you accept it.';
+  const word = proposalWord(j);
+  const said = `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+  // A job withdrawn by the city has no price to stand by; every other names its tier and what it pays.
+  return j && (j.status !== 'withdrawn' || j.withdrawnBy === 'him') ? `${said}, ${j.tier} tier, ${money(j.value)} credits.` : `${said}.`;
+}
+
+/** The cost as a choice he makes in words: what leads the three tiers, and the Accept that names the one chosen. */
+export function tierChoiceWords(tier: Tier): { lead: string; accept: string } {
+  return { lead: 'The city pays at most', accept: `Accept at ${money(TIER_VALUE[tier])} credits` };
 }
 
 /**

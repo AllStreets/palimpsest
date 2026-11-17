@@ -69,7 +69,7 @@ import { openDb } from '../db.js';
 import { getRunner } from '../exec.js';
 import { paths } from '../home.js';
 import { record } from '../ledger.js';
-import { mirrorDir, syncMirror } from '../mirror.js';
+import { mirrorDir, mirrorReadEnv, syncMirror } from '../mirror.js';
 import { charge, unattended } from '../market/budget.js';
 import { CHECK_MS } from '../guild/checks.js';
 import { execFileTool, execTool, forgetRun, MAX_RETURN_BYTES, reapRun, type FileOp } from '../market/broker.js';
@@ -497,7 +497,7 @@ function scrub(text: string, dirs: string[], max = MAX_OUTPUT): string {
 /** The head of the repo's default branch in the mirror (after a sync). */
 async function headSha(repo: Repo): Promise<string> {
   await syncMirror(repo.fullName);
-  const r = await getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), 'rev-parse', `refs/heads/${repo.defaultBranch}`], { timeoutMs: 60_000 });
+  const r = await getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), 'rev-parse', `refs/heads/${repo.defaultBranch}`], { timeoutMs: 60_000, env: mirrorReadEnv() });
   const sha = r.stdout.trim();
   if (r.code !== 0 || !SHA.test(sha)) throw new Error(`could not read the head of ${repo.fullName}: ${r.stderr.trim()}`);
   return sha;
@@ -578,7 +578,7 @@ async function plant(id: string, sha: string, command: string): Promise<Candidat
 
 /** git on the mirror, as the engine reads it (hardened flags, argv only). */
 async function mirrorGit(repo: Repo, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), ...args], { timeoutMs: 120_000 });
+  return getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), ...args], { timeoutMs: 120_000, env: mirrorReadEnv() });
 }
 
 /** A commit's parents and committer time (seconds), from the mirror. */

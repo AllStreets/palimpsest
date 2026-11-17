@@ -9,7 +9,8 @@
  * "Train now"), nominal thermals and 20 GB free. "Train now" never skips
  * power, power mode, thermals or disk. A probe that cannot be read fails.
  *
- * Every probe goes through the injectable runner, read only, cached 10 s.
+ * Every probe goes through the injectable runner, read only, cached 10 s
+ * (a failed read 1 s), one call shared by every gate that asks meanwhile.
  */
 import { existsSync } from 'node:fs';
 
@@ -31,6 +32,8 @@ export type Thermal = GateState['thermal'];
 
 /** How long one reading of a probe stands. */
 export const PROBE_CACHE_MS = 10_000;
+/** How long a probe that could not be read stands before it is tried again. */
+export const PROBE_FAIL_CACHE_MS = 1_000;
 const PROBE_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------- parsing
@@ -82,11 +85,27 @@ export function parseTherm(text: string): Thermal {
   return limited ? 'limited' : 'nominal';
 }
 
-/** `ioreg -c IOHIDSystem`: minutes since his last keystroke or mouse move (`HIDIdleTime`, nanoseconds). */
+/**
+ * `ioreg -c IOHIDSystem`: minutes since his last keystroke or mouse move,
+ * the `HIDIdleTime` (nanoseconds) of the IOHIDSystem entry itself. ioreg
+ * prints the entry's ancestors and children too, each a `+-o` line with its
+ * own properties, so only the lines from that entry's header to the next
+ * `+-o` are read; an answer with no header at all is read whole. Null when
+ * there is no such entry or it has no idle time.
+ */
 export function parseIdle(text: string): number | null {
-  const m = /"HIDIdleTime"\s*=\s*(\d+)/.exec(text);
-  if (!m) return null;
-  return Number(BigInt(m[1]) / 1_000_000n) / 60_000;
+  // An answer with no `+-o` header at all is that entry's properties alone.
+  let inEntry = !/^[\s|]*\+-o /m.test(text);
+  for (const line of text.split(/\r?\n/)) {
+    if (/^[\s|]*\+-o /.test(line)) {
+      inEntry = /\+-o IOHIDSystem\b|<class IOHIDSystem[,>]/.test(line);
+      continue;
+    }
+    if (!inEntry) continue;
+    const m = /"HIDIdleTime"\s*=\s*(\d+)/.exec(line);
+    if (m) return Number(BigInt(m[1]) / 1_000_000n) / 60_000;
+  }
+  return null;
 }
 
 /** `df -k <path>`: the space available, in decimal gigabytes. */
@@ -103,7 +122,8 @@ export function parseFreeGB(text: string): number | null {
 
 type Probe = 'batt' | 'g' | 'therm' | 'idle' | 'df';
 
-const cache = new Map<Probe, { at: number; text: string | null }>();
+/** Each probe's reading by when it was asked, held while it is still being read so concurrent gates share one call. */
+const cache = new Map<Probe, { at: number; reading: Promise<string | null>; text?: string | null }>();
 
 /** Forgets every cached reading (tests, and "Train now" which must read the power afresh). */
 export function resetGateCache(): void {
@@ -120,21 +140,33 @@ function command(p: Probe): [string, string[]] {
   }
 }
 
-/** One probe's output, or null when it could not be read. Cached on the wall clock, since it reads the real Mac. */
-async function read(p: Probe): Promise<string | null> {
+/**
+ * One probe's output, or null when it could not be read. Cached on the wall
+ * clock, since it reads the real Mac: a reading in flight is shared, a good
+ * one stands PROBE_CACHE_MS and a failed one PROBE_FAIL_CACHE_MS.
+ */
+function read(p: Probe): Promise<string | null> {
   const t = Date.now();
   const hit = cache.get(p);
-  if (hit && t - hit.at < PROBE_CACHE_MS && t >= hit.at) return hit.text;
-  const [cmd, args] = command(p);
-  let text: string | null;
-  try {
-    const r = await getRunner()(cmd, args, { timeoutMs: PROBE_TIMEOUT_MS });
-    text = r.code === 0 ? r.stdout : null;
-  } catch {
-    text = null;
+  if (hit && t >= hit.at) {
+    if (hit.text === undefined) return hit.reading;
+    if (t - hit.at < (hit.text === null ? PROBE_FAIL_CACHE_MS : PROBE_CACHE_MS)) return hit.reading;
   }
-  cache.set(p, { at: t, text });
-  return text;
+  const [cmd, args] = command(p);
+  const entry: { at: number; reading: Promise<string | null>; text?: string | null } = { at: t, reading: Promise.resolve(null) };
+  entry.reading = (async () => {
+    let text: string | null;
+    try {
+      const r = await getRunner()(cmd, args, { timeoutMs: PROBE_TIMEOUT_MS });
+      text = r.code === 0 ? r.stdout : null;
+    } catch {
+      text = null;
+    }
+    entry.text = text;
+    return text;
+  })();
+  cache.set(p, entry);
+  return entry.reading;
 }
 
 async function readPower(): Promise<Power> {

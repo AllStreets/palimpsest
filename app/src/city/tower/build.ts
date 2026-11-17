@@ -6,9 +6,10 @@ import type { Silhouette, TowerSpec } from '../../../../shared/types.js';
 import { crownSlots } from '../kits.js';
 import { makeLensCrown, makeSpire } from './crowns.js';
 import { addDatum, type DatumPlan } from './datum.js';
-import { bareEdge, crownFloors, earnedLine, ERA_BUILDERS, firmMark, firmMarkColor, type FloorShape, scarFloor, TITANIUM_TWIST } from './eras.js';
+import { bareEdge, crownSpan, earnedLine, ERA_BUILDERS, firmMark, firmMarkColor, type FloorShape, scarFloor, TITANIUM_TWIST } from './eras.js';
 import { bracketGeometry, Kit, M, type MatKey, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
+import { finish, type Steps } from '../steps.js';
 import { type Look, lookFor } from './variants.js';
 
 export type { TowerMaterials } from './kit.js';
@@ -71,6 +72,8 @@ export interface BuiltTower {
   top: number;
   /** What stands on an agent tower's roof by its silhouette (crownFor), or nothing. */
   crown: { kind: 'lens' | 'spire' | 'none'; rings: number; height: number };
+  /** The height of the sci-fi family crown over the top floors, in metres (0 without one). */
+  familyCrown: number;
   dispose(): void;
 }
 
@@ -105,6 +108,17 @@ export function buildTower(
   look: Look = lookFor(spec.repo),
   opts: BuildOptions = {},
 ): BuiltTower {
+  return finish(buildTowerSteps(spec, quality, mats, look, opts));
+}
+
+/** buildTower a floor at a time, then a merged material at a time (steps.ts), so a city can build one between frames. */
+export function* buildTowerSteps(
+  spec: TowerSpec,
+  quality: 'high' | 'medium',
+  mats: TowerMaterials,
+  look: Look = lookFor(spec.repo),
+  opts: BuildOptions = {},
+): Steps<BuiltTower> {
   const layout = layoutTower(spec);
   const kit = new Kit(mats);
   const detail = quality === 'high';
@@ -116,7 +130,7 @@ export function buildTower(
   // An agent's tower stands on its firm's root at the agent scale: the same vernacular, smaller in every dimension.
   const rootScale = spec.kind === 'agent' ? AGENT_ROOT_SCALE : 1;
   kit.base = M(0, 0, 0, 0, rootScale, rootScale, rootScale);
-  ROOT_BUILDERS[spec.root](kit, detail, rng(spec.id));
+  yield* ROOT_BUILDERS[spec.root](kit, detail, rng(spec.id));
   kit.base = new THREE.Matrix4();
   const rootTopHalf = ROOT_TOP_HALF[spec.root] * rootScale;
 
@@ -165,7 +179,7 @@ export function buildTower(
   if (roofCrown.kind === 'none' && last >= 0 && layout.floors[last].floor.era === 'scifi' && stateAt(last) !== 'scar' && crownSlots(family).length > 0) {
     let start = last;
     while (start > 0 && sameRun(start - 1, start) && stateAt(start - 1) !== 'scar') start--;
-    let n = crownFloors(last - start + 1);
+    let n = crownSpan(layout.floors.slice(start, last + 1).map((l) => l.h));
     const d = spec.datumIndex - 1;
     if (d >= last - n + 1 && d < last) n = last - d;
     crownStart = last - n + 1;
@@ -181,7 +195,9 @@ export function buildTower(
   /** The floor below, as built: its plan centre, half-width and height, for the brackets under an overhang. */
   let below: { cx: number; half: number; h: number } | null = null;
   let topPlan = { cx: 0, cz: 0, half: width / 2, ry: 0 };
-  layout.floors.forEach(({ floor, y0, h }, i) => {
+  yield;
+  for (let i = 0; i < layout.floors.length; i++) {
+    const { floor, y0, h } = layout.floors[i];
     kit.tint = yearDrift(spec.repo, floor.era, yearOf(floor.at), firstYear);
     const earned = earnedAt(i);
     const state = stateAt(i);
@@ -260,7 +276,8 @@ export function buildTower(
     }
     if (earned) pendingTaper++;
     else width *= TAPER;
-  });
+    yield;
+  }
 
   kit.base = new THREE.Matrix4();
   kit.tint = new THREE.Color(1, 1, 1);
@@ -276,7 +293,7 @@ export function buildTower(
     kit.base = new THREE.Matrix4();
   }
 
-  const group = kit.build();
+  const group = yield* kit.buildSteps();
   group.add(proxies);
   group.name = `tower:${spec.repo}`;
   return {
@@ -285,6 +302,7 @@ export function buildTower(
     rootPick,
     top: layout.top,
     crown: roofCrown,
+    familyCrown: crownHeight,
     dispose() {
       group.traverse((o) => {
         const m = o as THREE.Mesh;

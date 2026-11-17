@@ -1,6 +1,6 @@
 {
   "name": "palimpsest",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,6 +13,13 @@
     "dev": "concurrently -k \"tsx watch engine/main.ts\" \"vite\"",
     "build": "vite build",
     "ui-test": "node --no-warnings --import tsx tools/ui-test.ts",
+    "perf": "node --no-warnings --import tsx tools/perf.ts",
+    "sample": "node --no-warnings --import tsx tools/sample-run.ts",
+    "diagrams": "node --no-warnings --import tsx tools/diagrams.ts",
+    "film": "node --no-warnings --import tsx tools/film.ts",
+    "media:check": "node --no-warnings --import tsx tools/media-check.ts",
+    "launch": "node --no-warnings --import tsx tools/launch.ts",
+    "install:check": "node --no-warnings --import tsx tools/install-check.ts",
     "app": "vite build && tauri build",
     "trainer:setup": "uv venv --python cpython-3.12-macos-aarch64-none trainer/.venv && uv pip install --python trainer/.venv/bin/python -r trainer/requirements.txt && trainer/.venv/bin/python -c \"import platform, sys; sys.exit(0 if platform.machine() == 'arm64' else 'the trainer is not arm64')\"",
     "test:trainer": "node --no-warnings --import tsx tools/test-trainer.ts"

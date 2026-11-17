@@ -11,7 +11,9 @@ import { cleanText } from '../app/src/ui/board.js';
 import {
   awardRounds,
   blockRanges,
+  blockText,
   cleanLog,
+  creditsNote,
   dayHeading,
   issueBlocks,
   ledgerTrail,
@@ -193,7 +195,7 @@ test('the issue body reads as markdown blocks, without the scope and the checkli
     '- src/schedule/**',
     '- test/schedule/**',
     '',
-    '- [ ] Arrivals land in the harbour day',
+    '- [ ] Arrivals land in the harbor day',
     '- [x] A test covers it',
   ].join('\n');
   const blocks = issueBlocks(body);
@@ -242,9 +244,15 @@ test('the award reads as prose: who won, at what price, the calibrated chance ag
     },
   ];
   const [round] = awardRounds(ledger, names, 60);
-  assert.equal(round.prose, 'Ashlar & Vane won at 38 credits: calibrated 0.71 against a stated 0.8, an expected value of 4.60 on a 60 credit job. Ines Ashlar does the work. Next best was Quickset at 30 credits (expected value 3.10).');
+  // Glossed where it is read (audit 2026-11-17): what the expected value is made of, and why a cheaper bid lost.
+  assert.equal(round.prose, 'Ashlar & Vane won at 38 credits, an expected value of 4.60: the 60 credit job, times the 71% chance the city gives its work of passing (it stated 80%; its record trims that), less the 38 it asked. Ines Ashlar does the work. Quickset asked less, 30 credits, but at a 60% chance its expected value came to only 3.10, so it lost.');
   assert.deepEqual(round.bids.map((b) => b.id), ['b1', 'b2']);
   assert.deepEqual(round.satOut, [{ agentId: 'wren-sparrow', firmId: null, reason: 'no slot before the window closed' }]);
+  // As stated, and a dearer runner-up: the first-timer's case, Quickset at 27.97 against Lodestar at 40.06 on a 60 credit job.
+  const quick = bid('q1', 'quickset', 'priya-rao', 27.97, 0.7, 0.7, 14.03);
+  const dear = bid('l1', 'lodestar', 'hal-meridian', 40.06, 0.8, 0.78, 6.74);
+  const [plain] = awardRounds([{ id: 4, at: '2026-11-10T10:02:00Z', kind: 'job.awarded', data: { jobId: 'job-1', considered: [quick, dear], chosen: quick, satOut: [] } }], names, 60);
+  assert.equal(plain.prose, 'Quickset won at 27.97 credits, an expected value of 14.03: the 60 credit job, times the 70% chance the city gives its work of passing (as it stated), less the 27.97 it asked. Priya Rao does the work. Next best was Lodestar at 40.06 credits, an expected value of 6.74.');
   // A round that drew nothing says so.
   const [none] = awardRounds([{ id: 9, at: '2026-11-10T11:00:00Z', kind: 'job.awarded', data: { jobId: 'job-1', considered: [], chosen: null, why: 'no bids', satOut: [] } }], names, 60);
   assert.equal(none.prose, 'No firm bid in this round, so the job went back on the board.');
@@ -310,4 +318,53 @@ test('the verdict line says passed and pushable, or which checks failed', () => 
   assert.equal(verdict(i({ checks: [c('test', 'fail'), c('scope', 'fail'), c('lint', 'pass')] })).text, 'Failed: test, scope');
   assert.equal(verdict(i({ inconclusive: 'the diff is too large for any reviewer' })).text, 'Inconclusive: the diff is too large for any reviewer');
   assert.equal(verdict(i({ checks: [c('test', 'pass')] })).text, 'Failed');
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 17: the screens' parked lines
+
+test('find-in-page reaches emptied diff rows: an emptied block keeps its lines as text', () => {
+  const big = parseDiff(['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', '@@ -0,0 +1,450 @@', ...Array.from({ length: 450 }, (_, i) => `+line ${i} of the custody export`)].join('\n'));
+  const lines = big[0].lines;
+  const [from, to] = blockRanges(lines.length, 200)[1];
+  const text = blockText(lines, from, to);
+  // One line of text per row, in order, so a search in the page finds a row drawn or not.
+  assert.equal(text.split('\n').length, to - from);
+  assert.ok(text.includes(lines[from].text) && text.includes(lines[to - 1].text));
+  assert.ok(!text.includes(lines[from - 1].text) && !text.includes(lines[to]?.text ?? '\u0000'));
+  assert.equal(blockText(lines, 0, 0), '');
+});
+
+test('the credits explanation stands in the page, not in a tooltip only', () => {
+  assert.equal(creditsNote(12.4, 60), 'What the work has cost so far. The firm is paid its price only if the change merges.');
+  assert.equal(creditsNote(61, 60), 'Over its bid: the firm pays the difference from its own books.');
+  assert.equal(creditsNote(3, null), 'What the work has cost so far.');
+});
+
+test('an inspection page is titled in plain words: which checks failed', async () => {
+  const { inspectionTitle } = await import('../app/src/ui/detail.js');
+  const c = (name: CheckView['name'], status: CheckView['status']): CheckView => ({ name, status, detail: '', durationMs: 1, testsRun: null, log: null });
+  const base = { id: 'i', runId: 'r', jobId: 'j', repo: 'a/b', reviewerAgentId: null, reviewerFirmId: null, design: null, cost: 0, at: '' } as const;
+  const i = (patch: Partial<InspectionView>): InspectionView => ({ ...base, checks: [], passed: false, pushable: false, ...patch });
+  const eight = (fails: CheckView['name'][]): CheckView[] => (['install', 'test', 'typecheck', 'lint', 'build', 'scope', 'review', 'design'] as const).map((n) => c(n, fails.includes(n) ? 'fail' : 'pass'));
+  assert.equal(inspectionTitle(i({ checks: eight(['scope', 'review']) })), 'Failed the scope and the review');
+  assert.equal(inspectionTitle(i({ checks: eight(['test']) })), 'Failed the tests');
+  assert.equal(inspectionTitle(i({ checks: eight(['install', 'typecheck', 'design']) })), 'Failed the install, the type check and the design');
+  assert.equal(inspectionTitle(i({ passed: true, pushable: true, checks: eight([]) })), 'Passed all 8 checks; it may be pushed');
+  assert.equal(inspectionTitle(i({ passed: true, pushable: false, checks: eight([]) })), 'Passed all 8 checks; it opens a pull request');
+  assert.equal(inspectionTitle(i({ inconclusive: 'the diff is too large for any reviewer' })), 'Inconclusive: the diff is too large for any reviewer');
+});
+
+test('a check says its key reason whole, cut only between sentences', async () => {
+  const { checkSummary } = await import('../app/src/ui/detail.js');
+  const design = 'Shot 2 routes before and after at 1440 x 900. Before 7, after 6 of 10 (pass at 6, no more than a point below before). The rebuild banner is legible and honest about stale results, but it pushes the results down a row and its spinner never stops on a still page; the berth board is unchanged.';
+  assert.equal(checkSummary(design), design, 'the judge\'s reason is never cut');
+  const long = `${'The first sentence says what failed. '.repeat(12)}And the tail.`;
+  const s = checkSummary(long);
+  assert.ok(s.length <= 400, `${s.length}`);
+  assert.match(s, /failed\.$/, 'ends on a whole sentence');
+  assert.equal(checkSummary('npm ci'), 'npm ci');
+  assert.equal(checkSummary(''), '');
+  // One sentence too long to keep whole is cut at a clause, never mid-word.
+  const clause = `${'word '.repeat(70)}; ${'more '.repeat(30)}`;
+  assert.match(checkSummary(clause), /word…$/);
 });

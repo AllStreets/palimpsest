@@ -19,6 +19,36 @@ import type { Archetype, Face, Hood } from './lots.js';
 
 export type ShopKind = 'shop' | 'cafe' | 'lobby' | 'shut';
 
+/** How a corner lot's street corner is cut: a chamfer on offices and glass, a streamline quarter round on mid-century slabs. */
+export type CornerKind = 'chamfer' | 'round';
+
+/**
+ * How far in from each street corner the cut starts, as a fraction of the
+ * wall's side: the kit's chamfer_box(0.12) and round_box(0.16) (kits.py).
+ * The facade shader maps the windows round the cut by arc length from the
+ * same fractions, and a shopping front is planned over the straight run
+ * between them (frontWidth).
+ */
+export const CUT: Record<CornerKind, number> = { chamfer: 0.12, round: 0.16 };
+
+/** Which corner lots cut their street corners: offices and glass chamfer, mid-century slabs round, on the upper variants, where two street fronts meet. */
+export function cutOf(archetype: Archetype, front: readonly Face[], variant: number): CornerKind | null {
+  if (front.length < 2 || variant <= 0.45) return null;
+  if (archetype === 'midcentury') return 'round';
+  if (archetype === 'commercial' || archetype === 'glass') return 'chamfer';
+  return null;
+}
+
+/** The straight run of a face between its cuts: the width its shopfront bays are counted over. */
+export function frontWidth(full: number, cut: CornerKind | null): number {
+  return cut ? full * (1 - 2 * CUT[cut]) : full;
+}
+
+/** The ground bay round a cut corner continues the x front's first bay (the shader reads the same slot). */
+export function cornerBay(p: Pick<ShopfrontPlan, 'x'>): ShopKind {
+  return p.x[0] ?? 'shut';
+}
+
 /** The kinds in the order their two-bit codes name them. */
 export const SHOP_KINDS: readonly ShopKind[] = ['shop', 'cafe', 'lobby', 'shut'];
 
@@ -237,6 +267,8 @@ export interface ShopfrontSite {
   front: Face[];
   /** Per building; the same seed gives the same front. */
   seed: number;
+  /** A cut street corner: the bays are counted over the straight run between the cuts. */
+  cut?: CornerKind | null;
 }
 
 export function shopfrontPlan(s: ShopfrontSite): ShopfrontPlan {
@@ -268,8 +300,8 @@ export function shopfrontPlan(s: ShopfrontSite): ShopfrontPlan {
     }
     return { kinds, awnings };
   };
-  const fx = face(s.d, s.front.includes('px') || s.front.includes('nx'));
-  const fz = face(s.w, s.front.includes('pz') || s.front.includes('nz'));
+  const fx = face(frontWidth(s.d, s.cut ?? null), s.front.includes('px') || s.front.includes('nx'));
+  const fz = face(frontWidth(s.w, s.cut ?? null), s.front.includes('pz') || s.front.includes('nz'));
   return { bay, hood: HOODS.indexOf(s.hood), palette, frontage, x: fx.kinds, z: fz.kinds, awningsX: fx.awnings, awningsZ: fz.awnings };
 }
 

@@ -76,7 +76,19 @@ export function listJobs(filter: JobFilter = {}): Job[] {
     .filter((j) => (filter.repo === undefined || j.repo === filter.repo)
       && (statuses === null || statuses.includes(j.status))
       && (filter.source === undefined || j.source === filter.source))
-    .sort((a, b) => a.postedAt.localeCompare(b.postedAt) || a.id.localeCompare(b.id));
+    .sort((a, b) => a.postedAt.localeCompare(b.postedAt) || findingOrder(a, b) || a.id.localeCompare(b.id));
+}
+
+/**
+ * Proposals one audit posted in the same instant, in that audit's finding
+ * order (f2 before f10), so the board, the report and the ledger read them
+ * the same way every time rather than by their random ids. 0 for any other pair.
+ */
+function findingOrder(a: Job, b: Job): number {
+  const pa = a.proposal;
+  const pb = b.proposal;
+  if (!pa || !pb || pa.auditId !== pb.auditId) return 0;
+  return pa.findingId.localeCompare(pb.findingId, 'en', { numeric: true });
 }
 
 function newId(): string {

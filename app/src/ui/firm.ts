@@ -1,4 +1,4 @@
-import { HIRE_FEE } from '../../../shared/market-rules';
+import { creditsFixed, HIRE_FEE } from '../../../shared/market-rules';
 import type { FirmDetail, FirmRound, FirmView, Quarter, ReputationPoint } from '../../../shared/types';
 import { api, type EngineEvent } from '../api';
 import { placeHref } from '../router';
@@ -7,6 +7,7 @@ import { button, checkRadio, el, plural, rovingRadios, textButton } from './cont
 import { clock, dayHeading } from './detail';
 import { balanceCell, gauge, grouped, measures, silhouetteGlyph, svgEl } from './firms';
 import { ERA_NAMES, ROOT_NAMES } from './inspector';
+import { handoffs } from './handoffs';
 import { coalesce, detailSheet, keyedSlot, pageLink, secHead, setTrail } from './pages';
 import { bankruptIn, bookLines, figure, longDate, roundWords, shortDate, stepPath, type StoryNames } from './story';
 import './market.css';
@@ -40,7 +41,7 @@ type RoundFilter = 'all' | 'won' | 'lost' | 'none';
 
 /** A signed amount for the books: a true minus, and a plus on money coming in. */
 function signed(n: number): string {
-  return n < 0 ? `−${(-n).toFixed(2)}` : `+${n.toFixed(2)}`;
+  return n < 0 && Math.round(n * 100) !== 0 ? creditsFixed(n) : `+${creditsFixed(Math.abs(n))}`;
 }
 
 /**
@@ -52,6 +53,12 @@ function signed(n: number): string {
  * and its hires and the towers it bought or lost. Updates from the event stream.
  */
 export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): FirmPage {
+  // The palette (Phase 5) flies to a firm's quarter the way this page's own link does.
+  handoffs.flyToQuarter = (firmId) => {
+    if (!opts.quarterStands(firmId)) return false;
+    opts.flyToQuarter(firmId);
+    return true;
+  };
   const sheet = detailSheet(parent, 'firmpage', opts.onDismiss);
   const body = sheet.body;
   const motto = el('p', 'firm-motto-big');

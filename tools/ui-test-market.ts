@@ -109,15 +109,15 @@ async function repoChecks(
   shots: string,
   haltRepo: (fullName: string, reason: string) => unknown,
 ): Promise<void> {
-  const harbour = 'tidewater/harbor-ledger';
+  const harbor = 'tidewater/harbor-ledger';
   const assay = 'lantern/assay-kit';
   const quarry = 'ferro/quarry';
-  // The harbour repo carries every check (its tree is a Vite app); assay-kit has tests and no build.
+  // The harbor repo carries every check (its tree is a Vite app); assay-kit has tests and no build.
   check((await repoOf(page, assay))?.checks?.build === null && !!(await repoOf(page, assay))?.checks?.test, 'assay-kit has a test command and no build command');
   haltRepo(quarry, 'Three failed inspections in a row');
 
   await go(page, '#/repos');
-  const shown = await within(page, 8000, async () => (await page.locator(`${rowSel(harbour)} [role="switch"].market`).count()) === 1);
+  const shown = await within(page, 8000, async () => (await page.locator(`${rowSel(harbor)} [role="switch"].market`).count()) === 1);
   check(shown, 'every connected repo carries a Market switch');
   if (!shown) return;
   for (const r of await api<Repo[]>(page, '/api/repos')) {
@@ -125,7 +125,7 @@ async function repoChecks(
     const sw = page.locator(`${rowSel(r.fullName)} [role="switch"].market`);
     if ((await sw.count()) === 1) check((await sw.getAttribute('aria-checked')) === String(r.market), `${r.fullName}'s Market switch shows what is stored (${r.market ? 'on' : 'off'})`);
   }
-  const off = (await api<Repo[]>(page, '/api/repos')).find((r) => r.connected && !r.market && r.fullName !== harbour);
+  const off = (await api<Repo[]>(page, '/api/repos')).find((r) => r.connected && !r.market && r.fullName !== harbor);
   check(!!off, 'a connected repo starts with the market off');
 
   // The market switch patches `market` and nothing else.
@@ -134,7 +134,7 @@ async function repoChecks(
     if (r.method() === 'PATCH' && /\/api\/repos\//.test(r.url())) patches.push(r.postData() ?? '');
   };
   page.on('request', onReq);
-  const target = off?.fullName ?? harbour;
+  const target = off?.fullName ?? harbor;
   await page.locator(`${rowSel(target)} [role="switch"].market`).click();
   check(await within(page, 4000, async () => (await repoOf(page, target))?.market === true), `the Market switch turns the market on for ${target}`);
   page.off('request', onReq);
@@ -144,10 +144,10 @@ async function repoChecks(
   check(await within(page, 4000, async () => (await repoOf(page, target))?.market === false), 'and off again');
 
   // Each ready row says when its README was last audited, or that it never was; the word links to the district page.
-  const auditedLink = page.locator(`${rowSel(harbour)} a.repo-audited`);
+  const auditedLink = page.locator(`${rowSel(harbor)} a.repo-audited`);
   const auditedText = ((await auditedLink.textContent()) ?? '').trim();
-  check(/^audited /.test(auditedText) && !/never/.test(auditedText), `the harbour repo reads audited (${auditedText})`);
-  check((await auditedLink.getAttribute('href')) === `#/repos/${harbour}`, 'and links to its district page');
+  check(/^audited /.test(auditedText) && !/never/.test(auditedText), `the harbor repo reads audited (${auditedText})`);
+  check((await auditedLink.getAttribute('href')) === `#/repos/${harbor}`, 'and links to its district page');
   const unaudited = (await api<Repo[]>(page, '/api/repos')).find((r) => r.connected && r.status === 'ready' && !r.auditedAt);
   check(!!unaudited, 'a connected repo has never been audited');
   if (unaudited) check(((await page.locator(`${rowSel(unaudited.fullName)} a.repo-audited`).textContent()) ?? '').trim() === 'never audited', `and its row reads never audited (${unaudited.fullName})`);
@@ -156,7 +156,7 @@ async function repoChecks(
   check(built.length > 0 && !/market opens|when the market|opens later/i.test(bundle.split(BRIEF_SENTENCE).join('')), 'no built script says when the market opens');
 
   // Push mode beside it: the note says what it does; without a build command the switch is disabled and says why.
-  check(((await page.locator(`${rowSel(harbour)} .repo-push .repo-push-note`).textContent()) ?? '').trim() === 'merges to main after inspection; needs a test and a build command', 'the push note says what push mode does and needs');
+  check(((await page.locator(`${rowSel(harbor)} .repo-push .repo-push-note`).textContent()) ?? '').trim() === 'merges to main after inspection; needs a test and a build command', 'the push note says what push mode does and needs');
   const assayPush = page.locator(`${rowSel(assay)} [role="switch"].push`);
   check((await assayPush.getAttribute('aria-disabled')) === 'true', 'push mode is disabled on the repo without a build command');
   const why = ((await page.locator(`${rowSel(assay)} .repo-push-why`).textContent()) ?? '').trim();
@@ -166,7 +166,7 @@ async function repoChecks(
   await assayPush.click({ force: true });
   await page.waitForTimeout(300);
   check((await assayPush.getAttribute('aria-checked')) === 'false' && (await repoOf(page, assay))?.pushMode === false, 'clicking the disabled switch changes nothing');
-  check((await page.locator(`${rowSel(harbour)} [role="switch"].push`).getAttribute('aria-disabled')) !== 'true', 'push mode stays open where both commands exist');
+  check((await page.locator(`${rowSel(harbor)} [role="switch"].push`).getAttribute('aria-disabled')) !== 'true', 'push mode stays open where both commands exist');
 
   // A halted repo says so, with Resume.
   const halt = page.locator(`${rowSel(quarry)} .repo-halt`);
@@ -185,7 +185,7 @@ async function repoChecks(
   check(/harness proposed/i.test((await page.locator(`${rowSel(harnessRepo)} .repo-harness`).textContent()) ?? ''), 'and says a harness is proposed');
 
   // The row name opens the district page.
-  const name = page.locator(`${rowSel(harbour)} a.repo-name`);
+  const name = page.locator(`${rowSel(harbor)} a.repo-name`);
   check((await name.getAttribute('href')) === '#/repos/tidewater/harbor-ledger', `the row name links to the district page (${await name.getAttribute('href')})`);
   await page.locator(`${rowSel(assay)}`).scrollIntoViewIfNeeded();
   await page.locator('.sheet.repos .sheet-body').evaluate((b) => {
@@ -205,7 +205,7 @@ async function repoChecks(
 // ---------------------------------------------------------------- the district page
 
 async function districtChecks(page: Page, check: Check, shots: string): Promise<void> {
-  const harbour = 'tidewater/harbor-ledger';
+  const harbor = 'tidewater/harbor-ledger';
   await go(page, '#/repos/tidewater/harbor-ledger');
   const sheet = page.locator('.sheet.district');
   const shown = await within(page, 6000, async () => (await sheet.locator('.check-row[data-check]').count()) === 6);
@@ -241,7 +241,7 @@ async function districtChecks(page: Page, check: Check, shots: string): Promise<
   const input = testRow.locator('input.check-cmd');
   await input.fill(cmd);
   await input.press('Enter');
-  check(await within(page, 4000, async () => (await repoOf(page, harbour))?.checks?.test === cmd), 'a test command typed and Entered is stored');
+  check(await within(page, 4000, async () => (await repoOf(page, harbor))?.checks?.test === cmd), 'a test command typed and Entered is stored');
   check(await within(page, 3000, async () => ((await testRow.locator('.check-src').textContent()) ?? '').trim() === 'set by you'), `and the row says set by you (${await testRow.locator('.check-src').textContent()})`);
   check(((await sheet.locator('.check-row[data-check="build"] .check-src').textContent()) ?? '').trim() === 'detected', 'the others still say detected');
   check(((await input.getAttribute('aria-describedby')) ?? '').split(' ').includes((await testRow.locator('.check-src').getAttribute('id')) ?? '-'), 'the input is described by where its command came from');
@@ -250,25 +250,25 @@ async function districtChecks(page: Page, check: Check, shots: string): Promise<
   const lint = sheet.locator('.check-row[data-check="lint"]');
   await lint.locator('input.check-cmd').fill('');
   await lint.locator('input.check-cmd').press('Enter');
-  check(await within(page, 4000, async () => (await repoOf(page, harbour))?.checks?.lint === null), 'an emptied command is stored as none');
+  check(await within(page, 4000, async () => (await repoOf(page, harbor))?.checks?.lint === null), 'an emptied command is stored as none');
   check(await within(page, 3000, async () => ((await lint.locator('.check-src').textContent()) ?? '').trim() === 'none'), `and the row says none, not set by you (${await lint.locator('.check-src').textContent()})`);
 
   // Add a screenshot route.
-  const routes = (await repoOf(page, harbour))?.checks?.shots ?? [];
+  const routes = (await repoOf(page, harbor))?.checks?.shots ?? [];
   const add = sheet.locator('input.shot-add');
   await add.fill('/berths');
   await add.press('Enter');
-  check(await within(page, 4000, async () => ((await repoOf(page, harbour))?.checks?.shots ?? []).includes('/berths')), 'a screenshot route added is stored');
-  const after = (await repoOf(page, harbour))?.checks?.shots ?? [];
+  check(await within(page, 4000, async () => ((await repoOf(page, harbor))?.checks?.shots ?? []).includes('/berths')), 'a screenshot route added is stored');
+  const after = (await repoOf(page, harbor))?.checks?.shots ?? [];
   check(after.length === routes.length + 1 && routes.every((r) => after.includes(r)), `beside the routes it had (${after.join(', ')})`);
   check(await within(page, 3000, async () => (await sheet.locator('.shot-route', { hasText: '/berths' }).count()) === 1), 'and listed');
   const bad = 'no slash';
   await add.fill(bad);
   await add.press('Enter');
   await page.waitForTimeout(300);
-  check(!((await repoOf(page, harbour))?.checks?.shots ?? []).includes(bad) && /\//.test((await sheet.locator('.shot-why').textContent()) ?? ''), 'a route without a leading slash is refused, and says why');
+  check(!((await repoOf(page, harbor))?.checks?.shots ?? []).includes(bad) && /\//.test((await sheet.locator('.shot-why').textContent()) ?? ''), 'a route without a leading slash is refused, and says why');
   await sheet.locator('.shot-route', { hasText: '/berths' }).locator('button.shot-remove').click();
-  check(await within(page, 4000, async () => !((await repoOf(page, harbour))?.checks?.shots ?? []).includes('/berths')), 'and a route can be removed');
+  check(await within(page, 4000, async () => !((await repoOf(page, harbor))?.checks?.shots ?? []).includes('/berths')), 'and a route can be removed');
 
   // A harness proposal is accepted from its district.
   const harness = await proposedHarness(page);
@@ -347,7 +347,11 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
     });
     check(fit.wrapped && fit.inside, 'wrapped inside its column');
     check(/^The statusline percentages held, read .* ago\.$/.test(((await claudeP.locator('.prov-state').textContent()) ?? '').trim()), `and the state line says what held and when it was read (${await claudeP.locator('.prov-state').textContent()})`);
-    check((await claudeP.locator('.usage-five .usage-pct').textContent()) === `${SAMPLE_USED.five}%` && (await claudeP.locator('.usage-week .usage-pct').textContent()) === `${SAMPLE_USED.week}%`, 'with the readings still shown under it');
+    // The windows still stand under the trouble line: as they stand now where the engine could read that, else the reading.
+    const usageNow = ((await page.evaluate(() => fetch('/api/usage').then((r) => r.json()))) as { now: { fiveHour: number | null; sevenDay: number | null } | null }).now;
+    const shownFive = await claudeP.locator('.usage-five .usage-pct').textContent();
+    const shownWeek = await claudeP.locator('.usage-week .usage-pct').textContent();
+    check(shownFive === `${usageNow?.fiveHour ?? SAMPLE_USED.five}%` && shownWeek === `${usageNow?.sevenDay ?? SAMPLE_USED.week}%`, `with the windows still shown under it (${shownFive}, ${shownWeek}; the engine says ${usageNow?.fiveHour ?? 'the reading'}, ${usageNow?.sevenDay ?? 'the reading'})`);
     const troubleBox = await trouble.boundingBox();
     const stateBox = await claudeP.locator('.prov-state-line').boundingBox();
     check(!!troubleBox && !!stateBox && troubleBox.y >= stateBox.y + stateBox.height - 1, 'the trouble line stands under the state line, never over the readings');

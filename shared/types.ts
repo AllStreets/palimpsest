@@ -342,6 +342,8 @@ export interface CheckResult {
   concerns?: string[];
   /** Review and design: the reviewer's or the judge's own notes. */
   notes?: string;
+  /** A failed check that never ran to an answer (refused by the guard, or out of time): it says nothing about the repo, so no baseline keeps it. */
+  inconclusive?: 'refused' | 'timed out';
 }
 
 export interface Inspection {

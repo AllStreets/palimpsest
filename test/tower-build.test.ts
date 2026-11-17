@@ -6,7 +6,11 @@ import * as THREE from 'three';
 
 import { AGENT_FLOOR_WIDTH, buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import { ROOT_TOP_HALF } from '../app/src/city/tower/roots.js';
-import { crownFloors } from '../app/src/city/tower/eras.js';
+import * as eras from '../app/src/city/tower/eras.js';
+
+const { crownFloors } = eras;
+/** The hero's minimum crown height, read off the module so a build without it fails this file's crown test alone. */
+const HERO_CROWN_MIN = (eras as Record<string, unknown>).HERO_CROWN_MIN as number;
 import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
 import { FAMILIES, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import { DATUM_HEIGHT } from '../app/src/city/tower/datum.js';
@@ -601,6 +605,66 @@ test('the top floors of every sci-fi run carry its family crown from the Blender
   }
 });
 
+test("the Gothic and pagoda roots keep their linework at 600 m: pinnacles' crockets, rafter ends and balusters stand above HIDE_PX", async () => {
+  // gothic-far and pagoda-far look at each root from 600 m through the 36 degree lens over an 890 pixel view: a thin
+  // part under half a pixel there hides (lod.ts detailHidden), and the crockets that make a pinnacle a pinnacle, the
+  // rafter ends that rule an eave and the balusters of the gallery did, leaving bare cones and blank soffits.
+  const { detailHidden } = await import('../app/src/city/lod.js');
+  for (const root of ['gothic', 'pagoda'] as const) {
+    const t = buildTower({ id: `acme/${root}#founding`, repo: `acme/${root}`, kind: 'founding', root, floors: [], datumIndex: 0 }, 'high', plainMaterials());
+    t.group.traverse((o) => {
+      const w = o.userData.detailWidth as number | undefined;
+      if (w === undefined) return;
+      assert.equal(detailHidden({ size: w, distance: 600, hidden: false, viewHeight: 890 }), false, `${root}: ${o.name} (${w.toFixed(2)} m) hides at 600 m`);
+    });
+    t.dispose();
+  }
+});
+
+test('the Ionic capitals carry real volutes: scrolls with an eye and a channel, under the abacus', () => {
+  // A torus reads as a donut close up. A volute is a scroll: a flat face, a fillet winding in over it with the
+  // channel sunk between its turns, and a proud eye at its centre, standing just under the abacus.
+  const t = buildTower(spec('beauxarts'), 'high', plainMaterials());
+  t.group.updateMatrixWorld(true);
+  const vol = instances(t.group, 'tower:col:volute');
+  const aba = instances(t.group, 'tower:col:abacus');
+  assert.ok(vol && aba, 'the capitals carry volutes and an abacus');
+  const g = vol!.geometry;
+  const pos = g.attributes.position;
+  const nor = g.attributes.normal;
+  const levels = new Set<number>();
+  for (let i = 0; i < pos.count; i++) if (nor.getZ(i) > 0.95) levels.add(Math.round(pos.getZ(i) / 0.005));
+  assert.ok(levels.size >= 3, `the scroll's front stands at ${levels.size} depths: a face, a fillet over the channel, a proud eye`);
+  g.computeBoundingBox();
+  const m = new THREE.Matrix4();
+  const top = (mesh: THREE.InstancedMesh, which: 'max' | 'min'): number => {
+    mesh.getMatrixAt(0, m);
+    m.premultiply(mesh.matrixWorld);
+    const b = mesh.geometry.boundingBox ?? (mesh.geometry.computeBoundingBox(), mesh.geometry.boundingBox!);
+    return b.clone().applyMatrix4(m)[which].y;
+  };
+  const abacusFoot = top(aba!, 'min');
+  const voluteTop = top(vol!, 'max');
+  assert.ok(voluteTop <= abacusFoot + 0.01 && voluteTop >= abacusFoot - 0.08, `the volute tops out at ${voluteTop.toFixed(2)} under the abacus at ${abacusFoot.toFixed(2)}`);
+  t.dispose();
+});
+
+test('crowns of the sci-fi family are at least the hero minimum height', () => {
+  // HERO_CROWN_MIN is 14 pixels of the hero still at the farthest sample tower's crown; a crown shorter than that is
+  // a smudge on the skyline. Every run tall enough to hold one carries a crown at least that tall, in every family.
+  assert.ok(HERO_CROWN_MIN > 6 && HERO_CROWN_MIN < 9, `HERO_CROWN_MIN ${HERO_CROWN_MIN}`);
+  for (const family of FAMILIES) {
+    for (let n = 1; n <= 12; n++) {
+      const { t, lay } = familyTower(family, n);
+      const run = lay.top - lay.floors[0].y0;
+      const h = t.familyCrown;
+      if (run >= HERO_CROWN_MIN) assert.ok(h >= HERO_CROWN_MIN, `${family} x${n}: crown ${h} m under ${HERO_CROWN_MIN.toFixed(2)}`);
+      else assert.ok(Math.abs(h - run) < 1e-6, `${family} x${n}: a run shorter than the minimum is all crown`);
+      t.dispose();
+    }
+  }
+});
+
 test('a datum inside the crown floors moves the crown up above the band', () => {
   const floors = Array.from({ length: 9 }, (_, i) => floor(i, 'scifi'));
   const s: TowerSpec = { id: 'acme/c#founding', repo: 'acme/c', kind: 'founding', root: 'chicago', floors, datumIndex: 8 };
@@ -920,4 +984,28 @@ test('at medium a kit part casts its shadow only near, as at high, so the step d
     high.dispose();
     medium.dispose();
   }
+});
+
+test("the cluster's pods carry ribs and a lit band, and the arcology's roof pavilion a pergola", () => {
+  // Task 7: a pod is a made object at distance, not a box on a stick, and the light breaks across the arcology's deck.
+  const cl = familyTower('cluster', 6);
+  const ribs = instances(cl.t.group, 'tower:cl:rib');
+  assert.ok(ribs && ribs.count > 0, 'the pods carry ribs');
+  const m = new THREE.Matrix4();
+  const s = new THREE.Vector3();
+  let deep = 0;
+  for (let i = 0; i < ribs!.count; i++) {
+    ribs!.getMatrixAt(i, m);
+    s.setFromMatrixScale(m);
+    if (s.z >= 0.4) deep++;
+  }
+  assert.ok(deep >= ribs!.count / 3, `${deep} of ${ribs!.count} ribs stand at least 40 cm proud`);
+  const band = vertsOf(cl.t.group, cl.mats.lightLine);
+  assert.ok(band.some((v) => v.y > cl.lay.floors[1].y0 + 2), "a lit band at the head of a pod's glazing, not only under its floor");
+  cl.t.dispose();
+  const arc = familyTower('arcology', 9);
+  const beams = instances(arc.t.group, 'tower:arc:beam');
+  assert.ok(beams && beams.count >= 9, 'the roof pavilion carries a pergola of posts, beams and fins');
+  assert.ok(Math.abs(bounds(arc.t.group).max.y - arc.t.top) < 1e-3, 'the pergola stays inside the crown');
+  arc.t.dispose();
 });

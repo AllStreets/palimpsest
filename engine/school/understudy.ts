@@ -8,7 +8,8 @@
  * - The database is opened read only and never leaves a file beside it: a
  *   WAL database whose `-shm` is not already there (Understudy is not
  *   running) opens as `file:<path>?immutable=1`; one whose `-shm` and `-wal`
- *   are there opens with `readonly_shm=1`, falling back to immutable. Any
+ *   are there opens with `readonly_shm=1`, falling back to immutable, or to a
+ *   private copy when its WAL still holds frames. Any
  *   write through any handle throws.
  * - Statements are capped at 40, heaviest first, 300 characters each.
  * - Counts say when Understudy could not be read, and why.
@@ -22,7 +23,7 @@
  *   `paths().school/understudy`. The shots are read in place, only from
  *   inside Understudy's own folder, and never copied anywhere.
  */
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -117,7 +118,9 @@ const uri = (path: string, param: string) => `${pathToFileURL(path).href}?${para
  *   or left them) opens with `readonly_shm=1`, so its shared memory is read
  *   and never written, and its WAL frames are seen;
  * - any other WAL database, or one that `readonly_shm` cannot open, opens
- *   `immutable=1`, which touches no other file.
+ *   `immutable=1`, which touches no other file; unless its -wal still holds
+ *   frames (Understudy was killed, or its -shm cannot be opened), when a
+ *   private copy of the database and its -wal is read instead.
  */
 function openReadOnly(path: string): DatabaseSync {
   const probe = (db: DatabaseSync) => {
@@ -134,10 +137,58 @@ function openReadOnly(path: string): DatabaseSync {
     try {
       return probe(new DatabaseSync(uri(path, 'readonly_shm=1'), { readOnly: true }));
     } catch {
-      // Fall through to immutable, which never touches the -shm or -wal.
+      // Fall through: a private copy, or immutable, neither of which touches the -shm or -wal.
     }
   }
+  // Immutable reads the database file alone; frames still in a WAL left without its -shm would be missed.
+  if (walHasFrames(path)) return probe(privateCopy(path));
   return probe(new DatabaseSync(uri(path, 'immutable=1'), { readOnly: true }));
+}
+
+/** True when `path`'s -wal holds more than its 32-byte header: committed frames not yet in the database file. */
+function walHasFrames(path: string): boolean {
+  try {
+    return statSync(`${path}-wal`).size > 32;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A read-only handle on a private copy of `path` and its -wal under the
+ * school's own folder: the copy takes the frames in (SQLite's own WAL
+ * recovery, on the copy), is set back to a rollback journal, and is opened
+ * read only. Understudy's files are only read. The copy goes when the handle
+ * closes.
+ */
+function privateCopy(path: string): DatabaseSync {
+  const root = join(paths().school, 'understudy');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(join(root, 'read-'));
+  try {
+    const copy = join(dir, 'understudy.db');
+    writeFileSync(copy, readFileSync(path));
+    writeFileSync(`${copy}-wal`, readFileSync(`${path}-wal`));
+    const w = new DatabaseSync(copy);
+    try {
+      w.exec('pragma wal_checkpoint(TRUNCATE); pragma journal_mode = DELETE');
+    } finally {
+      w.close();
+    }
+    const db = new DatabaseSync(copy, { readOnly: true });
+    const close = db.close.bind(db);
+    db.close = () => {
+      try {
+        close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    return db;
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 /**

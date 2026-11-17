@@ -34,15 +34,19 @@
  */
 import * as THREE from 'three';
 
-import { BOARD_WAIT_S, CAB_WAIT_S, inChannel, SPEED, streetLine, type Network } from '../../../shared/commute.js';
+import { BOARD_WAIT_S, CAB_WAIT_S, inChannel, PIERS, SPEED, streetLine, type Network } from '../../../shared/commute.js';
 import { DISTRICT_PITCH } from '../../../shared/district-layout.js';
-import type { Agent, Trip, TripMode } from '../../../shared/types.js';
-import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SHOULDER_IN, wornTriangles } from './ambient.js';
+import type { Agent, Trip, TripMode, TripReason } from '../../../shared/types.js';
+import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SEATED, SHOULDER_IN, wornTriangles } from './ambient.js';
+import { loadSkin } from './figures.js';
 import type { Plate } from './labels.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
 import { FOUNTAIN } from './exchange.js';
 import { kerbOf, type Ride, type VehicleRef, type Vehicles } from './vehicles.js';
+import { pontoonOf } from './river-bed.js';
+import { miters } from './lines.js';
+import { greenLeft, type Axis, type SignalJunction, type Signals } from './signals.js';
 
 type V3 = [number, number, number];
 type P = { x: number; z: number };
@@ -53,9 +57,9 @@ type Leg = Trip['legs'][number] & { exact?: boolean };
 export const PEOPLE_LOD = { close: { near: 16, far: 24 }, near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
 /** The lantern lights between these hours (the city is lit for dusk; the lantern says the hour on the figure). */
 const DUSK = { from: 16.5, to: 7.5 } as const;
-/** Where the hips sit above a seat, and how far down the figure drops into it; a cab's bench is low under its 1 m roof. */
-const SEAT = 0.45;
-const CAB_SEAT = 0.14;
+/** A seat's height over its vehicle's floor, where a rider's figure is set (its hips rest there, ambient.ts SEATED): a cab's bench is low under its 1 m roof. */
+export const SEAT = { bench: 0.45, cab: 0.14 } as const;
+export { SEATED };
 /** The leg's length in the rig (hip to ankle), the stride's half angle at a walk. */
 const LEG = 0.86;
 const STRIDE = 0.42;
@@ -83,6 +87,8 @@ export interface FigureView {
   kind: 'agent' | 'walker';
   name: string;
   tripId: string | null;
+  /** Why its trip goes where it does (a bid, a job, an inspection, home, school), or null for a walker or no trip (Task 15a). */
+  reason: TripReason | null;
   /** Whether its trip is still among the live ones (a figure finishes an ended trip on foot). */
   live: boolean;
   leg: number;
@@ -91,6 +97,8 @@ export interface FigureView {
   position: V3;
   heading: number;
   walking: number;
+  /** Its place in the stride (phaseOf, then the ground covered). */
+  phase: number;
   sit: number;
   /** The lantern's light, 0 (dark) to 1 (lit for dusk). */
   lit: number;
@@ -133,6 +141,14 @@ export interface PeopleDeps {
   onRelease?(): void;
   /** The university as it stands (campus/index.ts): trips to and from it go by the gate; null before the engine took the plot. */
   campus?(): CampusWay | null;
+  /** The street floor under a point (ambient.ts floorAt): the pavements stand a kerb up. */
+  floorAt?(x: number, z: number): number;
+  /**
+   * The street's signals (ambient.ts signals(): the lights the traffic keeps
+   * to): a persona on foot waits at the kerb until the lights let it over.
+   * Left out, it crosses without waiting.
+   */
+  signals?(): Signals | null;
 }
 
 /** The campus as a trip meets it: its origin, half the square it keeps, and the way from the street up the stair to the gate. */
@@ -230,10 +246,16 @@ interface Figure {
   /** Where it waits for its vehicle, and which way it faces there. */
   spot: V3;
   spotHeading: number;
+  /** The signalled streets its walk crosses (kerbCrossings), the next of them, and seconds it has fallen behind its leg by waiting at them. */
+  crossings: Crossing[];
+  nextCrossing: number;
+  late: number;
   x: number;
   y: number;
   z: number;
   heading: number;
+  /** Its place in the bidders' queue at the exchange while it stands there (queueSpot), or -1. */
+  queue: number;
   phase: number;
   walking: number;
   sit: number;
@@ -270,6 +292,23 @@ function hashOf(s: string): () => number {
   };
 }
 
+/** The spread of a walker's pace about the speed it is given: plus or minus 12%, by its id. */
+export const PACE_SPREAD = 0.12;
+
+/**
+ * A figure's own place in the stride (0 to 2 pi), from its id alone, so two
+ * figures setting off together are never in step, and a figure has the same
+ * stride on every load of the page.
+ */
+export function phaseOf(id: string): number {
+  return hashOf(`stride:${id}`)() * Math.PI * 2;
+}
+
+/** A walker's own pace as a factor on the speed it is given, within PACE_SPREAD either way, from its id alone. */
+export function paceOf(id: string): number {
+  return 1 + (hashOf(`pace:${id}`)() * 2 - 1) * PACE_SPREAD;
+}
+
 /** The length of a leg's path in plan, and the point and heading `s` metres along it. */
 function pathLength(path: ReadonlyArray<V3>): number {
   let len = 0;
@@ -295,11 +334,33 @@ function along(path: ReadonlyArray<V3>, s: number, out: { p: V3; h: number }): v
   }
 }
 
-/** Where a walker stands at a point on the ground: the road bridges' decks are a little proud of the streets (vehicles.ts roadY). */
-const groundY = (x: number): number => (inChannel(x, 2) ? 0.08 : 0);
+/** The street floor under a point (ambient.ts floorAt, from createPeople's deps): the pavements' step up on the kerbs. */
+let floorOf: (x: number, z: number) => number = () => 0;
+/** Where a walker stands at a point on the ground: the road bridges' decks are a little proud of the streets (vehicles.ts roadY), the pavements a kerb up. */
+const groundY = (x: number, z: number): number => Math.max(inChannel(x, 2) ? 0.08 : 0, floorOf(x, z));
 
 /** How far right of a street's centre line a walker keeps: the middle of the pavement (ambient.ts PAVE). */
 const PAVEMENT = 6.0;
+
+/**
+ * The bidders' queue at the exchange (Task 15a): the engine sends every
+ * bidder to one point on the forecourt (trips.ts EXCHANGE), where they stood
+ * on one another and read as one figure or none. Each stands instead in a
+ * line along the foot of the hall's grand stair (its foot at z 21), from the
+ * stair's centre toward the east cheek, GAP apart (a queue's spacing, so that
+ * from the market overview each figure's lantern stands apart), a hand's sway
+ * back and forth, facing the doors; past DEPTH places a second line forms
+ * behind the first. Only real bidders stand in it: a figure is there while
+ * its bid trip has arrived and no newer trip has moved it.
+ */
+export const EXCHANGE_QUEUE = { foot: 22.6, from: 1.2, gap: 1.5, depth: 12, behind: 1.6 } as const;
+export function queueSpot(i: number): { x: number; z: number; heading: number } {
+  const n = Math.max(0, Math.floor(i));
+  const row = Math.floor(n / EXCHANGE_QUEUE.depth);
+  const k = n % EXCHANGE_QUEUE.depth;
+  const sway = (((k * 7 + row * 3) % 5) - 2) * 0.12;
+  return { x: EXCHANGE_QUEUE.from + k * EXCHANGE_QUEUE.gap + (row % 2) * EXCHANGE_QUEUE.gap * 0.5, z: EXCHANGE_QUEUE.foot + row * EXCHANGE_QUEUE.behind + sway, heading: -Math.PI / 2 };
+}
 
 /**
  * Where a figure stands for a trip's end: the point itself, unless it lies
@@ -325,24 +386,70 @@ function standPoint(p: V3): V3 {
  * height is read under it.
  */
 function pavementPath(path: ReadonlyArray<V3>): V3[] {
-  if (path.length < 2) return path.map((p) => [p[0], Math.max(p[1], groundY(p[0])), p[2]] as V3);
-  return path.map((p0, i) => {
-    const p = i === 0 || i === path.length - 1 ? standPoint(p0) : p0;
-    const a = path[Math.max(0, i - 1)];
-    const b = path[Math.min(path.length - 1, i + 1)];
-    // The right normal of the way through this point (the mean of the segments either side).
-    let dx = b[0] - a[0];
-    let dz = b[2] - a[2];
-    const l = Math.hypot(dx, dz) || 1;
-    dx /= l;
-    dz /= l;
-    // At a corner the point steps out along the bisector far enough to lie PAVEMENT off both streets (root 2 at a
-    // right angle), never less, so the walker rounds the junction's kerb on the paving rather than cutting it.
-    const k = i > 0 && i < path.length - 1 ? clamp(1 / Math.max(Math.abs(dx), Math.abs(dz), 1e-3), 1, 1.5) : 1;
-    const x = p[0] - dz * PAVEMENT * k;
-    const z = p[2] + dx * PAVEMENT * k;
-    return [x, Math.max(p[1], groundY(x)), z] as V3;
+  if (path.length < 2) return path.map((p) => [p[0], Math.max(p[1], groundY(p[0], p[2])), p[2]] as V3);
+  const pts = path.map((p0, i) => (i === 0 || i === path.length - 1 ? standPoint(p0) : p0));
+  // Each piece of the way stepped PAVEMENT to its right, and the corners where the stepped pieces meet (mitred, so a
+  // walk keeps to the middle of the pavement on both streets of a corner and rounds the kerb on the paving, never
+  // cutting across it), at most 1.5 times out for a sharp turn.
+  const m = miters(
+    pts.map((p) => ({ x: p[0], z: p[2] })),
+    false,
+  );
+  return pts.map((p, i) => {
+    const l = Math.hypot(m[i].x, m[i].z);
+    const k = l > 1.5 ? 1.5 / l : 1;
+    const x = p[0] + m[i].x * PAVEMENT * k;
+    const z = p[2] + m[i].z * PAVEMENT * k;
+    return [x, Math.max(p[1], groundY(x, z)), z] as V3;
   });
+}
+
+/** A persona on foot waits this far back from the kerb's edge for its light, and makes up the time after at this much over its pace. */
+const KERB_WAIT = 0.35;
+const CATCH_UP = 0.25;
+/** A carriageway's half width: the kerb stands this far off a street's centre line (ambient.ts PAVE.lo less the kerb). */
+const CARRIAGEWAY = 4.0;
+
+/** Where a walk crosses a signalled street: from the kerb (s) to the far kerb, the junction, and the traffic it crosses. */
+interface Crossing {
+  from: number;
+  to: number;
+  j: SignalJunction;
+  /** The axis of the traffic it crosses, and the axis it walks along (whose green lets it over). */
+  traffic: Axis;
+  walk: Axis;
+}
+
+/**
+ * The signalled streets a walk on the pavement crosses: each stretch where
+ * it leaves the pavement for a carriageway at a junction with signals.
+ */
+export function kerbCrossings(path: ReadonlyArray<V3>, signals: Signals): Crossing[] {
+  const out: Crossing[] = [];
+  const len = pathLength(path);
+  const at = { p: [0, 0, 0] as V3, h: 0 };
+  let open: Crossing | null = null;
+  for (let s = 0; s <= len + 1e-6; s += 0.25) {
+    along(path, s, at);
+    const [x, , z] = at.p;
+    const sx = streetLine(x);
+    const sz = streetLine(z);
+    // The street it can cross is the one across its way: walking along z it crosses a street along x, and the other
+    // way about (beside a carriageway, along it, it crosses nothing).
+    const traffic: Axis = Math.abs(Math.cos(at.h)) > Math.abs(Math.sin(at.h)) ? 'z' : 'x';
+    const on = traffic === 'x' ? Math.abs(z - sz) < CARRIAGEWAY : Math.abs(x - sx) < CARRIAGEWAY;
+    if (on && (!open || open.traffic === traffic)) {
+      if (!open) {
+        const j = signals.at(sx, sz);
+        open = { from: s, to: s, j: j && Math.abs(x - sx) < 16 && Math.abs(z - sz) < 16 ? j : (null as unknown as SignalJunction), traffic, walk: traffic === 'x' ? 'z' : 'x' };
+      }
+      open.to = s;
+    } else if (open) {
+      if (open.j && open.from > 0.3) out.push(open);
+      open = null;
+    }
+  }
+  return out;
 }
 
 /**
@@ -357,7 +464,8 @@ function kerbSpot(start: V3, net: Network | null): { spot: V3; heading: number }
   const out = Math.abs(Math.abs(dx) - 6.4) < Math.abs(Math.abs(dz) - 6.4) ? { x: Math.sign(dx) || 1, z: 0 } : { x: 0, z: Math.sign(dz) || 1 };
   // Clear of the cab's body however it comes in to the kerb point: 2.3 m onto the pavement and 1.5 m along the
   // street, so it stands beside the cab's doors rather than at its nose or tail.
-  const spot: V3 = [k.x + out.x * 2.3 + out.z * 1.5, groundY(k.x), k.z + out.z * 2.3 + out.x * 1.5];
+  const spot: V3 = [k.x + out.x * 2.3 + out.z * 1.5, 0, k.z + out.z * 2.3 + out.x * 1.5];
+  spot[1] = groundY(spot[0], spot[2]);
   // Facing the road.
   return { spot, heading: Math.atan2(-out.z, -out.x) };
 }
@@ -382,8 +490,14 @@ function platformSpot(path: ReadonlyArray<V3>, mode: TripMode): { spot: V3; head
   const b = path[Math.min(1, path.length - 1)];
   const h = path.length > 1 ? Math.atan2(b[2] - a[2], b[0] - a[0]) : 0;
   const p = PLATFORM[mode as keyof typeof PLATFORM] ?? { out: 2.2, up: 0 };
+  if (p.up === 'quay') {
+    // Down the river stairs on the pier's pontoon (river.ts), at its deck's height, by the gate on its river edge, facing the river.
+    const pier = [...PIERS].sort((q, r) => Math.hypot(q.x - a[0], q.z - a[2]) - Math.hypot(r.x - a[0], r.z - a[2]))[0];
+    const pt = pontoonOf(pier);
+    return { spot: [pt.x + pt.out * (pt.half.x - 1.3), pt.deck, pt.z + 2], heading: pt.out > 0 ? 0 : Math.PI };
+  }
   // A little up the platform from the stop's centre, clear of the tram shelter's screen (transit.ts), by the edge.
-  return { spot: around(a, h, mode === 'tram' ? 5.5 : 0, p.out, p.up === 'quay' ? 0 : a[1] + p.up), heading: h };
+  return { spot: around(a, h, mode === 'tram' ? 5.5 : 0, p.out, a[1] + p.up), heading: h };
 }
 
 /** The door a rider steps in and out by: a cab's rear right door at the kerb, a car's right-hand doorway at its floor. */
@@ -398,9 +512,9 @@ function doorOf(ref: VehicleRef, mode: TripMode): V3 {
 function aboard(ref: VehicleRef, mode: TripMode): V3 {
   const p = ref.position();
   const h = ref.heading();
-  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + CAB_SEAT);
-  if (mode === 'ferry') return around(p, h, 0.5, 1.2, ref.floorY() + SEAT);
-  if (mode === 'rail') return around(p, h, 0, 0.6, ref.floorY() + SEAT);
+  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + SEAT.cab);
+  if (mode === 'ferry') return around(p, h, 0.5, 1.2, ref.floorY() + SEAT.bench);
+  if (mode === 'rail') return around(p, h, 0, 0.6, ref.floorY() + SEAT.bench);
   return around(p, h, 0, 0.55, ref.floorY());
 }
 
@@ -491,24 +605,16 @@ const PERSONA_RIG = /* glsl */ `
     // Holding a strap: the left arm raised to it.
     R.armL = mix(R.armL, 1.75, hold);
     R.elbL = mix(R.elbL, 0.5, hold);
-    // Sitting: hips and knees at right angles, the forearms resting on the thighs.
-    R.hipL = mix(R.hipL, 1.5, sit);
-    R.hipR = mix(R.hipR, 1.5, sit);
-    R.kneeL = mix(R.kneeL, 1.5, sit);
-    R.kneeR = mix(R.kneeR, 1.5, sit);
-    R.armL = mix(R.armL, 0.45, sit);
-    R.armR = mix(R.armR, 0.45, sit);
-    R.elbL = mix(R.elbL, 1.0, sit);
-    R.elbR = mix(R.elbR, 1.0, sit);
     R.outL = 0.06 + 0.04 * w;
     R.outR = -0.06 - 0.04 * w;
     float look = idle * (1.0 - sit) * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
     R.head = rotY(look - 0.06 * s * w) * rotZ(-0.04 * w);
-    // Seated: the upper body leans back into the seat (more in a cab's low bench).
-    R.torso = rotY(0.07 * s * w) * rotZ(-0.055 * w - 0.06 * sit - 0.3 * lean);
+    R.torso = rotY(0.07 * s * w) * rotZ(-0.055 * w);
     R.shift = ${SHOULDER_IN} * aBody.x;
-    R.drop = w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow) + 0.84 * sit;
+    R.drop = w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow);
     R.sway = w * 0.022 * s + idle * 0.012 * slow;
+    // Seated (ambient.ts sitDown): hips and knees bent, the forearms on the thighs, leaning back into the seat (more on a cab's low bench).
+    sitDown(R, sit, lean);
     return R;
   }`;
 
@@ -526,7 +632,7 @@ function personaMaterial(level: 'hi' | 'lo' | 'far'): THREE.MeshStandardMaterial
     if (level === 'hi') dissolve(sh, PEOPLE_LOD.close, 'near');
     else if (level === 'lo') dissolve(sh, PEOPLE_LOD.close, 'far', PEOPLE_LOD.near);
     else dissolve(sh, PEOPLE_LOD.near, 'far', PEOPLE_LOD.out);
-    figureShader(sh, PERSONA_RIG, PERSONA_SURFACE, 'varying vec3 vEmit;');
+    figureShader(sh, PERSONA_RIG, PERSONA_SURFACE, 'varying vec3 vEmit;', level === 'hi');
     sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEmit;');
   };
   m.customProgramCacheKey = () => `palimpsest-people-${level}`;
@@ -670,6 +776,7 @@ export function campusTrip(trip: Trip, c: CampusWay | null): Trip {
 }
 
 export function createPeople(deps: PeopleDeps): People {
+  floorOf = (x, z) => deps.floorAt?.(x, z) ?? 0;
   const now = deps.now ?? (() => Date.now());
   const hour = deps.hour ?? (() => new Date().getHours() + new Date().getMinutes() / 60);
   const group = new THREE.Group();
@@ -793,11 +900,15 @@ export function createPeople(deps: PeopleDeps): People {
       path: [],
       spot: [0, 0, 0],
       spotHeading: 0,
+      queue: -1,
+      crossings: [],
+      nextCrossing: 0,
+      late: 0,
       x: 0,
       y: 0,
       z: 0,
       heading: 0,
-      phase: 0,
+      phase: phaseOf(agent.id),
       walking: 0,
       sit: 0,
       hold: 0,
@@ -837,7 +948,22 @@ export function createPeople(deps: PeopleDeps): People {
     const t = f.trip;
     f.stage = 'idle';
     f.ride = null;
+    f.queue = -1;
     if (!t) return;
+    if (t.reason === 'bid') {
+      // A bidder at the exchange joins the queue at the hall's stair, in the first place free (queueSpot).
+      const taken = new Set<number>();
+      for (const o of figures.values()) if (o !== f && o.stage === 'idle' && o.queue >= 0) taken.add(o.queue);
+      let i = 0;
+      while (taken.has(i)) i++;
+      const q = queueSpot(i);
+      f.queue = i;
+      f.x = q.x;
+      f.z = q.z;
+      f.y = groundY(f.x, f.z);
+      f.heading = q.heading;
+      return;
+    }
     const last = t.legs[t.legs.length - 1] as Leg | undefined;
     if (last?.exact) {
       // An exact leg ends where its path does, at the path's own height (the campus's forecourt).
@@ -845,12 +971,13 @@ export function createPeople(deps: PeopleDeps): People {
       return;
     }
     [f.x, , f.z] = standPoint([t.to.x, 0, t.to.z]);
-    f.y = groundY(f.x);
+    f.y = groundY(f.x, f.z);
   }
 
   /** Sets a figure up for the leg it is on: walking, or waiting where its vehicle will call. */
   function enterLeg(f: Figure): void {
     const trip = f.trip!;
+    f.queue = -1;
     if (f.leg >= trip.legs.length) return arrive(f);
     const leg = trip.legs[f.leg] as Leg;
     f.ride = null;
@@ -858,11 +985,17 @@ export function createPeople(deps: PeopleDeps): People {
     f.path = leg.mode === 'walk' && !leg.exact ? pavementPath(leg.path) : leg.path;
     // A walk after another leg sets off from where the figure stands (the kerb it alighted at, the stair's foot).
     if (leg.mode === 'walk' && f.leg > 0 && f.s === 0 && Math.hypot(f.x - f.path[0][0], f.z - f.path[0][2]) > 0.5) f.path = [[f.x, f.y, f.z], ...f.path];
+    // The signalled streets it will cross on the way, from where it stands on the walk.
+    const lights = leg.mode === 'walk' && !leg.exact && f.kind === 'agent' ? (deps.signals?.() ?? null) : null;
+    f.crossings = lights ? kerbCrossings(f.path, lights) : [];
+    f.nextCrossing = 0;
+    while (f.nextCrossing < f.crossings.length && f.crossings[f.nextCrossing].from < f.s) f.nextCrossing++;
     if (leg.mode === 'walk') {
       f.stage = 'walk';
       const at = { p: [0, 0, 0] as V3, h: f.heading };
       along(f.path, f.s, at);
       [f.x, f.y, f.z] = at.p;
+      if (!leg.exact) f.y = Math.max(f.y, groundY(f.x, f.z));
       f.heading = at.h;
       return;
     }
@@ -925,14 +1058,42 @@ export function createPeople(deps: PeopleDeps): People {
       const at = { p: [f.x, f.y, f.z] as V3, h: f.heading };
       along(f.path, f.s, at);
       [f.x, f.y, f.z] = at.p;
+      // Under foot, step by step: up the kerb on the pavement, down through the dropped kerb and across the road.
+      if (leg.mode === 'walk' && !(leg as Leg).exact) f.y = groundY(f.x, f.z);
       f.heading = turnTo(f.heading, at.h, Math.min(1, dt * 8));
       f.walking = Math.min(1, f.walking + dt * 3);
       f.phase += strideRate(speed, STRIDE, k) * dt;
       if (f.s >= len) nextLeg(f);
     };
     if (leg.mode === 'walk') {
-      // At the leg's own pace (its length over its time, 1.4 m/s), measured on the street line it was routed on.
-      walkOn(Math.max(0.5, pathLength(leg.path) / Math.max(1e-3, leg.ms / 1000)));
+      // At the leg's own pace (its length over its time, 1.4 m/s), measured on the street line it was routed on; a
+      // walker (a student, whose path is its own and not one of the market's timed trips) at its own pace about it.
+      let speed = Math.max(0.5, pathLength(leg.path) / Math.max(1e-3, leg.ms / 1000)) * (f.kind === 'walker' ? paceOf(f.agent.id) : 1);
+      // At a signalled street it waits on the kerb until its own way shows green with the time to get over; the
+      // seconds it stood it makes up after, a quarter faster, so it keeps to its trip.
+      const c = f.crossings[f.nextCrossing];
+      if (c && f.s + speed * dt >= c.from - KERB_WAIT) {
+        const lights = deps.signals?.() ?? null;
+        const need = (c.to - c.from) / speed + 1;
+        if (lights && greenLeft(c.j, lights.now(), c.walk) <= need) {
+          f.s = Math.max(f.s, c.from - KERB_WAIT);
+          const at = { p: [f.x, f.y, f.z] as V3, h: f.heading };
+          along(f.path, f.s, at);
+          [f.x, f.y, f.z] = at.p;
+          f.y = groundY(f.x, f.z);
+          f.heading = turnTo(f.heading, at.h, Math.min(1, dt * 8));
+          f.walking = Math.max(0, f.walking - dt * 3);
+          f.phase += dt * 1.6;
+          f.late += dt;
+          return;
+        }
+        f.nextCrossing++;
+      }
+      if (f.late > 0) {
+        speed *= 1 + CATCH_UP;
+        f.late = Math.max(0, f.late - CATCH_UP * dt);
+      }
+      walkOn(speed);
       return;
     }
     const ref = vehicleFor(f, f.leg, leg.mode);
@@ -1106,7 +1267,10 @@ export function createPeople(deps: PeopleDeps): People {
       q.setFromAxisAngle(up, -f.heading);
       m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * f.look.build), k, k * f.look.build));
       if (deps.lampLight) deps.lampLight(f.x, f.y + 1.3, f.z, f.lamp);
-      if (d < PEOPLE_LOD.close.far) write(close, f, litNow);
+      if (d < PEOPLE_LOD.close.far) {
+        write(close, f, litNow);
+        loadSkin();
+      }
       if (d < PEOPLE_LOD.near.far) {
         if (d > PEOPLE_LOD.close.near) write(near, f, litNow);
         if (d < PEOPLE_LOD.plate && f.kind === 'agent') {
@@ -1222,6 +1386,7 @@ export function createPeople(deps: PeopleDeps): People {
         name: f.agent.name,
         // A walker's path is its own, never one of the market's trips.
         tripId: f.kind === 'walker' ? null : (f.trip?.id ?? null),
+        reason: f.kind === 'walker' ? null : (f.trip?.reason ?? null),
         live: f.live,
         leg: f.leg,
         mode: f.trip?.legs[f.leg]?.mode ?? null,
@@ -1229,6 +1394,7 @@ export function createPeople(deps: PeopleDeps): People {
         position: [f.x, f.y, f.z] as V3,
         heading: f.heading,
         walking: f.walking,
+        phase: f.phase,
         sit: f.sit,
         lit: lit(),
         ride: rideOf(f.agent.id),

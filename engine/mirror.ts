@@ -27,6 +27,24 @@ export interface Commit {
   lines: number;
 }
 
+/**
+ * The environment of the engine's own reads of a mirror (log, refs, files):
+ * built from nothing, so none of his git config, credential helpers or pager
+ * comes into play. The fetch alone keeps his environment, since his
+ * credential helper is how it reaches his private repos.
+ */
+export function mirrorReadEnv(): Record<string, string> {
+  return {
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+    HOME: '/var/empty',
+    LANG: 'en_US.UTF-8',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_PAGER: 'cat',
+  };
+}
+
 /** Why a run or an audit ended before it cloned: the repo's latest commits could not be fetched (the reason follows). */
 export const SYNC_FAILED = "Could not fetch the repo's latest commits";
 
@@ -90,7 +108,7 @@ export async function readLog(dir: string, branch: string): Promise<Commit[]> {
       '--numstat',
       branch,
     ],
-    { timeoutMs: TIMEOUT_MS },
+    { timeoutMs: TIMEOUT_MS, env: mirrorReadEnv() },
   );
 
   if (result.code !== 0) {
@@ -105,11 +123,11 @@ export async function readLog(dir: string, branch: string): Promise<Commit[]> {
     // ref. That's the same empty-repo case when the mirror has no refs at
     // all (a repo with zero commits can't have a branch ref either), but it
     // is a real error when the repo has commits under some other ref and
-    // `branch` is simply wrong (e.g. a renamed default branch) — that must
+    // `branch` is simply wrong (e.g. a renamed default branch); that must
     // not be swallowed as "empty". Disambiguate by checking whether any ref
     // exists at all.
     if (/unknown revision/.test(result.stderr)) {
-      const refs = await runner('git', ['-C', dir, 'for-each-ref', '--count=1'], { timeoutMs: TIMEOUT_MS });
+      const refs = await runner('git', ['-C', dir, 'for-each-ref', '--count=1'], { timeoutMs: TIMEOUT_MS, env: mirrorReadEnv() });
       if (refs.code === 0 && refs.stdout.trim() === '') {
         return [];
       }

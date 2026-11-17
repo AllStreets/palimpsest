@@ -4,7 +4,11 @@ import { test } from 'node:test';
 import { extentBlocks, network, RIVER, route, streetWay, TRAM_DECK, tramHeight, type Leg } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 import type { Trip } from '../shared/types.js';
-import { createVehicles, kerbOf, motionPlan, trackOf, type VehicleRef } from '../app/src/city/vehicles.js';
+import { CAB_HALF_LEN, createVehicles, FAR_EMIT_MAX, farGlowOf, JUNCTION_BOX, kerbOf, motionPlan, trackOf, type VehicleRef } from '../app/src/city/vehicles.js';
+import { BLOOM_THRESHOLD } from '../app/src/city/post.js';
+import { createAmbient } from '../app/src/city/ambient.js';
+import { filleted, RAIL_R, VIADUCT_HALF, VIADUCT_MIN_RADIUS } from '../app/src/city/lines.js';
+import { signalAt, signalJunction, signalsOf, type SignalJunction, type Signals } from '../app/src/city/signals.js';
 import { PIERS, RIVER as RIVER_, streetLine } from '../shared/commute.js';
 
 type P = { x: number; z: number };
@@ -491,3 +495,216 @@ for (const phase of ['to-pickup', 'returning'] as const) {
     v.dispose();
   });
 }
+
+// ---------------------------------------------------------------- Phase 5 Task 4: the signals, the queue, the viaduct
+
+/** Every junction of the street grid out to the rail's loop, with signals, on the given clock. */
+const gridSignals = (clock: () => number): Signals => {
+  const js: SignalJunction[] = [];
+  for (let x = -760; x <= 760; x += 80) for (let z = -760; z <= 760; z += 80) js.push(signalJunction(x, z));
+  return signalsOf(js, clock);
+};
+/** A persona cab's nose: its middle and CAB_HALF_LEN on along its heading. */
+const noseOf = (r: VehicleRef): P => {
+  const p = r.position();
+  const h = r.heading();
+  return { x: p[0] + Math.cos(h) * CAB_HALF_LEN, z: p[2] + Math.sin(h) * CAB_HALF_LEN };
+};
+/** The signalled junction whose box a point stands in, or null. */
+const boxAt = (p: P, sig: Signals): SignalJunction | null => {
+  const jx = streetLine(p.x);
+  const jz = streetLine(p.z);
+  return Math.abs(p.x - jx) < JUNCTION_BOX && Math.abs(p.z - jz) < JUNCTION_BOX ? sig.at(jx, jz) : null;
+};
+const axisOf = (h: number): 'x' | 'z' => (Math.abs(Math.cos(h)) >= Math.abs(Math.sin(h)) ? 'x' : 'z');
+const DRIVING = new Set(['to-pickup', 'carrying', 'returning']);
+
+test('a persona cab stops at a red signal and leaves on green', () => {
+  const v = createVehicles(NET, 'high');
+  const sig = gridSignals(() => v.clock());
+  v.setSignals(sig);
+  const trip = tripOf({ x: 200, z: -40 }, { x: 1000, z: 300 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  const cab = v.summonCab(trip, k);
+  let reds = 0;
+  let stand: { j: SignalJunction; axis: 'x' | 'z'; red: boolean } | null = null;
+  const phases = new Set<string>();
+  for (let i = 0; i < 40000 && cab.phase() !== 'parked'; i++) {
+    v.update(0.1);
+    phases.add(cab.phase());
+    if (!DRIVING.has(cab.phase())) continue;
+    const h = cab.heading();
+    const nose = noseOf(cab);
+    if (cab.speed() < 0.02) {
+      // Standing with its nose just short of a signalled junction's box: at its line.
+      const ahead = { x: nose.x + Math.cos(h) * 2, z: nose.z + Math.sin(h) * 2 };
+      const j = boxAt(ahead, sig);
+      if (j && !boxAt(nose, sig)) {
+        stand ??= { j, axis: axisOf(h), red: false };
+        if (signalAt(j, v.clock(), stand.axis) === 'stop') stand.red = true;
+      }
+    } else if (stand && cab.speed() > 0.3) {
+      assert.equal(signalAt(stand.j, v.clock(), stand.axis), 'go', `it moves off from the line at (${stand.j.x}, ${stand.j.z}) on green`);
+      if (stand.red) reds++;
+      stand = null;
+    }
+  }
+  assert.ok(phases.has('returning') && cab.phase() === 'parked', 'the errand runs to its end');
+  assert.ok(reds >= 1, `it met a red light on its way and stood for it (${reds} times)`);
+  v.dispose();
+});
+
+test('no vehicle enters a junction on stop', () => {
+  const a = createAmbient(NET, 'high', { seed: 11 });
+  a.setDensity(1);
+  const v = createVehicles(NET, 'high');
+  const sig = a.signals();
+  v.setSignals(sig);
+  v.setTraffic((x, z, h, reach) => a.carAhead(x, z, h, reach));
+  const trips: Array<[P, P]> = [
+    [{ x: 200, z: -40 }, { x: 1000, z: 300 }],
+    [{ x: -200, z: 120 }, { x: 520, z: -500 }],
+    [{ x: 600, z: 600 }, { x: -300, z: -100 }],
+    [{ x: -500, z: -520 }, { x: 300, z: 280 }],
+  ];
+  const cabs = trips.map(([f, t], i) => {
+    const trip = { ...tripOf(f, t), id: `t${i}` };
+    const k = trip.legs.findIndex((l) => l.mode === 'cab');
+    assert.ok(k >= 0, `trip ${i} takes a cab`);
+    return v.summonCab(trip, k);
+  });
+  const inBox = new Map<string, SignalJunction | null>();
+  const lanes = new Map<number, string>();
+  let cabEntries = 0;
+  let carEntries = 0;
+  const dt = 0.1;
+  for (let i = 0; i < 3000; i++) {
+    v.update(dt);
+    a.setCabs(v.vehicles('cab').map((c) => ({ x: c.position()[0], z: c.position()[2], heading: c.heading(), speed: c.speed() })));
+    a.syncSignals(v.clock());
+    a.update(dt);
+    const t = sig.now();
+    for (const c of cabs) {
+      const j = DRIVING.has(c.phase()) ? boxAt(noseOf(c), sig) : null;
+      const was = inBox.get(c.id);
+      if (j && was === null) {
+        cabEntries++;
+        assert.equal(signalAt(j, t, axisOf(c.heading())), 'go', `cab ${c.id} goes into (${j.x}, ${j.z}) on go`);
+      }
+      inBox.set(c.id, j);
+    }
+    for (const car of a.cars()) {
+      const before = lanes.get(car.id);
+      lanes.set(car.id, car.lane);
+      if (!before || before === car.lane) continue;
+      // A car changes lane as its nose crosses the line into the box at the end of the one it leaves.
+      const [from, to] = before.split('>').map((q) => q.split(',').map(Number));
+      const j = sig.at(to[0], to[1]);
+      // (The streets are filled already under way: a car laid committed to its box in the first seconds is let go.)
+      if (!j || i < 50) continue;
+      carEntries++;
+      const axis = from[0] === to[0] ? 'z' : 'x';
+      const ok = signalAt(j, t, axis) === 'go' || signalAt(j, t - dt, axis) === 'go';
+      assert.ok(ok, `car ${car.id} goes into (${j.x}, ${j.z}) along ${axis} on go`);
+    }
+  }
+  assert.ok(cabEntries > 10, `the cabs went through signalled junctions (${cabEntries})`);
+  assert.ok(carEntries > 200, `and so did the cars (${carEntries})`);
+  a.dispose();
+  v.dispose();
+});
+
+test('a persona cab queues behind a car standing ahead of it, and goes on when it has gone', () => {
+  const trip = tripOf({ x: 200, z: -40 }, { x: 1000, z: 300 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  // A first run finds a stretch where the cab carries its rider straight on at speed for six seconds (the cabs
+  // run to a timetable, so a second run is the same).
+  const scout = createVehicles(NET, 'high');
+  const seen = scout.summonCab(trip, k);
+  const log: Array<{ h: number; v: number; ph: string }> = [];
+  for (let i = 0; i < 6000 && seen.phase() !== 'setdown'; i++) {
+    scout.update(0.1);
+    log.push({ h: seen.heading(), v: seen.speed(), ph: seen.phase() });
+  }
+  scout.dispose();
+  const at = log.findIndex((e, i) => e.ph === 'carrying' && e.v > 8 && log.slice(i, i + 60).every((f) => Math.abs(f.h - e.h) < 1e-3 && f.v > 5));
+  assert.ok(at > 0, 'the drive has a straight stretch');
+  const v = createVehicles(NET, 'high');
+  const cab = v.summonCab(trip, k);
+  for (let i = 0; i <= at; i++) v.update(0.1);
+  // Under way on that straight, a car stands 35 m ahead in its lane.
+  const h = cab.heading();
+  const n0 = noseOf(cab);
+  const car = { x: n0.x + Math.cos(h) * 35, z: n0.z + Math.sin(h) * 35, h };
+  let blocked = true;
+  v.setTraffic((x, z, hd, reach) => {
+    if (!blocked) return null;
+    const rx = car.x - x;
+    const rz = car.z - z;
+    const along = rx * Math.cos(hd) + rz * Math.sin(hd);
+    if (along < -1 || along > reach || Math.abs(-rx * Math.sin(hd) + rz * Math.cos(hd)) > 1.5) return null;
+    return { gap: along, speed: 0 };
+  });
+  let closest = Infinity;
+  for (let i = 0; i < 150; i++) {
+    v.update(0.1);
+    const n = noseOf(cab);
+    closest = Math.min(closest, (car.x - n.x) * Math.cos(car.h) + (car.z - n.z) * Math.sin(car.h));
+  }
+  assert.ok(cab.speed() < 0.05, `it stands behind the car (${cab.speed().toFixed(2)} m/s)`);
+  assert.ok(closest > 1.5 && closest < 4, `a car's length of room kept, no more (${closest.toFixed(2)} m)`);
+  blocked = false;
+  for (let i = 0; i < 20000 && cab.phase() === 'carrying'; i++) v.update(0.1);
+  assert.equal(cab.phase(), 'setdown', 'and goes on to set its rider down');
+  v.dispose();
+});
+
+test('no train car body leaves the viaduct deck on any curve', () => {
+  assert.ok(RAIL_R >= VIADUCT_MIN_RADIUS, `the loop's curves (${RAIL_R} m) are no tighter than the cars clear (${VIADUCT_MIN_RADIUS.toFixed(2)} m)`);
+  const v = createVehicles(NET, 'high');
+  const centre = filleted(NET.rail.path.map(xz), RAIL_R, 8);
+  const off = (p: P): number => {
+    let best = Infinity;
+    for (let i = 0; i < centre.length; i++) {
+      const a = centre[i];
+      const b = centre[(i + 1) % centre.length];
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const l2 = dx * dx + dz * dz;
+      const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / l2)) : 0;
+      best = Math.min(best, Math.hypot(p.x - a.x - dx * t, p.z - a.z - dz * t));
+    }
+    return best;
+  };
+  let worst = 0;
+  let onCurves = 0;
+  for (let i = 0; i < 1000; i++) {
+    v.update(0.5);
+    for (const c of v.cars('rail')) {
+      const f = { x: Math.cos(c.yaw), z: Math.sin(c.yaw) };
+      const n = { x: -f.z, z: f.x };
+      // Only a car near a corner can swing: the rest run straight down the deck's middle.
+      if (!NET.rail.path.some(([x, , z]) => Math.hypot(c.x - x, c.z - z) < RAIL_R + 30)) continue;
+      onCurves++;
+      for (let u = -c.half; u <= c.half + 1e-6; u += c.half / 4) {
+        for (const w of [-c.width, c.width]) {
+          const p = { x: c.x + f.x * u + n.x * w, z: c.z + f.z * u + n.z * w };
+          worst = Math.max(worst, off(p));
+        }
+      }
+    }
+  }
+  assert.ok(onCurves > 50, `cars were caught on the curves (${onCurves})`);
+  assert.ok(worst <= VIADUCT_HALF, `every body stays over the deck (${worst.toFixed(3)} m from the line's centre, the webs' faces at ${VIADUCT_HALF})`);
+  v.dispose();
+});
+
+test("the tram's far saloon and every far lamp are emitters under the bloom threshold, the saloon the brightest glazing", () => {
+  const saloon = farGlowOf('tram');
+  // The bloom pass reads the linear frame before the exposure: the radiance itself stays under the threshold.
+  assert.ok(Math.max(...saloon) < BLOOM_THRESHOLD, `the saloon (${saloon.map((c) => c.toFixed(2)).join(', ')}) does not bloom`);
+  assert.ok(FAR_EMIT_MAX < BLOOM_THRESHOLD, `a far lamp tops out at ${FAR_EMIT_MAX.toFixed(3)}, under ${BLOOM_THRESHOLD}`);
+  // Read from home: lit near the top of what does not bloom, brighter than any other line's glazing.
+  assert.ok(Math.max(...saloon) > BLOOM_THRESHOLD * 0.85, 'and is lit to near the threshold');
+  for (const m of ['railEnd', 'railMid', 'pod', 'ferry', 'cab'] as const) assert.ok(Math.max(...farGlowOf(m)) < Math.max(...saloon));
+});

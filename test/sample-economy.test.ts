@@ -194,7 +194,7 @@ test('the economy seeds every job status and replays clean', async () => {
 
   const proposed = jobs.filter((j) => j.status === 'proposed');
   assert.deepEqual(proposed.filter((j) => j.source === 'harness').map((j) => j.repo), ['lantern/assay-kit'], 'one harness job on the repo with tests and no build');
-  assert.deepEqual(proposed.filter((j) => j.source === 'proposal').map((j) => j.repo), [H, H], "two of the harbour audit's proposals still wait for his click");
+  assert.deepEqual(proposed.filter((j) => j.source === 'proposal').map((j) => j.repo), [H, H], "two of the harbor audit's proposals still wait for his click");
 
   // The board's issue jobs are the stand-in's eight issues.
   const issueJobs = jobs.filter((j) => j.source === 'issue');
@@ -362,6 +362,49 @@ test('the board clock opens accepted and posted jobs, takes bids one at a time a
   }
 });
 
+test('the sample round never shows closing while bids still climb', async () => {
+  await seed();
+  const off = installTreasury();
+  const late: string[] = [];
+  let t = NOW + 10 * 60_000;
+  const unsubscribe = subscribe((e) => {
+    const d = e.data as { bid?: { jobId: string }; satOut?: { jobId: string } };
+    const id = e.type === 'bid.placed' ? d.bid?.jobId : e.type === 'bid.satOut' ? d.satOut?.jobId : undefined;
+    if (!id) return;
+    const j = listJobs().find((x) => x.id === id);
+    if (!j?.bidsCloseAt || t >= Date.parse(j.bidsCloseAt)) late.push(`${e.type} on ${j?.title ?? id} at ${new Date(t).toISOString()}, closing ${j?.bidsCloseAt}`);
+  });
+  try {
+    // The seeded rounds closed minutes before this clock started: the first tick awards them and adds no answer.
+    const seeded = listJobs({ status: 'bidding' });
+    assert.ok(seeded.length >= 1);
+    for (const j of seeded) assert.ok(Date.parse(j.bidsCloseAt!) <= t, `${j.title} is past its close`);
+    const answers = (id: string) => bidList(id).bids.length + bidList(id).satOut.length;
+    const before = new Map(seeded.map((j) => [j.id, answers(j.id)]));
+    const clock = economyClock({ now: () => t, speed: 20, board: true });
+    const tick = async () => {
+      t += 1000;
+      clock.tick(1000);
+      await clock.idle();
+    };
+    await tick();
+    for (const j of seeded) {
+      const now = listJobs().find((x) => x.id === j.id)!;
+      assert.notEqual(now.status, 'bidding', `${j.title} is awarded once its close has passed (${now.status})`);
+      assert.equal(query({ kind: 'job.awarded', jobId: j.id }).length >= 1, true);
+    }
+    assert.ok(seeded.every((j) => before.get(j.id) === (query({ kind: 'job.awarded', jobId: j.id }).at(-1)?.data as { considered: unknown[]; satOut: unknown[] }).considered.length + (query({ kind: 'job.awarded', jobId: j.id }).at(-1)?.data as { satOut: unknown[] }).satOut.length), 'and the award weighs only the answers that came in before the close');
+    // A round this clock opens takes its answers inside its window, and is awarded at its close at the latest.
+    acceptProposed(listJobs({ status: 'proposed' })[0].id);
+    for (let i = 0; i < 12; i++) await tick();
+    clock.stop();
+    assert.deepEqual(late, [], 'no answer lands on a round at or past its close');
+  } finally {
+    unsubscribe();
+    off();
+  }
+});
+
 test('without the board the clock places no bids, and without the audit it leaves the reading audit reading', async () => {
   await seed();
   let t = NOW;
@@ -388,7 +431,7 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
   assert.equal(audits.length, 4);
   const of = (repo: string) => audits.find((a) => a.repo === repo)!;
 
-  // The harbour audit: 14 claims, every verdict but STUBBED, one finding unverified, four proposals.
+  // The harbor audit: 14 claims, every verdict but STUBBED, one finding unverified, four proposals.
   const harbor = of(H);
   assert.equal(harbor.status, 'done');
   assert.equal(harbor.trigger, 'demand');
@@ -457,7 +500,7 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
   // Milestones, reached by the market's own rules as the floors went up.
   const milestones = listMilestones(NOW);
   const skyline = milestones.filter((m) => m.kind === 'skyline');
-  assert.deepEqual(skyline.filter((m) => m.lit).map((m) => m.towerId), [`${H}#founding`], 'the lit spire stands on the harbour tower');
+  assert.deepEqual(skyline.filter((m) => m.lit).map((m) => m.towerId), [`${H}#founding`], 'the lit spire stands on the harbor tower');
   assert.ok(skyline.some((m) => !m.lit && m.towerId === 'lantern/assay-kit#founding'), 'assay-kit held the spire first and keeps its mast unlit');
   assert.deepEqual(milestones.filter((m) => m.kind === 'founding-skyline').map((m) => [m.towerId, m.lit]), [[`${H}#founding`, false]], 'the founding skyline is the unlit finial');
   const revival = milestones.find((m) => m.kind === 'revival')!;
@@ -481,7 +524,7 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
 });
 
 test('a reconnect still analysing when the economy is seeded, as in ui-test, leaves the four scripted audits', async () => {
-  // ui-test's reconnectChecks disconnects the harbour and connects it again, and earnedChecks seeds at once:
+  // ui-test's reconnectChecks disconnects the harbor and connects it again, and earnedChecks seeds at once:
   // that analysis must not end inside the history, where the market is on, and queue an audit of its own.
   // Its market starts on, so the analysis would queue that audit even if it ended before the history began.
   await seedSample(NOW);
@@ -508,7 +551,7 @@ test('a reconnect still analysing when the economy is seeded on the real runner 
 test('a seed that throws while it writes the history releases the hold on the automatic audit', async () => {
   const { queueAudit } = await import('../engine/audit/run.js');
   await seedSample(NOW);
-  // An audit already waiting on the harbour stops the history at its scripted audit.
+  // An audit already waiting on the harbor stops the history at its scripted audit.
   queueAudit(getRepo(H)!, 'demand', NOW - 9 * 86_400_000);
   await assert.rejects(seedEconomy(NOW), /already has an audit waiting or under way/);
   setMarket(K, false);
@@ -614,7 +657,8 @@ test("today's brief holds every item kind", async () => {
     assert.deepEqual(acted, ['accept', 'dismiss']);
     assert.ok(items.filter((i) => i.kind === 'proposal' && !i.acted && i.actions.includes('accept')).length >= 3, 'the rest still offer accept');
     const usage = items.find((i) => i.kind === 'usage')!;
-    assert.match(usage.title, /five-hour window is at 44/);
+    // The whole figure Settings and the brief's line show for the same moment (shared windowNowPct), not 44.6.
+    assert.match(usage.title, /five-hour window is at 45%$/);
     assert.deepEqual(usage.actions, ['cap']);
     const failed = items.find((i) => i.kind === 'failed')!;
     assert.match(failed.text, /The run finished without changing anything\./);
@@ -623,7 +667,10 @@ test("today's brief holds every item kind", async () => {
     assert.match(items.find((i) => i.kind === 'audit')!.text, /14 claims read/);
     assert.match(items.find((i) => i.kind === 'audit-due')!.title, /was never audited/);
     assert.ok(b.tour && b.tour.stops >= 2, 'the Monday brief offers last week');
-    assert.match(b.lead, /README audits/, `the lead counts the audit's spend: ${b.lead}`);
+    // The lead carries at most three counts (audit 2026-11-17): what waits, what merged, what the city spent.
+    assert.match(b.lead, /^\d+ things wait on you/, b.lead);
+    assert.match(b.lead, /The city spent [\d,.]+ credits\.$/, b.lead);
+    assert.ok((b.lead.match(/\d+(?:[.,]\d+)*/g) ?? []).length <= 3, `at most three counts: ${b.lead}`);
     assert.equal(query({ kind: 'brief.opened' }).length, 7, 'six seeded mornings and this one');
     assert.equal(briefData(MONDAY).firstOpen, false);
   });
@@ -670,7 +717,7 @@ test('the sample stand-in never calls the network', async () => {
   assert.equal(spawns, 0, 'no process spawned');
   assert.equal(fetches, 0, 'nothing fetched');
 
-  // The stand-in itself: issues per label, eight in all and three on the harbour repo.
+  // The stand-in itself: issues per label, eight in all and three on the harbor repo.
   const gh = sampleGh();
   const list = async (repo: string, label: string) =>
     (JSON.parse((await gh('gh', ['issue', 'list', '-R', repo, '--label', label, '--state', 'open', '--json', 'number'])).stdout) as Array<{ number: number }>).map((i) => i.number);
@@ -1016,4 +1063,59 @@ test('the sample never spawns python or mlx_lm', async () => {
   assert.equal(SAMPLE_TRAINER.python, null);
   assert.equal(SAMPLE_TRAINER.ready, true);
   assert.equal(SAMPLE_TRAINER.pinned, true);
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 20: the sample's own guard
+
+test('seedEconomy throws Not a sample home on a plain temp home', async () => {
+  // The sample's repos are there, written by hand, but nothing marked the home as a sample's.
+  await seedSample(NOW);
+  rmSync(join(process.env.PALIMPSEST_HOME!, SAMPLE_MARKER));
+  await assert.rejects(seedEconomy(NOW), /Not a sample home/);
+  assert.equal(listJobs().length, 0, 'nothing of the economy was written');
+});
+
+test('seedEconomy on a seedSample home with no other step succeeds', async () => {
+  // The path tools/perf.ts, tools/ui-test.ts and tools/capture.ts take: seedSample, then seedEconomy, no marker by hand.
+  const { isSampleHome } = await import('../engine/sample.js');
+  await seedSample(NOW);
+  assert.equal(isSampleHome(), true, 'seedSample marked the home');
+  await seedEconomy(NOW);
+  assert.ok(listJobs().length > 0);
+  assert.ok(query({ kind: 'net.trained' }).length > 0, 'and the school');
+});
+
+test('the sample seeds the same ledger twice at SEED_AT', async () => {
+  const { SEED_AT } = await import('../tools/sample.js');
+  const ledgers: string[] = [];
+  for (const name of ['one', 'two']) {
+    process.env.PALIMPSEST_HOME = join(tempDir, `seed-${name}`);
+    resetShipping();
+    samplePRs.reset();
+    await seedSample(SEED_AT);
+    await seedEconomy(SEED_AT);
+    // The same story, entry for entry: only the random ids (named in order of first use) and the home's own path differ.
+    const ids = new Map<string, string>();
+    const home = process.env.PALIMPSEST_HOME;
+    const rows = JSON.stringify(openDb().prepare('SELECT at, kind, json, job_id, run_id FROM ledger ORDER BY id').all())
+      .split(home)
+      .join('<home>')
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{7,}\b/g, (m) => {
+        if (!ids.has(m)) ids.set(m, `#${ids.size}`);
+        return ids.get(m)!;
+      });
+    ledgers.push(rows);
+  }
+  assert.ok(ledgers[0].length > 1000);
+  assert.equal(ledgers[0], ledgers[1]);
+});
+
+test('no sample plan reads as a template', async () => {
+  await seed();
+  const plans = query({ kind: 'bid.placed' }).map((e) => (e.data as { plan?: string }).plan ?? '');
+  assert.ok(plans.length > 20, `${plans.length} plans`);
+  for (const p of plans) {
+    assert.doesNotMatch(p, /find where .* happens in/i);
+    assert.doesNotMatch(p, /\{(file|test|what)\}/, 'no placeholder left in');
+  }
 });

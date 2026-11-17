@@ -354,12 +354,38 @@ test('a plan call still queued at the close makes the agent sit out', async () =
   const second = await collectBid(j, b, NOW);
   assert.equal(second, null);
   gate.resolve();
-  assert.ok(await first);
+  // The first held the slot past the close, so its answer is late too and is not entered.
+  assert.equal(await first, null);
   const { satOut } = bidList(j.id);
+  const second0 = satOut.find((s) => s.agentId === 'second');
+  assert.equal(second0?.reason, 'no slot before the window closed');
+  assert.equal(second0?.note, 'sat out: no slot before the window closed');
+  assert.equal(satOut.find((s) => s.agentId === 'first')?.reason, 'the plan answered after bidding closed');
+});
+
+test('a plan answer that lands after the round closed is not entered, even before the next tick awards: the agent sits out and its calls are still charged', async () => {
+  reading();
+  patchSettings({ bidWindowSec: 0.15 });
+  const gate = deferred();
+  // Different pools, so neither waits on the other's slot.
+  addAgent('slow', 'alpha', 'claude:sonnet');
+  addAgent('quick', 'beta', 'ollama:qwen');
+  script({ slow: async () => (await gate.promise, { price: 20, confidence: 0.7 }), quick: { price: 25, confidence: 0.7 } });
+  const j = bidding();
+  const pick = (id: string) => eligibleAgents(j).find((a) => a.id === id)!;
+  const late = collectBid(j, pick('slow'), NOW);
+  assert.ok(await collectBid(j, pick('quick'), NOW), 'an answer inside the window is entered');
+  // The round closes while the slow plan is still thinking; nothing has awarded the job yet.
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(job(j.id)?.status, 'bidding');
+  gate.resolve();
+  assert.equal(await late, null);
+  const { bids, satOut } = bidList(j.id);
+  assert.deepEqual(bids.map((b) => b.agentId), ['quick']);
   assert.equal(satOut.length, 1);
-  assert.equal(satOut[0].agentId, 'second');
-  assert.equal(satOut[0].reason, 'no slot before the window closed');
-  assert.equal(satOut[0].note, 'sat out: no slot before the window closed');
+  assert.equal(satOut[0].agentId, 'slow');
+  assert.equal(satOut[0].reason, 'the plan answered after bidding closed');
+  assert.ok(creditRows().some((r) => r.firm_id === 'alpha'), 'the late plan call is still charged');
 });
 
 test('a hard stop aborts a plan call in flight and the agent sits out', async () => {

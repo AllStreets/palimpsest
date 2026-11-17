@@ -383,6 +383,18 @@ function cloneGitDenies(r: Resolved, clones: readonly string[]): string {
   return `(deny file-write* ${clones.map((c) => `${lit(join(r.runRoot, c))} ${sub(join(r.runRoot, c, '.git'))}`).join(' ')})`;
 }
 
+/**
+ * The hardlink rule (Phase 5 ruling 19): no link at all, then a link only
+ * inside the folders the profile writes. Seatbelt checks a link(2) against
+ * both of its paths, so a process can never link a file it may only read
+ * (a toolchain, his home under the trainer) into a folder it may write, nor
+ * link a file out of one. It sits right after the profile's write allow, so
+ * every later write deny (a clone's .git, ctl, the secrets) still wins.
+ */
+export function hardlinkRule(writable: string[]): string {
+  return writable.length ? `(deny file-link)\n(allow file-link ${writable.map(sub).join(' ')})` : '(deny file-link)';
+}
+
 function devWrites(): string[] {
   return [
     '(allow file-write-data file-write-mode (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/dtracehelper") (regex #"^/dev/ttys[0-9]+$"))',
@@ -403,7 +415,9 @@ export function toolProfile(o: ProfileInput): string {
   lines.push(...readRules(r));
 
   lines.push('; writes: the clones, tmp, the fake home and the caches; ctl stays read-only');
-  lines.push(`(allow file-write* ${RUN_WRITE[o.side ?? 'head'].map((d) => sub(join(r.runRoot, d))).join(' ')})`);
+  const writable = RUN_WRITE[o.side ?? 'head'].map((d) => join(r.runRoot, d));
+  lines.push(`(allow file-write* ${writable.map(sub).join(' ')})`);
+  lines.push(hardlinkRule(writable));
   lines.push(...devWrites());
   lines.push("; no clone's .git is writable, after the allow");
   lines.push(cloneGitDenies(r, RUN_CLONES));
@@ -487,7 +501,9 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push('');
 
   lines.push(`; writes: the ${isRepo ? 'repo' : 'work dir'}, tmp and the runtime paths (never ~/.claude.json)`);
-  lines.push(`(allow file-write* ${sub(work)} ${sub(join(r.runRoot, 'tmp'))} ${sub(join(r.runRoot, CLAUDE_TMP))} ${runtime.map(sub).join(' ')})`);
+  const writable = [work, join(r.runRoot, 'tmp'), join(r.runRoot, CLAUDE_TMP), ...runtime];
+  lines.push(`(allow file-write* ${writable.map(sub).join(' ')})`);
+  lines.push(hardlinkRule(writable));
   lines.push(...devWrites());
   lines.push(isRepo ? cloneGitDenies(r, ['repo']) : `(deny file-write* ${lit(work)} ${sub(join(work, '.git'))})`);
   lines.push(`(deny file-write* ${sub(join(r.runRoot, 'ctl'))})`);
@@ -520,7 +536,8 @@ function loopbackPort(name: string, port: number): number {
  * and its mach services), then, in this order: every network operation
  * denied, with exactly two exceptions after it, loopback bind and inbound on
  * `bindPort` and outbound to loopback `proxyPort`, each only when given;
- * every write denied, then the school, its tmp and the device files allowed,
+ * every write denied, then the school, its tmp and the device files allowed
+ * (and a hard link only inside the school and its tmp, `hardlinkRule`),
  * then the school's `ctl` (where this profile is written) denied again; and
  * last, after every allow, his credentials and his claude config denied by
  * name for reading and writing. The binaries the tool profile denies
@@ -562,6 +579,7 @@ export function trainerProfile(o: TrainerProfileInput): string {
   lines.push('; writes: the school and its tmp alone');
   lines.push('(deny file-write*)');
   lines.push(`(allow file-write* ${sub(school)} ${sub(tmp)})`);
+  lines.push(hardlinkRule([school, tmp]));
   lines.push(...devWrites());
   lines.push('; the profile itself is written to the school ctl: no trainer rewrites it for the next launch');
   lines.push(`(deny file-write* ${sub(join(school, 'ctl'))})`);
@@ -626,11 +644,34 @@ export function wrap(argv: string[], kind: 'tool' | 'cli' | 'trainer', o: Profil
 /* Toolchains and the child environment                                */
 /* ------------------------------------------------------------------ */
 
-/** Toolchain roots under `home` that exist (ruling 9), in a fixed order. */
-export function detectToolchains(home: string = homedir()): string[] {
-  return ['.nvm', '.cargo/bin', '.rustup', 'go/bin', '.pyenv', '.local/bin']
+/**
+ * The install root of the node the engine runs on (`<root>/bin/node`), or
+ * null when it is too broad to open: the filesystem root, the home itself or
+ * any folder above the home.
+ */
+export function nodeRoot(execPath: string = process.execPath, home: string = homedir()): string | null {
+  const bin = dirname(realish(execPath));
+  const root = basename(bin) === 'bin' ? dirname(bin) : bin;
+  const h = realish(home);
+  if (root === '/' || root === h || h.startsWith(root + '/')) return null;
+  return root;
+}
+
+/**
+ * Toolchain roots under `home` that exist (ruling 9), in a fixed order, and
+ * then the engine's own node wherever it lives: the file tools run that node
+ * under the profile, so a node from Volta, fnm, asdf or a home other than the
+ * one it was installed under is read and run like a toolchain. It is added
+ * only when no toolchain or system path already holds it.
+ */
+export function detectToolchains(home: string = homedir(), execPath: string = process.execPath): string[] {
+  const found = ['.nvm', '.cargo/bin', '.rustup', 'go/bin', '.pyenv', '.local/bin']
     .map((p) => join(home, p))
     .filter((p) => existsSync(p));
+  const root = nodeRoot(execPath, home);
+  const holds = (t: string): boolean => root !== null && (root === realish(t) || root.startsWith(realish(t) + '/'));
+  if (root && !found.some(holds) && !SYSTEM_READ.some(holds)) found.push(root);
+  return found;
 }
 
 /** The bin directories to put on PATH for the detected toolchains. */
@@ -654,6 +695,9 @@ function toolchainBins(toolchains: string[]): string[] {
       bins.push(join(t, 'shims'), join(t, 'bin'));
     } else if (t.endsWith('/.rustup')) {
       // rustup's proxies live in ~/.cargo/bin
+    } else if (t === nodeRoot()) {
+      // the engine's own node, where it lives outside the toolchains named above
+      bins.push(dirname(realish(process.execPath)));
     } else {
       bins.push(t);
     }

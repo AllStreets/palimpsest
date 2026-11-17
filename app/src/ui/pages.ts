@@ -132,7 +132,7 @@ export function blockNodes(blocks: Block[]): HTMLElement[] {
   });
 }
 
-const STATUS_WORD: Record<CheckStatus, string> = { pass: 'pass', fail: 'fail', skipped: 'skipped', preexisting: 'failing before too' };
+const STATUS_WORD: Record<CheckStatus, string> = { pass: 'passed', fail: 'failed', skipped: 'skipped', preexisting: 'failing before too' };
 
 /** A status as a word beside a small drawn shape: a filled square, a struck square, an empty one, a half-filled one. */
 export function statusMark(status: CheckStatus): HTMLElement {

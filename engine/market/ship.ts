@@ -43,7 +43,7 @@ import { canOpenPR, canPush, inspectionSummary, wipeScratch } from '../guild/ins
 import { CITY_BRANCH, JOB_TRAILER } from '../history.js';
 import { onRealDataHome, paths } from '../home.js';
 import { query, record } from '../ledger.js';
-import { mirrorDir, syncMirror } from '../mirror.js';
+import { mirrorDir, mirrorReadEnv, syncMirror } from '../mirror.js';
 import { earnedFloors, getRepo, layEarnedFloor, listRepos, removeEarnedFloor, updateEarnedFloor } from '../repos.js';
 import { notePending, noteRevert } from '../school/hooks.js';
 import { bidById } from './bids.js';
@@ -855,7 +855,7 @@ export async function followupOf(
  */
 async function mirrorFiles(fullName: string, sha: string): Promise<string[]> {
   if (!SHA.test(sha)) throw new Error(`not a commit sha: ${sha}`);
-  const r = await getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(fullName), 'show', '--name-only', '--format=', '--diff-merges=first-parent', sha, '--'], { timeoutMs: 60_000 });
+  const r = await getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(fullName), 'show', '--name-only', '--format=', '--diff-merges=first-parent', sha, '--'], { timeoutMs: 60_000, env: mirrorReadEnv() });
   if (r.code !== 0) throw new Error(`git show failed for ${sha.slice(0, 7)}: ${r.stderr.trim()}`);
   return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
 }

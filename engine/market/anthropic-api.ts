@@ -234,7 +234,12 @@ function apiModel(ref: string): string {
 }
 
 /** Reads the SSE body into content blocks, emitting text and tool calls as they complete. */
-async function readStream(res: Response, onChunk: (c: ChatChunk) => void): Promise<Omit<CallResult, 'usd' | 'seconds'>> {
+/**
+ * Reads the API's event stream. `signal` cancels the read itself: the fetch's own abort does not always reach a body
+ * already being read (an abort as the headers land left a read waiting 300 s for undici's body timeout, the stall
+ * test/anthropic-api.test.ts saw twice in full runs), so the reader is cancelled here when it fires.
+ */
+export async function readStream(res: Response, onChunk: (c: ChatChunk) => void, signal?: AbortSignal): Promise<Omit<CallResult, 'usd' | 'seconds'>> {
   const blocks: Block[] = [];
   const partial = new Map<number, string>();
   const usage = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
@@ -313,8 +318,14 @@ async function readStream(res: Response, onChunk: (c: ChatChunk) => void): Promi
   if (!res.body) throw new Error('the API answered with no body');
   const decoder = new TextDecoder();
   let buf = '';
+  const reader = res.body.getReader();
+  const cancel = (): void => void reader.cancel().catch(() => {});
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (signal?.aborted) cancel();
   try {
-    for await (const part of res.body as unknown as AsyncIterable<Uint8Array>) {
+    for (;;) {
+      const { done, value: part } = await reader.read();
+      if (done) break;
       buf += decoder.decode(part, { stream: true }).replace(/\r\n/g, '\n');
       if (buf.length > MAX_EVENT_BYTES) throw new Error('the API sent an event that is too long');
       let sep: number;
@@ -329,10 +340,13 @@ async function readStream(res: Response, onChunk: (c: ChatChunk) => void): Promi
         if (data) handle(JSON.parse(data) as Record<string, unknown>);
       }
     }
+    if (signal?.aborted && !stopped) throw new Error('the API call was cut off: its time ran out or it was stopped');
   } catch (err) {
     // Usage seen so far is still charged by the caller.
     (err as { partialUsage?: unknown }).partialUsage = usage;
     throw err;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
   }
   if (!stopped) {
     const err = new Error('the API stream ended before message_stop');
@@ -421,7 +435,7 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
         throw new Error(`the API answered ${res.status}: ${text}`);
       }
       try {
-        const out = await readStream(res, onChunk);
+        const out = await readStream(res, onChunk, ctl.signal);
         usage = out.usage;
         const usd = chargeNow();
         return { ...out, usd, seconds: (Date.now() - started) / 1000 };

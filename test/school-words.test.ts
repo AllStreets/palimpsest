@@ -25,6 +25,7 @@ import {
   loraLine,
   lowPowerNote,
   masterGuessLine,
+  NET_BIAS,
   netsOnJob,
   netLine,
   netRowLine,
@@ -88,7 +89,7 @@ const gate = (over: Partial<GateState>): GateState => ({ kind: 'heavy', ok: true
 
 test('the gate says whether training may run, and what it read', () => {
   assert.equal(gateLine(gate({ ok: false, reason: 'on battery', power: 'battery' })), 'Training waits: on battery.');
-  assert.equal(gateLine(gate({ powerMode: 1 }), { from: '01:00', to: '06:00' }), 'Training may run: on power in Low Power mode, idle 22 minutes, inside 1:00 to 6:00.');
+  assert.equal(gateLine(gate({ powerMode: 1 }), { from: '01:00', to: '06:00' }), 'Training may run: on power in Low Power mode, idle 22 minutes, inside 01:00 to 06:00.');
   assert.equal(gateLine(gate({ idleMin: 1, inWindow: false, trainNowUntil: new Date(2026, 10, 10, 17, 30).toISOString() }), { from: '01:00', to: '06:00' }), 'Training may run: on power, idle 1 minute, on Train now until 17:30.');
   assert.equal(gateLine(gate({ idleMin: null, inWindow: true })), 'Training may run: on power, inside the window.');
   assert.equal(gateLine(gate({ ok: false, reason: 'the Mac has been idle 4 of 20 minutes', idleMin: 4 })), 'Training waits: the Mac has been idle 4 of 20 minutes.');
@@ -132,7 +133,7 @@ const voyage = (over: Partial<VoyageView>): VoyageView => ({
   of: 4,
   runs: { done: 137, of: 480 },
   commissionedBy: null,
-  scores: [{ genome: 'g', name: 'Harbour 2.1', generation: 2, mean: 0.5, lo: 0.4, hi: 0.6, parents: [] }],
+  scores: [{ genome: 'g', name: 'Harbor 2.1', generation: 2, mean: 0.5, lo: 0.4, hi: 0.6, parents: [] }],
   promoted: [],
   sealed: null,
   credits: 12,
@@ -146,8 +147,8 @@ test('a voyage says how far it has sailed, or why it waits, in one line', () => 
   assert.equal(voyageLine(voyage({})), 'Sailing: generation 2 of 4, 137 of 480 runs. A voyage spans several nights.');
   assert.equal(voyageLine(voyage({ status: 'paused', generation: 0, scores: [], runs: { done: 0, of: 480 }, queued: true, commissionedBy: 'quickset', reason: "Commissioned by Quickset; it sails first on the school's next night" })), "Queued. Commissioned by Quickset; it sails first on the school's next night.");
   assert.equal(voyageLine(voyage({ status: 'paused', runs: { done: 60, of: 480 }, reason: 'outside the training window' })), 'Paused at generation 2 of 4, 60 of 480 runs: outside the training window.');
-  assert.equal(voyageLine(voyage({ status: 'done', generation: 4, runs: { done: 480, of: 480 }, endedAt: '2026-11-09T04:00:00.000Z', claim: true, champion: { genome: 'g', name: 'Harbour 4.3', model: 'ollama:qwen', generation: 4, parents: [] } })), 'Done after 4 generations and 480 runs. Harbour 4.3 beat every seeded local agent on the sealed tasks.');
-  assert.equal(voyageLine(voyage({ status: 'done', generation: 4, runs: { done: 480, of: 480 }, claim: false, champion: { genome: 'g', name: 'Harbour 4.3', model: 'ollama:qwen', generation: 4, parents: [] }, reason: 'The sealed split was spent' })), 'Done after 4 generations and 480 runs. Harbour 4.3 makes no claim: the sealed split was spent.');
+  assert.equal(voyageLine(voyage({ status: 'done', generation: 4, runs: { done: 480, of: 480 }, endedAt: '2026-11-09T04:00:00.000Z', claim: true, champion: { genome: 'g', name: 'Harbor 4.3', model: 'ollama:qwen', generation: 4, parents: [] } })), 'Done after 4 generations and 480 runs. Harbor 4.3 beat every seeded local agent on the sealed tasks.');
+  assert.equal(voyageLine(voyage({ status: 'done', generation: 4, runs: { done: 480, of: 480 }, claim: false, champion: { genome: 'g', name: 'Harbor 4.3', model: 'ollama:qwen', generation: 4, parents: [] }, reason: 'The sealed split was spent' })), 'Done after 4 generations and 480 runs. Harbor 4.3 makes no claim: the sealed split was spent.');
   assert.equal(voyageLine(voyage({ status: 'failed', reason: 'The arena is missing' })), 'Failed at generation 2 of 4, 137 of 480 runs: the arena is missing.');
   assert.equal(voyageLine(voyage({ status: 'capped', reason: null })), 'Stopped at the cap at generation 2 of 4, 137 of 480 runs.');
 });
@@ -229,7 +230,7 @@ test('Train now, the Low Power note, the daily Claude credits and the base model
   assert.equal(trainNowHeld(g({ power: 'battery' })), 'on battery');
   assert.equal(trainNowHeld(g({ power: 'unknown' })), 'could not read the power source');
   assert.equal(trainNowHeld(g({})), null);
-  assert.equal(untilLine(new Date(2026, 10, 14, 4, 10).toISOString()), 'until 4:10');
+  assert.equal(untilLine(new Date(2026, 10, 14, 4, 10).toISOString()), 'until 04:10');
   assert.equal(untilLine(new Date(2026, 10, 14, 16, 5).toISOString()), 'until 16:05');
   assert.equal(lowPowerNote(g({ powerMode: 1 })), 'Your Mac is set to Low Power on power; training then runs slower and cooler.');
   assert.equal(lowPowerNote(g({ powerMode: 1, power: 'battery' })), null);
@@ -263,4 +264,40 @@ test("a school agent's page says where it came from", () => {
   assert.equal(graduatedLine({ examples: 112, arenas: ['arena-harbor-ledger-1'] }, [arena]), 'Taught on 112 verified changes, and raced sealed on the planted bugs arena on tidewater/harbor-ledger.');
   assert.equal(graduatedLine({ examples: 1, arenas: ['gone'] }, []), 'Taught on 1 verified change, and raced sealed on arena gone.');
   for (const s of [bredLine({ generation: 2, commissionedBy: null }, arena, (id) => id), graduatedLine({ examples: 3, arenas: [] }, [])]) noDashes(s);
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 17
+
+test("the school screen discloses the cost head's bias from excluded capped runs", () => {
+  const bias = NET_BIAS['appraiser-cost'] ?? '';
+  // Its rows leave out runs that hit their credit cap (datasets.ts), so it learns from the cheaper runs and reads costs low.
+  assert.match(bias, /credit cap/);
+  assert.match(bias, /low/);
+  assert.ok(!/[—–]|--/.test(bias), 'no dashes');
+  // Only the cost head carries this note; the pass head counts a capped run as nothing, which says nothing either way.
+  assert.deepEqual(Object.keys(NET_BIAS), ['appraiser-cost']);
+});
+
+test('a net with enough labels and no training says when it trains, or why not', async () => {
+  const { untrainedWhen } = await import('../app/src/ui/school-words.js');
+  const s = { enabled: true, window: { from: '01:00', to: '06:00' }, idleMinutes: 20 };
+  const waiting = card({ status: 'untrained', reason: 'Enough labels; not trained yet', cause: null, labels: 77 });
+  assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light', ok: false, reason: 'outside 01:00 to 06:00', inWindow: false })), '77 labels, enough to train. It trains in the next window, 01:00 to 06:00, once the Mac is on power and idle 20 minutes; now training waits: outside 01:00 to 06:00.');
+  assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light' })), '77 labels, enough to train. The gate is open, so it trains on the school\'s next pass.');
+  assert.equal(untrainedWhen(waiting, { ...s, enabled: false }, gate({ kind: 'light' })), '77 labels, enough to train. The school is off, so nothing trains until you turn it on in Settings.');
+  // The engine's own refusal is kept whole.
+  assert.equal(untrainedWhen(card({ status: 'untrained', reason: "v3's weights are missing", cause: null, labels: 77 }), s, gate({ kind: 'light' })), "v3's weights are missing.");
+  // Any other standing says what netRowLine says.
+  assert.equal(untrainedWhen(card({}), s, gate({ kind: 'light' })), '18 of 40 labels. No city merge has had 30 days yet.');
+  for (const x of [untrainedWhen(waiting, s, gate({ kind: 'light', ok: false, reason: 'on battery' }))]) noDashes(x);
+});
+
+test('the school says in plain words what a Brier score, its range and its baseline mean', async () => {
+  const { SCORE_KEY } = await import('../app/src/ui/school-words.js');
+  noDashes(SCORE_KEY);
+  assert.match(SCORE_KEY, /0 is perfect/);
+  assert.match(SCORE_KEY, /0\.25/);
+  assert.match(SCORE_KEY, /lower is better/i);
+  assert.match(SCORE_KEY, /range/);
+  assert.match(SCORE_KEY, /baseline/);
 });
