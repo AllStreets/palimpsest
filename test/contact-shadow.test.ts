@@ -54,3 +54,17 @@ test('the contact shadows are one draw, in the view alone', () => {
   assert.ok(!c.object.castShadow);
   c.dispose();
 });
+
+test("a tongue's tip never draws NaN: every pow in its shader takes a base held at or above zero", () => {
+  // The rasteriser interpolates v a hair past 1 at the tip's pixels; pow of a negative base is NaN in GLSL (on Metal
+  // too), and the bloom's mip chain spread one such pixel over the whole frame: the overview drawn flat black.
+  const shadows = createContactShadows(SUN_DIRECTION, HALF);
+  const mat = shadows.object.material as THREE.ShaderMaterial;
+  for (const src of [mat.vertexShader, mat.fragmentShader]) {
+    for (const m of src.matchAll(/\bpow\s*\(/g)) {
+      const base = src.slice(m.index! + m[0].length).trimStart();
+      assert.match(base, /^(max|clamp|abs)\s*\(/, `pow(${base.slice(0, 30)}... may take a negative base`);
+    }
+  }
+  shadows.dispose();
+});

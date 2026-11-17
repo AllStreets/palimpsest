@@ -80,8 +80,9 @@ const FRAGMENT = /* glsl */ `
   #include <common>
   #include <fog_pars_fragment>
   void main() {
-    // Along: dark at the foot, gone by the tip. Across: soft at both edges.
-    float along = pow(1.0 - vUv.y, 1.6);
+    // Along: dark at the foot, gone by the tip. Across: soft at both edges. The base is held at zero: v is interpolated
+    // a hair past 1 at the tip's pixels, and pow of a negative base is NaN, which the bloom spreads over the whole frame.
+    float along = pow(max(1.0 - vUv.y, 0.0), 1.6);
     // Narrowing toward the tip, as a shadow's penumbra widens and its core thins with distance from what casts it.
     float across = 1.0 - smoothstep(0.55 - 0.35 * vUv.y, 1.0 - 0.25 * vUv.y, abs(vUv.x * 2.0 - 1.0));
     float a = ${CONTACT.strength.toFixed(3)} * along * across * vShow;
