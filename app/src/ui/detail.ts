@@ -13,6 +13,7 @@ import { localDay as dayOf } from '../../../shared/day.js';
 import { TIER_VALUE } from '../../../shared/market-rules.js';
 import type { Bid, CheckName, InspectionView, LedgerRow, RunLogLine, Tier } from '../../../shared/types.js';
 import { bidOrder, cleanText, githubUrl, HIDDEN, money, pct } from './board.js';
+import { clock as timeOfDay } from './time-words.js';
 
 export interface Names {
   agent(id: string): string;
@@ -578,10 +579,9 @@ export function dayHeading(at: string, now = Date.now()): string {
   return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
 
-/** "14:05" in local time. */
+/** "14:05" in local time: the app's one clock (time-words.ts). */
 export function clock(at: string): string {
-  const d = new Date(at);
-  return Number.isNaN(d.getTime()) ? '' : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return timeOfDay(at);
 }
 
 const STATUS_WORDS: Partial<Record<string, string>> = {

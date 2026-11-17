@@ -7,8 +7,9 @@ import { ago, button, checkRadio, createSheet, el, rovingRadios } from './contro
 import { gauge, svgEl } from './firms';
 import { coalesce, keyedSlot, namesOf, outLink, refusal, secHead } from './pages';
 import { figure, shortDate } from './story';
-import { calibrationLine, pauseWords, reportBlocks, resetWords, runningWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
+import { calibrationLine, meterFigure, pauseWords, reportBlocks, resetWords, runningWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
 import { trainedLine } from './school-words';
+import { clock } from './time-words';
 import './market.css';
 
 export interface TreasuryScreen {
@@ -38,10 +39,6 @@ function pctOf(n: number): string {
   return `${Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1)}%`;
 }
 
-const hm = (ms: number): string => {
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
 
 function dayLabel(day: string): { short: string; date: string } {
   const [y, m, d] = day.split('-').map(Number);
@@ -216,7 +213,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const p = pauseWords(v.paused, v.reading, now);
     if (!p) {
       if (v.resumedUntil === null) return null;
-      const r = el('p', 'treasury-resumed', `Resumed on your say-so until ${hm(v.resumedUntil)}. With no fresh reading, the city counts your own Claude Code use from your transcripts and still stops at the hard stop.`);
+      const r = el('p', 'treasury-resumed', `Resumed on your say-so until ${clock(v.resumedUntil)}. With no fresh reading, the city counts your own Claude Code use from your transcripts and still stops at the hard stop.`);
       return r;
     }
     const box = el('div', `treasury-pause pause-${p.reason}`);
@@ -272,10 +269,10 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const box = el('div', 'meter');
     box.dataset.window = which;
     const fig = el('div', 'meter-fig');
-    const reset = w.resetsAt !== null && w.resetsAt * 1000 <= now;
-    fig.append(el('span', 'meter-name', name), el('span', `meter-used${reset || w.usedPct === null ? ' unread' : ''}`, w.usedPct === null ? 'unread' : pctOf(w.usedPct)));
-    const usedNote = w.usedPct === null ? 'No reading of this window yet.' : reset ? 'It reset after your last reading, and nothing has read it since.' : 'used, at your last reading';
-    fig.append(el('span', 'meter-used-note', usedNote));
+    // The figure the brief and Settings show for the same moment (windowNowPct), so one plan reads one number.
+    const shown = meterFigure(w, now);
+    fig.append(el('span', 'meter-name', name), el('span', `meter-used${shown.unread ? ' unread' : ''}`, shown.text));
+    fig.append(el('span', 'meter-used-note', shown.note));
     const right = el('div', 'meter-draw');
     const head = el('div', 'meter-head');
     head.append(el('span', 'meter-reset', resetWords(w.resetsAt, now)));
@@ -429,7 +426,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     for (const r of got.rows) {
       const li = el('li', 'entry');
       const when = new Date(r.at);
-      li.append(el('span', 'entry-id', `No. ${r.id}`), el('span', 'entry-when', `${WEEKDAY[when.getDay()]} ${hm(when.getTime())}`));
+      li.append(el('span', 'entry-id', `No. ${r.id}`), el('span', 'entry-when', `${WEEKDAY[when.getDay()]} ${clock(when)}`));
       const what = el('span', 'entry-what');
       const kind = KIND_WORDS[r.kind] ?? r.kind;
       if (r.runId && r.jobId) {

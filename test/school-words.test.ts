@@ -89,7 +89,7 @@ const gate = (over: Partial<GateState>): GateState => ({ kind: 'heavy', ok: true
 
 test('the gate says whether training may run, and what it read', () => {
   assert.equal(gateLine(gate({ ok: false, reason: 'on battery', power: 'battery' })), 'Training waits: on battery.');
-  assert.equal(gateLine(gate({ powerMode: 1 }), { from: '01:00', to: '06:00' }), 'Training may run: on power in Low Power mode, idle 22 minutes, inside 1:00 to 6:00.');
+  assert.equal(gateLine(gate({ powerMode: 1 }), { from: '01:00', to: '06:00' }), 'Training may run: on power in Low Power mode, idle 22 minutes, inside 01:00 to 06:00.');
   assert.equal(gateLine(gate({ idleMin: 1, inWindow: false, trainNowUntil: new Date(2026, 10, 10, 17, 30).toISOString() }), { from: '01:00', to: '06:00' }), 'Training may run: on power, idle 1 minute, on Train now until 17:30.');
   assert.equal(gateLine(gate({ idleMin: null, inWindow: true })), 'Training may run: on power, inside the window.');
   assert.equal(gateLine(gate({ ok: false, reason: 'the Mac has been idle 4 of 20 minutes', idleMin: 4 })), 'Training waits: the Mac has been idle 4 of 20 minutes.');
@@ -230,7 +230,7 @@ test('Train now, the Low Power note, the daily Claude credits and the base model
   assert.equal(trainNowHeld(g({ power: 'battery' })), 'on battery');
   assert.equal(trainNowHeld(g({ power: 'unknown' })), 'could not read the power source');
   assert.equal(trainNowHeld(g({})), null);
-  assert.equal(untilLine(new Date(2026, 10, 14, 4, 10).toISOString()), 'until 4:10');
+  assert.equal(untilLine(new Date(2026, 10, 14, 4, 10).toISOString()), 'until 04:10');
   assert.equal(untilLine(new Date(2026, 10, 14, 16, 5).toISOString()), 'until 16:05');
   assert.equal(lowPowerNote(g({ powerMode: 1 })), 'Your Mac is set to Low Power on power; training then runs slower and cooler.');
   assert.equal(lowPowerNote(g({ powerMode: 1, power: 'battery' })), null);
@@ -282,7 +282,7 @@ test('a net with enough labels and no training says when it trains, or why not',
   const { untrainedWhen } = await import('../app/src/ui/school-words.js');
   const s = { enabled: true, window: { from: '01:00', to: '06:00' }, idleMinutes: 20 };
   const waiting = card({ status: 'untrained', reason: 'Enough labels; not trained yet', cause: null, labels: 77 });
-  assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light', ok: false, reason: 'outside 1:00 to 6:00', inWindow: false })), '77 labels, enough to train. It trains in the next window, 1:00 to 6:00, once the Mac is on power and idle 20 minutes; now training waits: outside 1:00 to 6:00.');
+  assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light', ok: false, reason: 'outside 01:00 to 06:00', inWindow: false })), '77 labels, enough to train. It trains in the next window, 01:00 to 06:00, once the Mac is on power and idle 20 minutes; now training waits: outside 01:00 to 06:00.');
   assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light' })), '77 labels, enough to train. The gate is open, so it trains on the school\'s next pass.');
   assert.equal(untrainedWhen(waiting, { ...s, enabled: false }, gate({ kind: 'light' })), '77 labels, enough to train. The school is off, so nothing trains until you turn it on in Settings.');
   // The engine's own refusal is kept whole.

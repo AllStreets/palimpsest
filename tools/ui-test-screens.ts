@@ -372,7 +372,7 @@ export async function settingsChecks(page: Page, claudeSettingsPath: string): Pr
   check(five === want.five && week === want.week && week === '18%', `usage shows each window as it stands now, as the brief does (${five}, ${week}; the engine says ${want.five}, ${want.week})`);
   check(await page.locator('.usage-stale').isVisible(), 'an old reading carries the stale warning');
   check(/reset/i.test((await page.locator('.usage-five').textContent()) ?? ''), 'each window shows when it resets');
-  check(/window reset/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');
+  check(/^reset at \d\d:\d\d, after the last reading$/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');
   await page.screenshot({ path: join(SHOTS, 'settings.png') });
   await page.screenshot({ path: join(SHOTS, 'settings-full.png'), fullPage: false });
 

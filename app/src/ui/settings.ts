@@ -8,6 +8,7 @@ import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, mar
 import { grantsAside, grantsBlock } from './autonomy';
 import { schoolSettings } from './settings-school';
 import { coalesce } from './pages';
+import { resetWords } from './time-words';
 
 export interface SettingsScreen {
   show(): void;
@@ -64,19 +65,6 @@ function agentNames(agents: Agent[]): string {
 }
 
 const numberFormat = new Intl.NumberFormat('en-US');
-const timeFormat = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
-const dayFormat = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-
-/** Claude Code reports reset times in epoch seconds; accept milliseconds too. */
-function resetText(resetsAt: number, now = Date.now()): string {
-  const ms = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
-  if (!Number.isFinite(ms)) return '';
-  const when = new Date(ms);
-  const sameDay = new Date(now).toDateString() === when.toDateString();
-  const at = sameDay ? `at ${timeFormat.format(when)}` : `${dayFormat.format(when)}, ${timeFormat.format(when)}`;
-  // An old reading can name a reset that has already happened: say so, not "resets" in the past.
-  return ms <= now ? `window reset ${at}` : `resets ${at}`;
-}
 
 type NumberKey = 'dayCapPct' | 'nightCapPct' | 'hardStopPct' | 'claudeConcurrency' | 'localConcurrency' | 'bidWindowSec';
 
@@ -442,7 +430,7 @@ export function createSettings(
     const fill = el('span', 'prov-window-fill');
     fill.style.width = `${pct ?? 0}%`;
     meter.append(fill);
-    w.append(meter, el('span', 'prov-window-reset', resetsAt ? resetText(resetsAt) : ''));
+    w.append(meter, el('span', 'prov-window-reset', resetsAt ? resetWords(resetsAt, Date.now()) : ''));
     return w;
   }
 
@@ -456,7 +444,8 @@ export function createSettings(
     }
     // The sentence windowSentence writes, with the figure and the reset in spans of their own.
     const line = el('p', 'usage-line');
-    const reset = resetText(w.resetsAt);
+    // Worded as the treasury words it, from the one function (time-words.ts).
+    const reset = resetWords(w.resetsAt, Date.now());
     const words = windowSentence(shown, '');
     const figure = `${shown.pct}%`;
     line.append(el('span', 'usage-pct', figure), document.createTextNode(words.slice(figure.length, -1)));

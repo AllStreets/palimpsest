@@ -7,6 +7,7 @@ import { button, createSheet, el, plural } from './controls';
 import { coalesce, namesOf } from './pages';
 import { bankruptIn, figure, floorsBuilt, shortDate, soldTowers } from './story';
 import './market.css';
+import { clock } from './time-words';
 
 export interface FirmsScreen {
   show(): void;
@@ -105,7 +106,7 @@ export function balanceCell(f: Firm, now = Date.now(), opts: { always?: boolean 
     note = h === null ? 'below zero' : h === 0 ? 'bankrupt within the hour' : `bankrupt in ${h} h`;
   }
   if (note) cell.append(el('span', 'firm-bal-note', note));
-  if (neg && f.status !== 'bankrupt') cell.title = `Below zero since ${f.negativeSince ? new Date(f.negativeSince).toLocaleString('en-GB') : 'now'}. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark and are sold.`;
+  if (neg && f.status !== 'bankrupt') cell.title = `Below zero since ${f.negativeSince ? `${shortDate(f.negativeSince)} at ${clock(f.negativeSince)}` : 'now'}. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark and are sold.`;
   return cell;
 }
 

@@ -11,6 +11,7 @@ import { VERDICT_MEANING, whatToBuild } from './audit-words';
 import { longDate } from './story';
 import { masterGuessLine, netsOnJob } from './school-words';
 import './market.css';
+import { clock } from './time-words';
 
 export interface JobPage {
   show(id: string): void;
@@ -583,7 +584,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
   function roundBlock(r: Round, total: number, j: Job): HTMLElement {
     const box = el('div', 'job-round');
     box.dataset.round = String(r.number);
-    const when = `${new Date(r.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}, ${new Date(r.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+    const when = `${new Date(r.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}, ${clock(r.at)}`;
     if (total > 1) box.append(el('h3', 'job-round-head', `${ORDINAL[r.number - 1] ?? `Round ${r.number}`} round, ${when}`));
     const prose = el('p', 'job-award', r.prose);
     box.append(prose);
