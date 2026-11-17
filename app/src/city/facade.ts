@@ -103,6 +103,12 @@ const SCANS: Partial<Record<Archetype, { prefix: string; tile: number; mean: [nu
   commercial: { prefix: 'ashlar', tile: 3.2, mean: [0.438, 0.334, 0.191] },
 };
 
+/** How much of a mid-century spandrel panel is the wall's tone rather than the frame's accent (Task 15). */
+export const MID_PANEL = 0.55;
+
+/** The dusk sky an unlit window gives back (Task 15): its weight, how far up the dome the far reflection is read (a share of the mirror's own rise), and the least rise. */
+export const SKY_GLASS = { strength: 4.5, rise: 0.5, floor: 0.22 } as const;
+
 const v3 = (v: [number, number, number]): string => `vec3(${v.map((x) => x.toFixed(4)).join(', ')})`;
 
 /** The facade program of a type; with `cut`, the same program for walls with their street corners cut (grid.ts draws those from the kit's cut boxes in their own batch). */
@@ -131,6 +137,10 @@ export function facadeMaterial(arch: Archetype, cut: CornerKind | null = null): 
       ...(sh.defines ?? {}),
       ARCH: ARCH_ID[arch],
       FACADE_TILE: (scan?.tile ?? 1).toFixed(2),
+      SKY_GLASS: SKY_GLASS.strength.toFixed(3),
+      SKY_GLASS_RISE: SKY_GLASS.rise.toFixed(3),
+      SKY_GLASS_FLOOR: SKY_GLASS.floor.toFixed(3),
+      MID_PANEL: MID_PANEL.toFixed(3),
       GROUND: s.ground.toFixed(2),
       STOREY: s.floor.toFixed(2),
       PARAPET: s.parapet.toFixed(2),
@@ -629,7 +639,10 @@ const FACADE_GLSL = /* glsl */ `
         win = box1(cell.y, y0, y1, 0.008) * (1.0 - mull);
         float spandrel = 1.0 - box1(cell.y, y0, y1, 0.008);
         float joint = box1(cell.x, 0.0, 0.015, 0.004) * spandrel;
-        diffuseColor.rgb = mix(diffuseColor.rgb, vAccent * (0.92 + 0.12 * h21(id)) * (1.0 - joint * 0.5), spandrel);
+        // The enamel panel in its own colour, a step from the frame's (Task 15): in true light the frame's dark accent
+        // alone left every slab a dark band, so the panel takes the wall's tone and the accent tints it.
+        vec3 enamel = mix(vAccent, wall, MID_PANEL);
+        diffuseColor.rgb = mix(diffuseColor.rgb, enamel * (0.92 + 0.12 * h21(id)) * (1.0 - joint * 0.5), spandrel);
         roughnessFactor = mix(roughnessFactor, 0.35, spandrel);
         metalnessFactor = mix(metalnessFactor, 0.6, mull);
         normal = normalize(normal + tangentView * (box1(cell.x, 0.0, 0.03, 0.004) - box1(cell.x, 0.97, 1.0, 0.004)) * (curtain ? 0.9 : 0.3));
@@ -806,6 +819,34 @@ const FACADE_GLSL = /* glsl */ `
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.012, 0.014, 0.017), win);
         roughnessFactor = mix(roughnessFactor, 0.06, win * (1.0 - lit));
         metalnessFactor = mix(metalnessFactor, 0.3, win * (1.0 - lit));
+      #endif
+      #if ARCH != 6 && defined(USE_FOG)
+        {
+          // The dusk sky in the glass (Task 15). Seen from above, a curtain wall's mirror points down at the street,
+          // and the environment gives it back near black: in true light, with no haze to lift them, the glass and
+          // mid-century blocks read as dark holes. A pane in a city gives back the sky over the street and the sky
+          // band across it, so its far reflection is taken at the horizon band and above, warm toward the sun and
+          // blue-violet away from it, weighted as glass is, more at a glancing view, and only where the room is dark.
+          // The other types' windows (walk-ups, offices, sheds, concrete) take it too, at a distance.
+          vec3 Vg = normalize(vWP - cameraPosition);
+          vec3 Rg = reflect(Vg, Nw);
+          Rg.y = abs(Rg.y) * SKY_GLASS_RISE + SKY_GLASS_FLOOR;
+          float fres = 0.3 + 0.7 * pow(1.0 - max(dot(-Vg, Nw), 0.0), 3.0);
+          // Near, a pane gives back the street and its neighbours as much as the sky; the sky's share grows with
+          // distance as the far form's does (FAR_FORM), so the middle distance keeps its darks.
+          float farSky = smoothstep(FAR_FORM_NEAR, FAR_FORM_FULL, distance(cameraPosition, vWP));
+          #if ARCH == 4
+            float mirror = (0.6 + 0.4 * clamp(vStyle.x, 0.0, 1.0)) * mix(0.4, 1.0, farSky);
+          #elif ARCH == 3
+            float mirror = 0.7 * mix(0.4, 1.0, farSky);
+          #else
+            // A walk-up's or an office's window is a small pane among its walls: near, the eye reads the room and the
+            // street in it; across the city, where the panes merge into the face, the sky they hold carries the face's
+            // colour (the far form's own ramp, FAR_FORM).
+            float mirror = 0.5 * farSky;
+          #endif
+          totalEmissiveRadiance += win * (1.0 - lit) * skyClear(normalize(Rg)) * fres * mirror * SKY_GLASS;
+        }
       #endif
       // The reveal itself: the wall's own material turned into the opening, in its own light.
       diffuseColor.rgb = mix(diffuseColor.rgb, wall * revealShade, reveal);
