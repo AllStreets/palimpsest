@@ -487,23 +487,23 @@ Two things in [the design](docs/superpowers/specs/2026-11-08-palimpsest-design.m
 
 ## How fast it is
 
-<!-- From the final perf run of the sample city on the GPU at 1512 by 890, density 2. Re-run npm run perf and update these rows if the city changes. -->
+<!-- From the final perf run of the sample city on the GPU at 1512 by 890, density 2, on the merged build at 8278243 (Task 32). The rows are perf.json's views home, overview, hero, close-tower (not tower-close), exchange, street, river, campus-home and ride-car. Re-run npm run perf and update these rows if the city changes. -->
 
 I measure the city with `npm run perf` on the sample city, in Chromium on the GPU at my Mac's full window size and twice its density, on two quality tiers, high and medium. For each view it takes the median frame rate over three seconds with the city's clock running, and counts the draw calls and triangles.
 
 | View | High | Medium |
 |---|---|---|
-| Home | 59.9 fps, 621 draw calls, 8.4M triangles | 59.9 fps, 509 draw calls, 5.2M triangles |
-| Overview | 59.9 fps, 832 draw calls, 9.8M triangles | 59.9 fps, 561 draw calls, 5.6M triangles |
-| Hero | 59.9 fps, 942 draw calls, 10.0M triangles | 59.9 fps, 611 draw calls, 5.6M triangles |
-| One tower close | 59.9 fps, 518 draw calls, 6.4M triangles | 59.9 fps, 422 draw calls, 3.8M triangles |
-| The exchange | 59.9 fps, 653 draw calls, 7.0M triangles | 59.9 fps, 509 draw calls, 4.2M triangles |
-| A street | 59.9 fps, 672 draw calls, 7.9M triangles | 59.9 fps, 489 draw calls, 4.2M triangles |
-| The river | 59.9 fps, 600 draw calls, 6.0M triangles | 59.9 fps, 454 draw calls, 3.6M triangles |
-| The university | 59.9 fps, 633 draw calls, 8.7M triangles | 59.9 fps, 523 draw calls, 5.5M triangles |
-| The lift ride | 59.9 fps, 651 draw calls, 7.7M triangles | 59.9 fps, 478 draw calls, 4.0M triangles |
+| Home | 59.9 fps, 630 draw calls, 8.8M triangles | 59.9 fps, 514 draw calls, 5.4M triangles |
+| Overview | 59.9 fps, 838 draw calls, 10.1M triangles | 59.9 fps, 564 draw calls, 5.9M triangles |
+| Hero | 59.9 fps, 951 draw calls, 10.4M triangles | 59.9 fps, 616 draw calls, 5.8M triangles |
+| One tower close | 59.9 fps, 524 draw calls, 6.6M triangles | 59.9 fps, 425 draw calls, 4.0M triangles |
+| The exchange | 59.9 fps, 658 draw calls, 7.3M triangles | 59.9 fps, 512 draw calls, 4.4M triangles |
+| A street | 59.9 fps, 683 draw calls, 8.3M triangles | 59.9 fps, 493 draw calls, 4.4M triangles |
+| The river | 59.9 fps, 605 draw calls, 6.1M triangles | 59.9 fps, 457 draw calls, 3.7M triangles |
+| The university | 59.9 fps, 648 draw calls, 8.9M triangles | 59.9 fps, 523 draw calls, 5.5M triangles |
+| The lift ride | 59.9 fps, 663 draw calls, 8.2M triangles | 59.9 fps, 484 draw calls, 4.4M triangles |
 
-That was at 1512 by 890, the visible window of my MacBook's built-in display, at density 2. 59.9 is as fast as the 60 Hz display goes, and every other view the run measures holds it too on both tiers, though following an agent on high still misses a frame now and then. No view on high draws more than 942 calls or 10.6 million triangles. The first frame of the city takes about three and a half seconds.
+That was at 1512 by 890, the visible window of my MacBook's built-in display, at density 2. 59.9 is as fast as the 60 Hz display goes, and every other view the run measures holds it too on both tiers, though following an agent on high still misses a frame now and then. No view on high draws more than 951 calls or 10.9 million triangles. The first frame of the city takes about three and a half seconds.
 
 ## Try it on the sample city
 
