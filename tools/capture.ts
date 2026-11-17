@@ -113,6 +113,9 @@ const VIEWPORT = { width: 1600, height: 1000 };
 
 type V3 = [number, number, number];
 
+/** The commute's platform eye, in her frame: metres up the platform ahead of her, and to her right (toward the shelter). */
+const COMMUTE_EYE = { along: 11, out: 0.6 } as const;
+
 // ---------------------------------------------------------------- camera helpers
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
@@ -2068,13 +2071,16 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         console.log(`  tram trip legs: ${legs.join(' > ')}`);
         await callDebug(page, 'd.peopleSkip(8)');
         await follow('dagny-hollis', 4);
-        // On the platform, as the tram comes in: from up the platform, looking back at her.
+        // On the platform, as the tram comes in: from up the platform, looking back at her. The eye stands 11 m up the
+        // platform and 0.6 m to her right (final review I3: 1.8 m further out from the shelter than it was, along the same
+        // line), so the blank wall behind the shelter leaves the frame and the street and the far platform come in. Two
+        // metres further back stood the eye behind the platform's tree (Task 32's probe).
         const w = await until('dagny-hollis', (x) => x.mode === 'tram' && x.stage === 'wait');
         if (w) {
           const f0 = await until('dagny-hollis', (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 90 && v.speed > 0.5), 1200);
           const at = f0 ?? w;
-          const eye = aroundPerson(at.position, at.heading, 11, 2.4, at.position[1] + 2.4);
-          const target = aroundPerson(at.position, at.heading, -1.5, 0.3, at.position[1] + 1.2);
+          const eye = aroundPerson(at.position, at.heading, COMMUTE_EYE.along, COMMUTE_EYE.out, at.position[1] + 2.4);
+          const target = aroundPerson(at.position, at.heading, -1.5, COMMUTE_EYE.out - 2.1, at.position[1] + 1.2);
           for (let i = 0; i < Math.round(6 * FPS); i++) await shoot1(eye, target);
           // Riding: beside the tram, keeping pace with it.
           const r = await until('dagny-hollis', (x) => x.stage === 'ride', 240);
@@ -2104,7 +2110,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await callDebug(page, 'd.peopleLantern(null)');
       }
       console.log(`commute: ${n} frames`);
-      encodeClip(dir, 'commute', false, Number(process.env.COMMUTE_POSTER ?? 0.4));
+      // The poster: the tram drawn up at the platform with the people waiting to board (final review I3), frame 298 of 735.
+      encodeClip(dir, 'commute', false, Number(process.env.COMMUTE_POSTER ?? 298 / 734));
       keepFrames(dir, 'commute');
     },
 

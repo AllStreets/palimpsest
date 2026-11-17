@@ -142,7 +142,7 @@ The treasury shows my plan against what the city has spent of it, the caps, what
 ### The city at work
 
 <p align="center">
-  <a href="docs/media/commute.mp4"><img src="docs/media/commute-poster.webp" alt="A tram stop at dusk: one of the sample firms' people walks along the platform with a lantern as a tram comes in under the overhead wires, someone waits on the bench under the shelter, and shopfronts are lit across the street." width="100%" /></a>
+  <a href="docs/media/commute.mp4"><img src="docs/media/commute-poster.webp" alt="A tram stop at dusk: a tram for Northgate draws up at the platform under the overhead wires, and people wait to board along it, one of the sample firms' people among them with a lantern. Across the tracks others sit under the far shelter, and the shopfronts and a cafe are lit along the street." width="100%" /></a>
 </p>
 
 <p align="center"><sub>Two of the sample firms' people on their way to work, one by tram and one by cab. Click for the video.</sub></p>
