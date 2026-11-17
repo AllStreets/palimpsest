@@ -450,7 +450,7 @@ What works now:
 - The sample city in one command, and the four diagrams and the film in this README, each made by a script in `tools/`.
 
 <!-- Each count is from a full run of its suite: npm test (2 of the Node tests skip unless PALIMPSEST_REAL_SECURITY_TEST=1, since they run the real security tool), npm run test:trainer on the trainer's venv, and cargo test in src-tauri. Recount all three if a suite changes. -->
-There are 2,119 tests: 2,084 in Node for the engine, the market, the school and the city (`npm test`), 22 in Python for the trainer (`npm run test:trainer`), and 13 for the app shell (`cargo test` in `src-tauri/`). An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
+There are 2,120 tests: 2,085 in Node for the engine, the market, the school and the city (`npm test`), 22 in Python for the trainer (`npm run test:trainer`), and 13 for the app shell (`cargo test` in `src-tauri/`). An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
 
 The sample runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
 
