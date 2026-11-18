@@ -495,6 +495,31 @@ async function toSheetTop(page: Page, sel: string, margin = 16): Promise<void> {
   await page.waitForTimeout(500);
 }
 
+/** The most scrolled stills a sheet gives after its first screen (so a sheet gives at most 1 + this many). */
+const SCROLL_STILLS_MAX = 5;
+
+/**
+ * Scrolls an open sheet's own body (.sheet-body) one screen at a time and takes a still of each, named `<name>-2`,
+ * `<name>-3` and so on, until the body's end or the cap. The audit reads these for what lies below the first screen.
+ * The README's media (CAPTURE_WRITE_MEDIA) stay as they were, so there it takes none.
+ */
+async function scrolledStills(page: Page, sheet: string, name: string, text = true): Promise<void> {
+  if (WRITE_MEDIA) return;
+  const body = page.locator(`${sheet} .sheet-body`).first();
+  for (let i = 2; i < 2 + SCROLL_STILLS_MAX; i++) {
+    // One screen down, less the sheet's pinned head and a strip of overlap, so no row falls between two stills.
+    const moved = (await body.evaluate((el) => {
+      const b = el as HTMLElement;
+      const before = b.scrollTop;
+      b.scrollTop = before + Math.max(1, b.clientHeight - 270);
+      return b.scrollTop - before;
+    })) as number;
+    if (moved < 1) break;
+    await page.waitForTimeout(500);
+    await lean(page, `${name}-${i}`, text);
+  }
+}
+
 /** Runs `fn` with one environment variable set, then puts it back. */
 async function withEnv(key: string, value: string, fn: () => Promise<void>): Promise<void> {
   const was = process.env[key];
@@ -715,6 +740,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // The school: the seven nets with their scores, intervals and n, each against its baseline, or why it has none.
       await openHash(page, '#/school', '.sheet.school .net-row');
       await lean(page, 'school', true);
+      await scrolledStills(page, '.sheet.school', 'school');
       await openHash(page, '#/', 'body[data-route="city"]');
     },
 
@@ -845,6 +871,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await openHash(page, '#/brief', '.sheet.brief .brief-item');
       await page.waitForTimeout(800);
       await lean(page, 'brief', true);
+      await scrolledStills(page, '.sheet.brief', 'brief');
       await openHash(page, '#/', 'body[data-route="city"]');
     },
 
