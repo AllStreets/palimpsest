@@ -262,3 +262,13 @@ test('a pinned tarball the engine cannot fetch fails the install with its name, 
   assert.equal(spawned.length, 0, 'npm never runs');
   assert.ok(lines.some((l) => /beagle/.test(l.text) && l.kind === 'engine'));
 });
+
+test('an install stopped at its time limit is a plain fail that says so, which the runner counts as the engine\'s', async () => {
+  setSpawner((cmd, args, opts): Spawned => {
+    spawned.push({ cmd, args, opts });
+    return { pid: null as unknown as number, lines: (async function* () {})(), kill() {}, done: Promise.resolve({ code: null, signal: 'SIGKILL', timedOut: true }) };
+  });
+  const r = await installDeps(context([], []), repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  assert.equal(r.status, 'fail');
+  assert.match(r.detail, /^npm ci exited without a code: \[palimpsest\] timed out after 600000 ms/);
+});
