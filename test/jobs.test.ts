@@ -20,6 +20,7 @@ import {
   postManualJob,
   proposeHarnessJob,
   redact,
+  repost,
   setScope,
   settleJobEffects,
   transition,
@@ -416,6 +417,36 @@ test('failed returns to open once then stays failed', async () => {
   const comments = calls.filter((c) => c[1] === 'comment');
   assert.equal(comments.length, 1);
   assert.equal(comments[0][2], '11');
+});
+
+test('tiers are worth 20, 60 and 150, and the second failure labels the issue and refuses a third attempt', async () => {
+  const calls = fakeGh([
+    { number: 21, labels: ['palimpsest:low'] },
+    { number: 22, labels: ['palimpsest'] },
+    { number: 23, labels: ['palimpsest:high'] },
+  ]);
+  const posted = await pollJobs(makeRepo());
+  const value = Object.fromEntries(posted.map((j) => [j.tier, j.value]));
+  assert.deepEqual(value, { low: 20, normal: 60, high: 150 });
+
+  const [low] = posted.filter((j) => j.tier === 'low');
+  let cur = walk(low, ['bidding', 'awarded', 'running', 'failed']);
+  assert.equal(cur.attempts, 1);
+  await settleJobEffects();
+  assert.equal(calls.filter((c) => c[1] === 'edit').length, 0, 'the first failure leaves the issue alone');
+
+  cur = walk(cur, ['open', 'bidding', 'awarded', 'running', 'failed']);
+  assert.equal(cur.attempts, 2);
+  assert.ok(cur.closedAt, 'the second failure closes the job');
+  assert.throws(() => repost(cur.id), /out of attempts/, 'a third attempt is refused');
+  assert.throws(() => transition(cur, 'open'), /illegal move failed to open/, 'the move back to open is refused too');
+  assert.equal(job(cur.id)!.status, 'failed');
+
+  await settleJobEffects();
+  assert.deepEqual(
+    calls.filter((c) => c[1] === 'edit'),
+    [['issue', 'edit', '21', '-R', FULL, '--add-label', 'palimpsest:failed']],
+  );
 });
 
 test('the final failure comments the inspection summary', async () => {
