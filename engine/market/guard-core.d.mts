@@ -24,6 +24,7 @@ export declare const FORBIDDEN_REASONS: Readonly<{
   pathSymlink: string;
   pathHardlink: string;
   pathBad: string;
+  pathEmpty: string;
   pathUnresolved: string;
 }>;
 

@@ -473,6 +473,7 @@ describe('runLoop', () => {
     for (const tm of tms.slice(1)) {
       assert.equal(tm.isError, true);
       assert.match(tm.content, /no tool named/);
+      assert.match(tm.content, /the tools are: read_file, list_files, search, run/);
     }
     assert.ok(!fs.existsSync(join(base.dir, 'src', 'new.ts')));
     assert.equal(readFileSync(join(base.dir, 'src', 'a.ts'), 'utf8'), 'export const a = 1;\n');

@@ -114,7 +114,7 @@ export interface LoopInput extends LoopOptions, Pick<WorkInput, 'log' | 'onProgr
 /* The tools                                                           */
 /* ------------------------------------------------------------------ */
 
-const PATH = { type: 'string' as const, description: 'A path relative to the repository root.', maxLength: 4096 };
+const PATH = { type: 'string' as const, description: 'A path relative to the repository root. For list_files and search, "." or leaving it out means the root.', maxLength: 4096 };
 const MAX_CONTENT = 8 * 1024 * 1024;
 
 export const LOOP_TOOLS: ToolSpec[] = [
@@ -232,7 +232,7 @@ export function auditLoopTools(commands: readonly string[]): ToolSpec[] {
  */
 export function validateCall(c: ToolCall, tools: ToolSpec[] = LOOP_TOOLS): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
   const spec = typeof c.name === 'string' ? tools.find((t) => t.name === c.name) : undefined;
-  if (!spec) return { ok: false, reason: `there is no tool named ${JSON.stringify(String(c.name).slice(0, 80))}` };
+  if (!spec) return { ok: false, reason: `there is no tool named ${JSON.stringify(String(c.name).slice(0, 80))}; the tools are: ${tools.map((t) => t.name).join(', ')}` };
   let args = c.arguments;
   if (typeof args === 'string') {
     try {

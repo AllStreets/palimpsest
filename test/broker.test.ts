@@ -257,6 +257,27 @@ describe('execFileTool', () => {
     assert.equal(readFileSync(join(run.dir, 'x', 'y', 'z', 'c.ts'), 'utf8'), 'c');
   });
 
+  test('list and search take "", "." and "./" as the repo root; read of "" is refused with a clear reason; escapes stay refused', async () => {
+    const run = makeRun('run-root-path');
+    const log: RunLogLine[] = [];
+    for (const path of ['', '.', './']) {
+      const ls = await execFileTool({ ...base(run, log), op: 'list', args: { path, recursive: true } });
+      assert.equal(ls.refused, null, `list ${JSON.stringify(path)}: ${ls.stdout}`);
+      assert.match(ls.stdout, /src\/a\.ts/);
+      const s = await execFileTool({ ...base(run, log), op: 'search', args: { pattern: 'const a', path } });
+      assert.equal(s.refused, null, `search ${JSON.stringify(path)}: ${s.stdout}`);
+      assert.match(s.stdout, /a\.ts/);
+    }
+    const rd = await execFileTool({ ...base(run, log), op: 'read', args: { path: '' } });
+    assert.equal(rd.refused, 'Name a file inside the repo, for example src/index.ts.');
+    const wr = await execFileTool({ ...base(run, log), op: 'write', args: { path: '', content: 'x' } });
+    assert.equal(wr.refused, 'Name a file inside the repo, for example src/index.ts.');
+    for (const path of ['..', '../x', '/etc', '.git', 'a\u0000b']) {
+      const ls = await execFileTool({ ...base(run, log), op: 'list', args: { path } });
+      assert.notEqual(ls.refused, null, `list ${path} should be refused`);
+    }
+  });
+
   test('file-tool read through a symlink to a temp hosts.yml stand-in is refused', async () => {
     const run = makeRun('run-sym-read');
     symlinkSync(join(tempDir, 'home', '.config', 'gh', 'hosts.yml'), join(run.dir, 'hosts.yml'));

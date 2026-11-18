@@ -214,6 +214,18 @@ describe('pathAllowed', () => {
     assert.ok(pathAllowed('Write', join(dir, 'hosts-hard.yml'), dir));
   });
 
+  test('an empty path is the root for Glob and Grep and an unnamed file for the rest', () => {
+    for (const p of ['', '.', './']) {
+      assert.equal(pathAllowed('Glob', p, dir), null);
+      assert.equal(pathAllowed('Grep', p, dir), null);
+    }
+    for (const t of ['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'] as const) {
+      assert.equal(pathAllowed(t, '', dir), 'Name a file inside the repo, for example src/index.ts.');
+    }
+    assert.ok(pathAllowed('Glob', '..', dir));
+    assert.ok(pathAllowed('Grep', '/etc', dir));
+  });
+
   test('refuses empty, non-string, NUL and tilde paths', () => {
     assert.ok(pathAllowed('Read', '', dir));
     assert.ok(pathAllowed('Read', 7 as unknown as string, dir));

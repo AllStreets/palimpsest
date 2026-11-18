@@ -36,6 +36,7 @@ export const FORBIDDEN_REASONS = Object.freeze({
   pathSymlink: 'The path is or passes through a symlink, which file tools never follow.',
   pathHardlink: 'The file has more than one hard link, so it may be a file outside the repository.',
   pathBad: 'The path is not a usable file path.',
+  pathEmpty: 'Name a file inside the repo, for example src/index.ts.',
   pathUnresolved: 'The path could not be resolved.',
 });
 
@@ -512,7 +513,12 @@ export function pathAllowed(tool, path, dir) {
 
 function checkPath(tool, path, dir) {
   if (!FILE_TOOLS.has(tool)) return R.pathBad;
-  if (typeof path !== 'string' || path === '' || path.includes('\0')) return R.pathBad;
+  if (typeof path !== 'string' || path.includes('\0')) return R.pathBad;
+  // An empty path names the working directory for the tools that take a directory; the rest need a file.
+  if (path === '') {
+    if (tool === 'Glob' || tool === 'Grep') path = '.';
+    else return R.pathEmpty;
+  }
   if (typeof dir !== 'string' || !isAbsolute(dir)) return R.pathBad;
   if (path.startsWith('~')) return R.pathOutside;
   const dirAbs = resolve(dir);

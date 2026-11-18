@@ -193,6 +193,7 @@ export const GUARD_LABEL: Record<keyof typeof FORBIDDEN_REASONS, string | null> 
   pathSymlink: null,
   pathHardlink: null,
   pathBad: null,
+  pathEmpty: null,
   pathUnresolved: null,
 };
 
