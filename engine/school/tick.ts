@@ -8,7 +8,7 @@
  *   where he granted it (`act`, ruling 18: every act behind `mayAct`, the
  *   switch and the stop file read again between acts). Then it
  *   does nothing more unless no train is live and the light gate holds (AC
- *   power, the window, the stop file; gate.ts). Inside the window the tick
+ *   power, the window, the stop file; gate.ts). Inside the window, or during Train now, the tick
  *   first claims the local slot (`claimLocalForSchool`): no new market local
  *   run starts until the pass ends, a run in flight is waited for and never
  *   killed, and a waiting local award no longer closes the gate, so a market
@@ -42,7 +42,6 @@
  *   `school.enabled` on every call, so nothing else needs telling.
  */
 import { localDay } from '../../shared/day.js';
-import { inWindow } from '../../shared/school-rules.js';
 import type { GateState, Grant, NetName } from '../../shared/types.js';
 import { record } from '../ledger.js';
 import { claimLocalForSchool } from '../market/budget.js';
@@ -52,7 +51,7 @@ import { act as actDue, askDue } from './autonomy.js';
 import { labelCounts, type DatasetDeps } from './datasets.js';
 // the market's hooks and distillation's teacher, installed as it loads
 import './decisions.js';
-import type { GateKind } from './gate.js';
+import { schoolFirstForLocal, type GateKind } from './gate.js';
 import { NEEDS, trainNet, versions, type TrainNetResult } from './nets.js';
 import { liveTrains, pauseAll, readGate } from './trainer.js';
 
@@ -234,10 +233,10 @@ export function startSchool(o: SchoolOptions = {}): School {
     }
     if (busy || liveTrains().length > 0) return skip('a train is already running', asked, acted);
     busy = true;
-    // Inside the window the school takes the local slot first: from here no new market local run starts
-    // (a run in flight is waited for, never killed) until the pass ends. Outside it the school yields as before.
+    // Inside the window, or during Train now, the school takes the local slot first: from here no new market local run starts
+    // (a run in flight is waited for, never killed) until the pass ends. Outside both the school yields as before.
     letGo();
-    if (inWindow(getSettings().school.window, now)) claim = claimLocalForSchool();
+    if (schoolFirstForLocal(now)) claim = claimLocalForSchool();
     let holdClaim = false;
     try {
       const g = await gate('light', now);

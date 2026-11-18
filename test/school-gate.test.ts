@@ -264,12 +264,29 @@ test('a live or awarded local job fails both', async () => {
   g = await both(NIGHT);
   assert.equal(g.light.ok, true, 'a Claude award does not hold the Mac');
   award('job-local', 'bid-local', 'loc');
-  // Outside the window (Train now) the school yields to it as before.
+  // Outside both the window and Train now the school yields to it.
+  mac.idleMin = 0;
+  g = await both(DAY + HOUR);
+  assert.equal(g.light.reason, 'outside the training window');
+});
+
+test('during Train now a local award waiting does not close the gate, but a run in flight still does', async () => {
+  addAgent('loc', 'quickset', 'ollama:qwen2.5-coder:7b');
+  const bid = { id: 'bid-local', jobId: 'job-local', firmId: 'quickset', agentId: 'loc', plan: 'p', price: 5, confidence: 0.5, calibrated: 0.5, appraisal: null, ev: 1, cost: 1, at: new Date(NIGHT).toISOString() };
+  openDb().prepare('INSERT INTO bids (id, job_id, json) VALUES (?, ?, ?)').run(bid.id, bid.jobId, JSON.stringify({ round: 'r1', bid }));
+  const j = { id: 'job-local', repo: 'acme/widgets', status: 'awarded', awardedBid: bid.id, postedAt: new Date(NIGHT).toISOString() };
+  openDb().prepare('INSERT INTO jobs (id, repo, status, json) VALUES (?, ?, ?, ?)').run(j.id, j.repo, j.status, JSON.stringify(j));
   mac.idleMin = 0;
   await startTrainNow(DAY);
+  let g = await both(DAY + HOUR);
+  assert.equal(g.light.ok, true, String(g.light.reason));
+  assert.equal(g.heavy.ok, true, String(g.heavy.reason));
+  const got = await acquire('ollama:qwen2.5-coder:7b', 'work', 1, { now: DAY + HOUR });
+  assert.ok(got.ok);
   g = await both(DAY + HOUR);
-  assert.equal(g.light.reason, 'a local job is waiting');
-  assert.equal(g.heavy.reason, 'a local job is waiting');
+  assert.equal(g.light.reason, 'a local job is running');
+  assert.equal(g.heavy.reason, 'a local job is running');
+  got.lease.release();
 });
 
 test('inside the window a local award waiting does not close the gate: the school takes the slot first', async () => {

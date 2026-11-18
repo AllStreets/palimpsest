@@ -184,6 +184,12 @@ function trainNowLive(until: string | null, now: number): string | null {
   return Number.isFinite(t) && t > now ? until : null;
 }
 
+/** Whether the school has the local slot first at `now`: inside its window, or while "Train now" is live. */
+export function schoolFirstForLocal(now: number): boolean {
+  const s = getSettings().school;
+  return inWindow(s.window, now) || trainNowLive(s.trainNowUntil, now) !== null;
+}
+
 /** Whether an awarded job's winning bid is a local agent's: it waits for the local slot the trainer would hold. */
 function localAwardWaiting(): boolean {
   for (const j of listJobs({ status: ['awarded'] })) {
@@ -214,9 +220,8 @@ export async function gateNow(kind: GateKind, now: number): Promise<GateState> {
     () => (powerMode === null ? 'could not read the power mode' : powerMode === 1 && !s.allowLowPower ? 'in Low Power mode' : null),
     () => (windowNow || trainNowUntil ? null : 'outside the training window'),
     () => (liveWork('local') > 0 ? 'a local job is running' : null),
-    // Inside the window the school takes the local slot first (tick.ts claims it): a waiting award waits its turn.
-    // Outside it (Train now) the school still yields to one.
-    () => (!windowNow && localAwardWaiting() ? 'a local job is waiting' : null),
+    // Inside the window, or during Train now, the school takes the local slot first (tick.ts claims it): a waiting award waits its turn.
+    () => (!schoolFirstForLocal(now) && localAwardWaiting() ? 'a local job is waiting' : null),
   ];
   if (kind === 'heavy') {
     reasons.push(

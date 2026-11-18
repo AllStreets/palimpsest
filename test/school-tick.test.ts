@@ -396,12 +396,21 @@ test('inside the window the school holds the local slot for its pass: a market l
     assert.deepEqual(marketTries, [false, false], 'no market local run starts while the school trains or sails in its window');
     assert.equal(await tryMarket(), true, 'the slot is handed back between passes');
 
-    // Outside the window (Train now) the school claims nothing and yields as before.
+    // Outside the window and outside Train now the school claims nothing and yields as before.
     marketTries.length = 0;
-    const DAYTIME = NOW + 11 * 60 * MIN;
-    gate = { ...ok(), inWindow: false, trainNowUntil: new Date(DAYTIME + 60 * MIN).toISOString() };
-    await school.tick(DAYTIME + 2 * DAY);
+    const DAYTIME = NOW + 11 * 60 * MIN + 2 * DAY;
+    gate = { ...ok(), inWindow: false };
+    await school.tick(DAYTIME);
     assert.deepEqual(marketTries, [true, true]);
+
+    // While Train now is live the school has the same priority as in the window: it claims the slot.
+    marketTries.length = 0;
+    const LATER = DAYTIME + DAY; // a new night, so the net is due again
+    const until = new Date(LATER + 60 * MIN).toISOString();
+    patchSettings({ school: { ...getSettings().school, trainNowUntil: until } });
+    gate = { ...ok(), inWindow: false, trainNowUntil: until };
+    await school.tick(LATER);
+    assert.deepEqual(marketTries, [false, false], 'Train now claims the local slot like the window');
   } finally {
     school.stop();
   }
