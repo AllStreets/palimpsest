@@ -308,3 +308,20 @@ test('a token in a test diff or a commit message, or a .env change, is skipped a
   }
   for (const p of ['src/env.ts', 'src/keyboard.ts', 'src/config/gh.ts', 'src/secret_sauce.ts', 'environment.md']) assert.ok(!secretPath(p), `${p} is not secret`);
 });
+
+test('a merged PR that edits no source (a data refresh of many files) is skipped as no-edit without reading the size of each file', async () => {
+  let refresh = '';
+  const w = world((work) => {
+    const data: Record<string, string> = {};
+    for (let i = 0; i < 300; i++) data[`data/item${i}.json`] = `{"i": ${i}}\n`;
+    refresh = commit(work, 90, data, 'Refresh the catalog (#6)');
+  });
+  prs.push({ number: 6, title: 'Refresh the catalog', mergedAt: ago(90), mergeCommit: { oid: refresh }, url: `https://github.com/${FULL}/pull/6`, headRefName: 'chore/refresh' });
+  gitCalls = [];
+  const got = await buildLoraData(NOW);
+  assert.ok(!got.examples.map(shaOf).includes(refresh));
+  assert.ok(got.examples.map(shaOf).includes(w.util), 'the other changes still make examples');
+  assert.equal(got.skipped['no-edit'], 1);
+  const sizes = gitCalls.filter((a) => a.includes('cat-file') && a.includes('-s')).length;
+  assert.ok(sizes < 100, `${sizes} blob size reads: a change with no source to edit is never sized file by file`);
+});

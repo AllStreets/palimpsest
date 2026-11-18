@@ -434,6 +434,12 @@ async function exampleOf(repo: Repo, c: VerifiedChange, sealed: Set<string>, sys
   if (raw.some((f) => secretPath(f.path))) return { skip: 'secret' };
   // Links and submodules on either side are skipped, never read.
   const files = raw.filter((f) => (f.oldMode === '000000' || REGULAR.has(f.oldMode)) && (f.newMode === '000000' || REGULAR.has(f.newMode)));
+  const command = repo.checks?.test ?? '';
+  const tests = files.filter((f) => protectedReason(f.path, command) === 'the tests may not be changed');
+  const sources = files.filter((f) => isSourceFile(f.path) && !protectedReason(f.path, command));
+  // A change with no source to edit is never an example: it is skipped before any file is sized, since a
+  // data refresh of thousands of files would otherwise cost two git reads per file and outlast the night.
+  if (!sources.length) return { skip: 'no-edit' };
   for (const f of files) {
     for (const blob of [f.oldBlob, f.newBlob]) {
       const n = await blobSize(repo, blob);
@@ -441,11 +447,6 @@ async function exampleOf(repo: Repo, c: VerifiedChange, sealed: Set<string>, sys
       if (n > LORA.maxFileBytes) return { skip: 'too-large' };
     }
   }
-
-  const command = repo.checks?.test ?? '';
-  const tests = files.filter((f) => protectedReason(f.path, command) === 'the tests may not be changed');
-  const sources = files.filter((f) => isSourceFile(f.path) && !protectedReason(f.path, command));
-  if (!sources.length) return { skip: 'no-edit' };
 
   const reads: ChatMessage[] = [];
   const edits: ArenaEdit[] = [];
