@@ -29,8 +29,11 @@ export interface RunContext {
   log: (line: RunLogLine) => void;
   /** The run's signal: a kill, the stop file or a hard stop aborts it. */
   signal: AbortSignal;
-  /** The run's egress proxy: the install stage opens it to the repo's registries and nothing else. */
-  egress?: Pick<Egress, 'setStage'>;
+  /**
+   * The run's egress proxy: the install stage opens it to the repo's
+   * registries and nothing else, and listens for the hosts it refuses.
+   */
+  egress?: Pick<Egress, 'setStage'> & Partial<Pick<Egress, 'onRefused'>>;
   /**
    * Which side of the run the clone belongs to (default `head`): the design
    * check's base clone is `base`, with its own home, cache, tmp and tool
@@ -60,9 +63,33 @@ export const installDeps: InstallDeps = async (ctx, repo) => {
     return { name: 'install', status: 'fail', detail, durationMs: Date.now() - started, logPath: null, testsRun: null };
   }
   // Only the registries of the ecosystems the repo's lockfiles name, and the GitHub HTTPS hosts they fetch from; the caller sets the next stage after.
-  ctx.egress?.setStage('install', [...new Set([...hostsFor('install', repo.checks?.ecosystems ?? [], null), ...sources.hosts])]);
-  const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command, timeoutMs: INSTALL_MS, stage: 'install', side: ctx.side });
+  const allowed = [...new Set([...hostsFor('install', repo.checks?.ecosystems ?? [], null), ...sources.hosts])];
+  ctx.egress?.setStage('install', allowed);
+  // A host the proxy refuses can never answer, and npm retries a refused tunnel until its time limit: the first refusal
+  // stops the install at once, with the host named, instead of ten minutes later with nothing said.
+  const stop = new AbortController();
+  const onRunAbort = () => stop.abort();
+  if (ctx.signal.aborted) stop.abort();
+  else ctx.signal.addEventListener('abort', onRunAbort, { once: true });
+  let refusedHost: string | null = null;
+  const unlisten = ctx.egress?.onRefused?.((host) => {
+    if (refusedHost !== null) return;
+    refusedHost = host;
+    stop.abort();
+  });
+  let r: Awaited<ReturnType<typeof execTool>>;
+  try {
+    r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: stop.signal, command, timeoutMs: INSTALL_MS, stage: 'install', side: ctx.side });
+  } finally {
+    unlisten?.();
+    ctx.signal.removeEventListener('abort', onRunAbort);
+  }
   const durationMs = Date.now() - started;
+  if (refusedHost !== null && !ctx.signal.aborted) {
+    const detail = refusedText(command, refusedHost, allowed);
+    ctx.log({ at: new Date().toISOString(), kind: 'engine', text: `[palimpsest] ${detail}` });
+    return { name: 'install', status: 'fail', detail, durationMs, logPath: null, testsRun: null };
+  }
   if (r.refused) return { name: 'install', status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath: null, testsRun: null };
   if (r.code !== 0) {
     const tail = r.stderr.trim().split('\n').slice(-5).join('\n');
@@ -70,6 +97,15 @@ export const installDeps: InstallDeps = async (ctx, repo) => {
   }
   return { name: 'install', status: 'pass', detail: command, durationMs, logPath: null, testsRun: null };
 };
+
+/** Why an install was stopped at the proxy's first refusal. */
+export function refusedText(command: string, host: string, allowed: string[]): string {
+  return (
+    `${command} was stopped: it tried to reach ${host}, which a run's install may not reach ` +
+    `(it may reach only ${allowed.length ? allowed.join(', ') : 'no host'}). ` +
+    'A dependency that downloads from another host while it installs cannot install here.'
+  );
+}
 
 /** Manifests and lockfiles: a change to any of them, anywhere in the tree, means the install runs again. */
 export const DEPENDENCY_FILES = new Set([

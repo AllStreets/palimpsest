@@ -235,3 +235,19 @@ test('hostsFor follows ruling 21', () => {
     assert.ok(!hostsFor(stage, ['npm', 'python', 'rust', 'go'], 'claude:opus').some((h) => /github/.test(h)));
   }
 });
+
+test('a refused host is told to whoever listens, until they stop listening', async () => {
+  const e = await start('run-a');
+  e.setStage('install', ['127.0.0.1']);
+  const heard: string[] = [];
+  const stop = e.onRefused((h) => heard.push(h));
+  assert.equal((await connectVia(e.port, 'Objects.Example.net', 443, e.token)).status, 403);
+  assert.equal((await getVia(e.port, 'http://cdn.example.org/x', e.token)).status, 403);
+  // A refusal for a bad token or port is no host refused: nothing to tell.
+  assert.equal((await connectVia(e.port, 'other.example.net', 443, 'wrong')).status, 407);
+  assert.equal((await connectVia(e.port, '127.0.0.1', targetPort, e.token)).status, 200);
+  assert.deepEqual(heard, ['objects.example.net', 'cdn.example.org']);
+  stop();
+  assert.equal((await connectVia(e.port, 'late.example.net', 443, e.token)).status, 403);
+  assert.deepEqual(heard, ['objects.example.net', 'cdn.example.org']);
+});

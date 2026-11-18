@@ -162,6 +162,9 @@ function fakeEgress(): Egress {
     setStage(stage, hosts) {
       stages.push({ stage, hosts: [...hosts] });
     },
+    onRefused() {
+      return () => {};
+    },
     async close() {
       egressClosed++;
     },

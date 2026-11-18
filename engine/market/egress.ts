@@ -110,6 +110,8 @@ export interface Egress {
   port: number;
   token: string;
   setStage(stage: EgressStage, hosts: string[]): void;
+  /** Calls `fn` with each host the proxy refuses from now on; returns the call that stops it. */
+  onRefused(fn: (host: string) => void): () => void;
   close(): Promise<void>;
 }
 
@@ -155,11 +157,13 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
     });
   };
 
+  const refusalListeners = new Set<(host: string) => void>();
   const noteRefused = (host: string) => {
     const list = refused.get(runId) ?? [];
     const h = host.toLowerCase();
     if (!list.includes(h) && list.length < 100) list.push(h);
     refused.set(runId, list);
+    for (const fn of refusalListeners) fn(h);
   };
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -279,6 +283,10 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
         if (!hostAllowed(host, allowed)) client.destroy();
       }
       log({ at: new Date().toISOString(), kind: 'egress', text: `stage ${next}: ${allowed.length ? allowed.join(', ') : 'nothing allowed'}`, data: { stage: next, hosts: allowed } });
+    },
+    onRefused(fn) {
+      refusalListeners.add(fn);
+      return () => refusalListeners.delete(fn);
     },
     async close() {
       unregisterRunPorts(runId, [port]);

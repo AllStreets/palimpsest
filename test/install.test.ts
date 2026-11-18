@@ -170,3 +170,51 @@ test('a git+ssh dependency fails the install with a reason naming it, before any
   assert.equal(spawned.length, 0, 'npm never runs');
   assert.ok(lines.some((l) => /beagle/.test(l.text)), 'the run log says why');
 });
+
+test('a host the proxy refuses stops the install at once, naming the host, instead of waiting for its limit', async () => {
+  const lines: RunLogLine[] = [];
+  const listeners: Array<(host: string) => void> = [];
+  const killed: string[] = [];
+  let release: () => void = () => {};
+  const ended = new Promise<void>((r) => (release = r));
+  // npm retrying a refused CONNECT forever: the command never ends on its own.
+  setSpawner((cmd, args, opts): Spawned => {
+    spawned.push({ cmd, args, opts });
+    return {
+      pid: null as unknown as number,
+      lines: (async function* () {
+        yield { stream: 'stderr' as const, line: 'npm http fetch GET https://objects.example.net/ffmpeg.zip attempt 1 failed with 403' };
+        await ended;
+      })(),
+      kill(sig?: NodeJS.Signals | number) {
+        killed.push(String(sig));
+        release();
+      },
+      done: ended.then(() => ({ code: null, signal: 'SIGKILL' as NodeJS.Signals })),
+    };
+  });
+  const ctx: RunContext = {
+    ...context([], lines),
+    egress: {
+      setStage() {},
+      onRefused(fn: (host: string) => void) {
+        listeners.push(fn);
+        return () => listeners.splice(listeners.indexOf(fn), 1);
+      },
+    },
+  };
+  const started = Date.now();
+  const pending = installDeps(ctx, repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(listeners.length, 1, 'the install listens for refusals while it runs');
+  listeners[0]('objects.example.net');
+  const r = await pending;
+  assert.ok(Date.now() - started < 5_000, 'it ends at once, not at its 10 minute limit');
+  assert.equal(r.status, 'fail');
+  assert.match(r.detail, /objects\.example\.net/);
+  assert.match(r.detail, /registry\.npmjs\.org/, 'it names what the install may reach');
+  assert.doesNotMatch(r.detail, /timed out|run is ending/);
+  assert.ok(killed.includes('SIGKILL'), 'the command was stopped');
+  assert.equal(listeners.length, 0, 'it stops listening once the install is over');
+  assert.ok(lines.some((l) => /objects\.example\.net/.test(l.text) && l.kind === 'engine'), 'the run log says why');
+});
