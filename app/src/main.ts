@@ -831,7 +831,7 @@ async function main(): Promise<void> {
     runhead.setStopped(s);
     city.setStopped(s);
   };
-  const settings = createSettings(document.body, { listen, onDismiss: toCity, onStopped: setStopped });
+  const settings = createSettings(document.body, { listen, onDismiss: toCity, onStopped: setStopped, drawn: () => ({ quality: city.quality(), drop: droppedAt }) });
   const jobBoard = createJobs(document.body, { listen, onDismiss: toCity });
   void api.health().then((h) => setStopped(h.stopped), () => {});
 
@@ -1470,9 +1470,12 @@ async function main(): Promise<void> {
     for (const fn of listeners) fn(e);
   });
 
+  // What the governor saw when it stepped down; Settings says so beside the stored choice.
+  let droppedAt: { fps: number | null } | null = null;
   // Stepped down to medium by itself: every tower rebuilds at medium, and the notice says why.
   city.onQualityDrop((saw) => {
     quality = 'medium';
+    droppedAt = { fps: saw.fps > 0 ? saw.fps : null };
     place();
     notice.add(dropText(saw, saw.fromHome), { key: 'quality' });
   });

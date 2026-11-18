@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, settingsWindow, windowSentence } from '../app/src/ui/settings-words.js';
+import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from '../app/src/ui/settings-words.js';
 
 test('Settings shows a window as it stands now, the figure the brief shows, not the reading alone', () => {
   // The audit's moment: the reading said 44%, the city has spent since, the brief says 45%.
@@ -28,4 +28,24 @@ test('the hook, the keychain and the daily limit each say in one plain line what
   assert.match(HOOK_NOTE, /statusline/);
   assert.match(KEYCHAIN_NOTE, /keychain/);
   assert.match(API_DAILY_NOTE, /midnight/);
+});
+
+test('the Quality note: nothing to reopen, a choice waiting for a reopen, and the city stepped down by itself', () => {
+  const none = { text: 'Read when the city opens.', button: null, line: null };
+  // No drop, the stored choice is what the city draws at: read when the city opens, no button.
+  assert.deepEqual(qualityNote({ stored: 'high', drawn: 'high', drop: null }), none);
+  // No drop, a different choice stored: it waits for a reopen.
+  assert.deepEqual(qualityNote({ stored: 'medium', drawn: 'high', drop: null }), { text: 'Takes effect when the city reopens.', button: 'Reopen now', line: null });
+  // The city stepped down by itself and the stored High still reads High: say so, and offer the way back.
+  assert.deepEqual(qualityNote({ stored: 'high', drawn: 'medium', drop: { fps: 43 } }), {
+    text: 'Drawing at medium now: the city stepped down by itself at 43 fps.',
+    button: 'Reopen at high',
+    line: 'Runs, bids and the school keep going while it reopens.',
+  });
+  // No measured rate (a drop asked for before any frame): the sentence leaves the figure out.
+  assert.equal(qualityNote({ stored: 'high', drawn: 'medium', drop: { fps: null } }).text, 'Drawing at medium now: the city stepped down by itself.');
+  // After a drop, Medium stored is what the city already draws: no reopen.
+  assert.deepEqual(qualityNote({ stored: 'medium', drawn: 'medium', drop: { fps: 43 } }), none);
+  // Opened at medium by choice (no drop), then High stored: an ordinary reopen.
+  assert.deepEqual(qualityNote({ stored: 'high', drawn: 'medium', drop: null }), { text: 'Takes effect when the city reopens.', button: 'Reopen now', line: null });
 });

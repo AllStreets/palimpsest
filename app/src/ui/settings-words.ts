@@ -33,3 +33,30 @@ export const KEYCHAIN_NOTE = "The key goes into your Mac's keychain, never into 
 
 /** Beside the API's daily limit. */
 export const API_DAILY_NOTE = 'The most the firms may spend on the API in a day; past it, no firm calls the API until midnight.';
+
+/** What the Quality row says under the picker: the note, the one button it offers (or none), and the line under the button (or none). */
+export interface QualityNote {
+  text: string;
+  button: string | null;
+  line: string | null;
+}
+
+/**
+ * The city reads quality once when it opens, so the row compares the stored
+ * choice with what the city draws at now. After the city stepped down by
+ * itself the stored High still reads High, so the row says what the city
+ * is drawing at and offers the way back; the engine is its own launchd
+ * process, so a reopen costs the runs, bids and the school nothing.
+ */
+export function qualityNote(o: { stored: 'high' | 'medium'; drawn: 'high' | 'medium'; drop: { fps: number | null } | null }): QualityNote {
+  if (o.stored === o.drawn) return { text: 'Read when the city opens.', button: null, line: null };
+  if (o.drop && o.drawn === 'medium') {
+    const at = o.drop.fps ? ` at ${Math.round(o.drop.fps)} fps` : '';
+    return {
+      text: `Drawing at medium now: the city stepped down by itself${at}.`,
+      button: 'Reopen at high',
+      line: 'Runs, bids and the school keep going while it reopens.',
+    };
+  }
+  return { text: 'Takes effect when the city reopens.', button: 'Reopen now', line: null };
+}

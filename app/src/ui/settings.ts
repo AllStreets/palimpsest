@@ -3,7 +3,7 @@ import { pctFor } from '../../../shared/credits';
 import { api, type EngineEvent, type UsageState } from '../api';
 import { cleanText } from './board';
 import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE } from '../../../shared/market-rules';
-import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, settingsWindow, windowSentence } from './settings-words';
+import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from './settings-words';
 import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton } from './controls';
 import { grantsAside, grantsBlock } from './autonomy';
 import { schoolSettings } from './settings-school';
@@ -85,7 +85,13 @@ const NUMBERS: Array<{ key: NumberKey; label: string; cls: string; lo: number; h
  */
 export function createSettings(
   parent: HTMLElement,
-  opts: { listen(fn: (e: EngineEvent) => void): () => void; onDismiss(): void; onStopped(stopped: boolean): void },
+  opts: {
+    listen(fn: (e: EngineEvent) => void): () => void;
+    onDismiss(): void;
+    onStopped(stopped: boolean): void;
+    /** What the city draws at now, and the frame rate it stepped down at when it did so by itself (null otherwise). */
+    drawn(): { quality: Settings['quality']; drop: { fps: number | null } | null };
+  },
 ): SettingsScreen {
   const sheet = createSheet(parent, 'settings', 'Settings', opts.onDismiss);
   const facts = el('p', 'sheet-facts', "Where the city's work runs, what it may spend, and what leaves this Mac.");
@@ -779,7 +785,6 @@ export function createSettings(
     qGroup.append(b);
   }
   rovingRadios(qGroup, (b) => void pickQuality(b));
-  let loadedQuality: Settings['quality'] | null = null;
   const qNote = el('p', 'set-note quality-note');
   qRow.main.append(qGroup, qNote);
 
@@ -794,14 +799,16 @@ export function createSettings(
     }
   }
 
-  /** The city reads quality once when it opens: say so, and offer to reopen it when the choice differs. */
-  function fillQualityNote(now: Settings['quality']): void {
+  /** The city reads quality once when it opens: say what it draws at now, and offer to reopen it when that differs from the stored choice. */
+  function fillQualityNote(stored: Settings['quality']): void {
+    const live = opts.drawn();
+    const n = qualityNote({ stored, drawn: live.quality, drop: live.drop });
     qNote.replaceChildren();
-    if (loadedQuality && now !== loadedQuality) {
-      qNote.append(document.createTextNode('Takes effect when the city reopens. '), textButton('quality-reload', 'Reopen now', () => location.reload()));
-    } else {
-      qNote.textContent = 'Read when the city opens.';
+    qNote.append(document.createTextNode(n.text));
+    if (n.button) {
+      qNote.append(document.createTextNode(' '), textButton('quality-reload', n.button, () => location.reload()));
     }
+    if (n.line) qNote.append(el('span', 'quality-keeps', n.line));
   }
 
   // ---------------------------------------------------------------- kill switch
@@ -888,7 +895,6 @@ export function createSettings(
       api.firms().catch(() => null),
     ]);
     if (s) {
-      loadedQuality ??= s.quality;
       fillHook(s.hookInstalled);
       for (const n of NUMBERS) capFields.get(n.key)?.setSaved(s[n.key]);
       awake.set(awakeSync.want ?? s.keepAwake);

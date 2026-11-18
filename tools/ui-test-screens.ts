@@ -427,7 +427,12 @@ export async function settingsChecks(page: Page, claudeSettingsPath: string): Pr
   await page.waitForTimeout(400);
   st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
   check(st.quality === 'medium', 'quality is stored');
+  // The city draws at high (no drop): a stored Medium waits for a reopen, and High again has nothing to reopen.
+  const qNote = page.locator('.quality-note');
+  check(/Takes effect when the city reopens\./.test((await qNote.textContent()) ?? '') && (await qNote.locator('.quality-reload').textContent()) === 'Reopen now', 'a stored Medium, with the city at high, offers Reopen now');
   await page.locator('[role="radio"][data-quality="high"]').click();
+  await page.waitForTimeout(400);
+  check((await qNote.textContent()) === 'Read when the city opens.' && (await qNote.locator('.quality-reload').count()) === 0, 'the stored High, with the city at high, has nothing to reopen');
 
   // The kill switch.
   await page.locator('[role="switch"].kill').click();
