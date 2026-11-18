@@ -209,10 +209,37 @@ export function grantLine(g: Grant, now = Date.now()): string {
 
 // ---------------------------------------------------------------- arenas, voyages, the LoRA
 
-/** "11 of 100 verified changes", or that there are enough. */
-export function loraLine(l: { examples: number; needs: number }): string {
+/** "11 of 100 verified changes" (the ones the trainer would use), or that there are enough; before any count, that there is none. */
+export function loraLine(l: { examples: number; needs: number; readAt?: string | null }): string {
+  if (l.readAt === null) return `Not counted yet, ${l.needs} usable changes needed`;
   if (l.examples < l.needs) return `${l.examples} of ${l.needs} verified changes`;
   return `${l.examples} verified changes, enough to train (${l.needs} needed)`;
+}
+
+const ASIDE: Array<[string, (n: number) => string]> = [
+  ['no-edit', (n) => `${n} change no code`],
+  ['not-unique', (n) => `${n} repeat another`],
+  ['too-large', (n) => `${n} too big`],
+  ['too-long', (n) => `${n} run too long`],
+  ['secret', (n) => `${n} touch secrets`],
+  ['sealed', (n) => `${n} held back for testing`],
+];
+
+/**
+ * The quiet line under the count: how many verified changes there were and why some were set aside, with the
+ * real counts. Says when it was counted if the history has moved since. Null before any build.
+ */
+export function loraSetAside(l: { examples: number; verified: number | null; skipped: Record<string, number>; readAt: string | null; stale: boolean }): string | null {
+  if (l.verified === null) return null;
+  const aside = l.verified - l.examples;
+  let text = `${plural(l.verified, 'verified change')}, `;
+  if (aside <= 0) text += 'all of them usable';
+  else {
+    const why = ASIDE.filter(([k]) => (l.skipped[k] ?? 0) > 0).map(([k, f]) => f(l.skipped[k]));
+    text += `${aside} set aside${why.length ? `: ${why.join(', ')}` : ''}`;
+  }
+  if (l.stale && l.readAt) text += `. Counted ${shortDate(l.readAt)}, before the latest read.`;
+  return text;
 }
 
 /** "sealed set used 3 of 10 times". */

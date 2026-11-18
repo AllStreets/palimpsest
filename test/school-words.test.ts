@@ -23,6 +23,7 @@ import {
   intervalText,
   kindLabel,
   loraLine,
+  loraSetAside,
   lowPowerNote,
   masterGuessLine,
   NET_BIAS,
@@ -114,8 +115,19 @@ test('the kinds have plain labels', () => {
   assert.equal(kindLabel('merge:ui'), 'UI merges');
 });
 
+test('the LoRA line says what was set aside and why, with real counts', () => {
+  const base = { examples: 25, needs: 100, verified: 97, readAt: '2026-11-17T12:00:00.000Z', stale: false };
+  assert.equal(loraSetAside({ ...base, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 22, 'no-edit': 50 } }), '97 verified changes, 72 set aside: 50 change no code, 22 repeat another');
+  assert.equal(loraSetAside({ ...base, examples: 97, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 } }), '97 verified changes, all of them usable');
+  const stale = loraSetAside({ ...base, stale: true, skipped: { sealed: 1, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 71 } });
+  assert.match(stale ?? '', /^97 verified changes, 72 set aside: 71 change no code, 1 held back for testing\. Counted 17 Nov, before the latest read\.$/);
+  assert.equal(loraSetAside({ ...base, examples: 0, verified: null, readAt: null, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 } }), null);
+  for (const t of [stale]) assert.ok(!/—|--/.test(t ?? ''));
+});
+
 test('the LoRA counts its verified changes against what it needs', () => {
   assert.equal(loraLine({ examples: 11, needs: 100 }), '11 of 100 verified changes');
+  assert.equal(loraLine({ examples: 0, needs: 100, readAt: null }), 'Not counted yet, 100 usable changes needed');
   assert.equal(loraLine({ examples: 0, needs: 100 }), '0 of 100 verified changes');
   assert.equal(loraLine({ examples: 131, needs: 100 }), '131 verified changes, enough to train (100 needed)');
 });

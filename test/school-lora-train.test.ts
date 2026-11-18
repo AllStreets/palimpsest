@@ -13,7 +13,7 @@ import { realSpawner, setSpawner, type SpawnDone, type Spawned, type SpawnLine, 
 import { paths } from '../engine/home.js';
 import { entries } from '../engine/ledger.js';
 import { hostAllowed, type Egress } from '../engine/market/egress.js';
-import type { LoraData, LoraExample } from '../engine/school/lora.js';
+import type { LoraData, LoraExample, LoraSkip } from '../engine/school/lora.js';
 import {
   adapterIntact,
   downloadBase,
@@ -26,6 +26,7 @@ import {
   trainedAdapter,
   trainLora,
 } from '../engine/school/lora.js';
+import { schoolView } from '../engine/school/api.js';
 import { startSchool } from '../engine/school/tick.js';
 import { liveTrains, pauseAll, setGate } from '../engine/school/trainer.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -50,6 +51,7 @@ interface Fake {
 let spawned: Fake[];
 let saved: Record<string, string | undefined>;
 let built: Array<{ now: number; check: boolean | undefined }>;
+let skips: Partial<Record<LoraSkip, number>> = {};
 let examples: number;
 let stages: Array<{ stage: string; hosts: string[] }>;
 let egressClosed: number;
@@ -152,7 +154,7 @@ async function fakeData(now: number, o: { check?: boolean } = {}): Promise<LoraD
   const line = (e: LoraExample) => `${JSON.stringify({ messages: e.messages })}\n`;
   writeFileSync(join(dir, 'train.jsonl'), all.slice(0, all.length - nValid).map(line).join(''));
   writeFileSync(join(dir, 'valid.jsonl'), all.slice(all.length - nValid).map(line).join(''));
-  return { examples: all, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 }, path: join(dir, 'train.jsonl'), validPath: join(dir, 'valid.jsonl'), failed: {} };
+  return { examples: all, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0, ...skips }, path: join(dir, 'train.jsonl'), validPath: join(dir, 'valid.jsonl'), failed: {} };
 }
 
 function fakeEgress(): Egress {
@@ -197,6 +199,7 @@ beforeEach(() => {
   spawned = [];
   built = [];
   examples = LORA.min;
+  skips = {};
   stages = [];
   egressClosed = 0;
   setSpawner(fakeSpawner);
@@ -569,4 +572,28 @@ test('the nightly tick trains a LoRA once the base is ready, and tries a refused
   } finally {
     s.stop();
   }
+});
+
+test('the school view counts the examples trainLora would use, from the same build, and says when it was read', async () => {
+  baseReady();
+  examples = 25;
+  skips = { 'no-edit': 50, 'not-unique': 22 };
+  const now = NIGHT;
+  const r = await trainLora(now);
+  assert.equal(r.status, 'refused');
+  assert.equal(r.reason, '25 of 100 verified changes');
+  const l = (await schoolView(now)).lora;
+  assert.equal(l.examples, 25, 'the screen counts what the trainer counts');
+  assert.equal(l.verified, 97);
+  assert.equal(l.skipped['no-edit'], 50);
+  assert.equal(l.skipped['not-unique'], 22);
+  assert.equal(l.readAt, new Date(now).toISOString());
+  assert.equal(l.stale, true, 'no connected repo has 97 verified changes now, so the stored count is older than the history');
+});
+
+test('before any build the view has no read time and counts no examples', async () => {
+  const l = (await schoolView(NIGHT)).lora;
+  assert.equal(l.examples, 0);
+  assert.equal(l.readAt, null);
+  assert.equal(l.verified, null);
 });

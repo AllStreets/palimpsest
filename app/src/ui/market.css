@@ -5503,6 +5503,11 @@ a.brief-act {
   color: var(--ink);
   font-variant-numeric: lining-nums tabular-nums;
 }
+.lora-aside {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
 .lora-base {
   margin-top: 6px;
   max-width: 66ch;

@@ -2523,6 +2523,10 @@ function seedVerified(now: number): void {
       put.run(repo, s, JSON.stringify({ check, change }));
     }
   }
+  // The last dataset build, as lora.ts's recordUsable keeps it: every one of the 61 had a source edit to learn from.
+  const skipped = { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 };
+  mkdirSync(join(paths().school, 'lora'), { recursive: true });
+  writeFileSync(join(paths().school, 'lora', 'usable.json'), JSON.stringify({ usable: 61, verified: 61, skipped, at: iso(now - DAY) }));
 }
 
 /**

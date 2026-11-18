@@ -83,8 +83,13 @@ export interface SchoolView {
   graduates: Graduate[];
   trains: TrainState[];
   lora: {
+    /** The examples the trainer would use (the same count it checks against `needs`). */
     examples: number;
     needs: number;
+    verified: number | null;
+    skipped: Record<'sealed' | 'secret' | 'too-large' | 'too-long' | 'not-unique' | 'no-edit', number>;
+    readAt: string | null;
+    stale: boolean;
     counts: Record<string, { city: number; pr: number; commit: number }>;
     baseReady: boolean;
     /** His last click on the download: running, or how it ended; null before any since the engine started. */

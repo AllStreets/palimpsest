@@ -33,7 +33,7 @@ import { campusView } from './campus.js';
 import { agreement, agreements } from './decisions.js';
 import { gateNow, startTrainNow, stopTrainNow } from './gate.js';
 import { verifiedCounts } from './history.js';
-import { baseReady, downloadBase, graduates } from './lora.js';
+import { baseReady, downloadBase, graduates, readUsable, type LoraSkip } from './lora.js';
 import { netCard, netCards, versions } from './nets.js';
 import { registerAbort } from './tick.js';
 import { liveTrains } from './trainer.js';
@@ -183,8 +183,17 @@ export interface SchoolView {
   graduates: Graduate[];
   trains: TrainState[];
   lora: {
+    /** The examples trainLora would use, from the last dataset build (0 before any). It is checked against `needs`. */
     examples: number;
     needs: number;
+    /** Every verified change that build looked at, or null before any build. */
+    verified: number | null;
+    /** Why the verified changes it set aside were, by count. */
+    skipped: Record<LoraSkip, number>;
+    /** When that build was read, or null before any. */
+    readAt: string | null;
+    /** True when the history now holds a different number of verified changes than that build saw. */
+    stale: boolean;
     counts: ReturnType<typeof verifiedCounts>;
     baseReady: boolean;
     /** His last click on "Download the base model": running, or how it ended (null before any click since the engine started). */
@@ -197,7 +206,9 @@ export async function schoolView(now: number = Date.now()): Promise<SchoolView> 
   const light = await gateNow('light', now);
   const heavy = await gateNow('heavy', now);
   const counts = verifiedCounts();
-  const examples = Object.values(counts).reduce((n, c) => n + c.city + c.pr + c.commit, 0);
+  const live = Object.values(counts).reduce((n, c) => n + c.city + c.pr + c.commit, 0);
+  const built = readUsable();
+  const none = { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 };
   const pairs = grants();
   return {
     settings: getSettings().school,
@@ -212,7 +223,16 @@ export async function schoolView(now: number = Date.now()): Promise<SchoolView> 
     voyages: voyages().map(voyageOut),
     graduates: graduates(),
     trains: recentTrains(),
-    lora: { examples, needs: LORA.min, counts, baseReady: baseReady(), download: lastDownload ? { ...lastDownload } : null },
+    lora: {
+      examples: built?.usable ?? 0,
+      needs: LORA.min,
+      verified: built?.verified ?? null,
+      skipped: built?.skipped ?? none,
+      readAt: built?.at ?? null,
+      stale: built ? built.verified !== live : false,
+      counts, baseReady: baseReady(),
+      download: lastDownload ? { ...lastDownload } : null,
+    },
   };
 }
 

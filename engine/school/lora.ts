@@ -514,6 +514,42 @@ export function loraDataDir(): string {
   return join(paths().school, 'lora', 'data');
 }
 
+/** What the last dataset build found: the examples the trainer would use, and every verified change it looked at. */
+export interface LoraUsable {
+  /** The examples that would train: the number `trainLora` checks against `LORA.min`. */
+  usable: number;
+  /** Every verified change the build looked at: the usable ones and the ones set aside. */
+  verified: number;
+  skipped: Record<LoraSkip, number>;
+  /** When the build was read. */
+  at: string;
+}
+
+function usablePath(): string {
+  return join(paths().school, 'lora', 'usable.json');
+}
+
+/** Stores what a build found, so the school's screen reads the same count the trainer checked. */
+export function recordUsable(data: LoraData, now: number): LoraUsable {
+  const skipped = { ...data.skipped };
+  const usable = data.examples.length;
+  const rec: LoraUsable = { usable, verified: usable + Object.values(skipped).reduce((a, b) => a + b, 0), skipped, at: new Date(now).toISOString() };
+  mkdirSync(join(paths().school, 'lora'), { recursive: true });
+  writeAtomic(usablePath(), JSON.stringify(rec));
+  return rec;
+}
+
+/** The last stored build count, or null before any build (or when the file is unreadable). */
+export function readUsable(): LoraUsable | null {
+  try {
+    const j = JSON.parse(readFileSync(usablePath(), 'utf8')) as LoraUsable;
+    if (!Number.isInteger(j.usable) || !Number.isInteger(j.verified) || typeof j.at !== 'string' || !j.skipped) return null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
 function writeAtomic(path: string, text: string): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, text);
@@ -810,7 +846,7 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
       // the sealed splits the data is about to be built without: only these may ever score this adapter
       const sealedArenas = heldOutSplits();
       const data = await dataBuilder(now, { check: true });
-      const n = data.examples.length;
+      const n = recordUsable(data, now).usable;
       // LORA.min also keeps valid.jsonl (the newest 10%) at 10 or more, never under the batch mlx-lm needs
       if (n < LORA.min) return answer('refused', `${n} of ${LORA.min} verified changes`);
       run = {

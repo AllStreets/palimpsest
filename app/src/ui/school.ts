@@ -27,6 +27,7 @@ import {
   intervalText,
   kindLabel,
   loraLine,
+  loraSetAside,
   NET_BIAS,
   NET_LABEL,
   NET_LEARNS,
@@ -554,7 +555,10 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
     sec.id = 'school-graduates';
     sec.append(secHead('Graduates', v.graduates.length ? plural(v.graduates.length, 'graduate') : 'none'));
     const lora = el('div', 'lora-card');
-    lora.append(el('p', 'lora-line', loraLine(v.lora)), el('p', 'lora-base', downloadLine(v.lora, cleanText(v.settings.baseModel, 60))));
+    const aside = loraSetAside(v.lora);
+    lora.append(el('p', 'lora-line', loraLine(v.lora)));
+    if (aside) lora.append(el('p', 'lora-aside', aside));
+    lora.append(el('p', 'lora-base', downloadLine(v.lora, cleanText(v.settings.baseModel, 60))));
     sec.append(lora);
     if (v.graduates.length === 0) sec.append(empty('No LoRA has graduated. One trains once 100 verified changes are in and the base model is downloaded, and graduates only by beating its base on a sealed race.'));
     else {
