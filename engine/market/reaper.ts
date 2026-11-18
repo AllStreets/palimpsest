@@ -81,24 +81,57 @@ export function noteLiveGroup(runRoot: string, pgid: number | null, live: boolea
   else liveGroups.delete(k);
 }
 
-function run(cmd: string, args: string[]): Promise<string> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 30_000 }, (_err, stdout) => resolve(stdout ?? ''));
+/** Thrown by processes() when the sandbox refuses to start ps (spawn EPERM: setuid /bin/ps under macOS sandbox). */
+class PsDenied extends Error {}
+
+type Runner = (cmd: string, args: string[]) => Promise<string>;
+
+function realRun(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 30_000 }, (err, stdout) => {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (cmd === '/bin/ps' && (code === 'EPERM' || code === 'EACCES')) reject(err);
+      else resolve(stdout ?? '');
+    });
   });
 }
 
-/** Every process of his user, with its environment appended to the command (ps -E). */
-async function processes(pids?: number[]): Promise<Proc[]> {
+let run: Runner = realRun;
+
+/** For tests: replaces the command runner (null restores it). */
+export function setReaperRunner(r: Runner | null): void {
+  run = r ?? realRun;
+}
+
+/** Every process of his user, with its environment appended to the command (ps -E). Throws PsDenied when ps cannot be started. */
+async function processesOrThrow(pids?: number[]): Promise<Proc[]> {
   const args = ['-wwE', '-o', 'pid=,ppid=,pgid=,tty=,command='];
   if (pids) args.push('-p', pids.join(','));
   else args.push('-U', String(userInfo().uid));
-  const out = await run('/bin/ps', args);
+  let out: string;
+  try {
+    out = await run('/bin/ps', args);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'EPERM' || code === 'EACCES') throw new PsDenied(`ps refused: ${code}`);
+    throw e;
+  }
   const procs: Proc[] = [];
   for (const line of out.split('\n')) {
     const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s?(.*)$/);
     if (m) procs.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), tty: m[4], command: m[5] });
   }
   return procs;
+}
+
+/** As processesOrThrow, but a refused ps reads as no processes (the other reaper paths' old behaviour). */
+async function processes(pids?: number[]): Promise<Proc[]> {
+  try {
+    return await processesOrThrow(pids);
+  } catch (e) {
+    if (e instanceof PsDenied) return [];
+    throw e;
+  }
 }
 
 /** Working directory and executable paths by pid (lsof -d cwd,txt). */
@@ -252,6 +285,17 @@ function marked(p: Proc, root: string): boolean {
   return [`HOME=${join(root, 'home')}`, `TMPDIR=${join(root, 'tmp')}/`].some((m) => p.command.includes(` ${m}`) || p.command.startsWith(m));
 }
 
+/** reapGroup without ps: TERM to the group, a short grace, then KILL until the group is gone. Never throws. */
+async function reapGroupBlind(pgid: number): Promise<number[]> {
+  if (!signalGroup(pgid, 'SIGTERM')) return [];
+  await sleep(GROUP_GRACE_MS);
+  for (let i = 0; i < 20; i++) {
+    if (!signalGroup(pgid, 'SIGKILL')) break;
+    await sleep(50);
+  }
+  return [];
+}
+
 /**
  * Kills what is left of one command's process group (`pgid`, the command's
  * own pid): TERM to the whole group, a short grace, then KILL to the group
@@ -273,7 +317,15 @@ export async function reapGroup(runRoot: string, pgid: number | null): Promise<n
   let verified = false;
   let signals = 0;
   for (let pass = 0; pass < 100; pass++) {
-    const all = await processes();
+    let all: Proc[];
+    try {
+      all = await processesOrThrow();
+    } catch (e) {
+      if (!(e instanceof PsDenied)) throw e;
+      // ps cannot start in this sandbox: nothing can be listed or verified, so
+      // fall back to the command's own process group (pgid is its own pid).
+      return reapGroupBlind(pgid);
+    }
     const spare = new Set([...ancestors(all), ...protectedSet(all, root)]);
     const members = all.filter((p) => p.pgid === pgid && !spare.has(p.pid));
     const group = members.map((p) => p.pid);
