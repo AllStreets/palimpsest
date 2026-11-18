@@ -11,7 +11,7 @@ export interface TripState {
 }
 
 /** The walkers tried for the tram leg, in order: the first, then up to MAX_RETRIES others. */
-export const TRAM_WALKERS = ['dagny-hollis', 'corin-hale', 'ines-ashlar'] as const;
+export const TRAM_WALKERS = ['dagny-hollis', 'teodor-vane', 'ines-ashlar'] as const;
 export const MAX_RETRIES = 2;
 
 /** True when any state seen during the clip has the figure riding a tram. */

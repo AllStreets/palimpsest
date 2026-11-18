@@ -25,3 +25,9 @@ test('there is a next walker for every retry', () => {
   assert.ok(TRAM_WALKERS.length >= MAX_RETRIES + 1);
   assert.equal(new Set(TRAM_WALKERS).size, TRAM_WALKERS.length);
 });
+
+test('every walker the commute may follow is a person the sample city has', async () => {
+  const { SEED_FIRMS, ROSTER } = await import('../engine/market/firms.js');
+  const people = new Set([...SEED_FIRMS.flatMap((f) => f.agents.map((a) => a.id)), ...ROSTER.map((r) => r.id)]);
+  for (const id of TRAM_WALKERS) assert.ok(people.has(id), `${id} is not in the sample city`);
+});
