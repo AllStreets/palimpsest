@@ -35,7 +35,7 @@ import { forgetRun, reapRun } from '../market/broker.js';
 import { startEgress, type Egress } from '../market/egress.js';
 import { installDeps, type RunContext } from '../market/install.js';
 import type { RunLogLine } from '../market/provider.js';
-import { listRuns } from '../market/runs.js';
+import { listRuns, VERIFY_RUN_PREFIX } from '../market/runs.js';
 import { followupOf } from '../market/ship.js';
 import { createRunDir, engineGit, ENGINE_GIT_FLAGS, removeRunDir } from '../market/worktree.js';
 import { listRepos } from '../repos.js';
@@ -107,7 +107,7 @@ export function setTestCheck(fn: TestCheck | null): void {
 
 /** The run id (and run root name) of the test check of `fullName` at `sha`. */
 export function verifyRunId(fullName: string, sha: string): string {
-  return `verify-${fullName.replace('/', '__')}-${sha.slice(0, 12)}`;
+  return `${VERIFY_RUN_PREFIX}${fullName.replace('/', '__')}-${sha.slice(0, 12)}`;
 }
 
 /**

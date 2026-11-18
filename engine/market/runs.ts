@@ -40,7 +40,7 @@
  * back into prompts only as quoted data (quote.ts).
  */
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { localDay } from '../../shared/day.js';
@@ -1109,6 +1109,39 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
   }
   // Likewise the README audits the last engine had live (Phase 3).
   await failInterruptedAudits({ reap });
+  // And the school's test checks (verify-* run roots): their result is simply not recorded, so a later night retries.
+  await reapVerifyRuns({ reap });
+  return out;
+}
+
+/** Run roots of the school's test checks are named `verify-<owner>__<repo>-<sha12>` (school/history.ts verifyRunId). */
+export const VERIFY_RUN_PREFIX = 'verify-';
+
+/**
+ * At engine start: a school test check the last engine left running (it
+ * survives with PPID 1) is killed by run-root membership, and its run dir is
+ * removed. Only `verify-*` roots under the runs dir are touched.
+ */
+export async function reapVerifyRuns(opts: { reap?: (runRoot: string) => Promise<number[]> } = {}): Promise<string[]> {
+  const reap = opts.reap ?? reapRun;
+  let names: string[];
+  try {
+    names = readdirSync(paths().runs);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const name of names) {
+    if (!name.startsWith(VERIFY_RUN_PREFIX)) continue;
+    const runRoot = join(paths().runs, name);
+    try {
+      await reap(runRoot);
+    } catch (err) {
+      console.warn(`palimpsest: reaping leftover verify run ${name} failed: ${errText(err)}`);
+    }
+    rmSync(runRoot, { recursive: true, force: true });
+    out.push(name);
+  }
   return out;
 }
 
