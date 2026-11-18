@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import { detectToolchains, nodeRoot, toolProfile, wrap } from '../engine/market/sandbox.js';
+import { NEEDS, outsideToolSandbox } from './tool-sandbox.js';
 
 test("the engine's node is a toolchain wherever it lives, never a folder above the home", () => {
   const t = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-node-root-')));
@@ -41,7 +42,7 @@ test("the engine's node is a toolchain wherever it lives, never a folder above t
   }
 });
 
-test("the engine's node runs under the tool profile on a home it was not installed under", { skip: process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') ? 'sandbox-exec is missing' : false }, () => {
+test("the engine's node runs under the tool profile on a home it was not installed under", { skip: process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') ? 'sandbox-exec is missing' : outsideToolSandbox(NEEDS.nestedSandbox) }, () => {
   const t = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-node-run-')));
   try {
     const home = join(t, 'home');

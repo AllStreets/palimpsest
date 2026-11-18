@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
-import { detectChecks, detectChecksInMirror, parseTestsRun } from '../engine/guild/checks.js';
+import { detectChecks, detectChecksInMirror, parseSandboxSkips, parseTestsRun, sandboxSkipNote } from '../engine/guild/checks.js';
 import { sampleGh } from '../engine/sample.js';
 
 let tempDir: string;
@@ -199,4 +199,34 @@ test('the sample stand-in answers detection for the sample repos', async () => {
   assert.deepEqual((await detectChecksInMirror(mirror('ferro/quarry'), 'main')).ecosystems, ['rust']);
   assert.equal((await detectChecksInMirror(mirror('hoshi/kumo'), 'main')).build, 'go build ./...');
   assert.equal((await detectChecksInMirror(mirror('alder/blank-slate'), 'main')).detected, true);
+});
+
+test('the tests a suite did not run in the tool sandbox parse from node --test output, TAP and spec', () => {
+  const tap = [
+    'ok 1 - needs a nested sandbox # SKIP not run in the tool sandbox: needs sandbox-exec',
+    '    ok 1 - inner one # SKIP not run in the tool sandbox: needs a loopback server',
+    'ok 2 - skipped for its own reason # SKIP flaky on CI',
+    'ok 3 - plain',
+  ].join('\n');
+  const want = [
+    { name: 'needs a nested sandbox', why: 'needs sandbox-exec' },
+    { name: 'inner one', why: 'needs a loopback server' },
+  ];
+  assert.deepEqual(parseSandboxSkips(tap), want);
+  const spec = ['\u2063 nothing', '\uFE63 needs a nested sandbox (0.339375ms) # not run in the tool sandbox: needs sandbox-exec', '  \uFE63 inner one (0.04ms) # not run in the tool sandbox: needs a loopback server', '\u2714 plain (0.04ms)'].join('\n');
+  assert.deepEqual(parseSandboxSkips(spec), want);
+  assert.deepEqual(parseSandboxSkips('ok 1 - a\n'), []);
+});
+
+test("the test check's note names every sandbox skip under its reason, and stays bounded", () => {
+  const note = sandboxSkipNote([
+    { name: 'a', why: 'needs sandbox-exec' },
+    { name: 'b', why: 'needs /bin/ps' },
+    { name: 'c', why: 'needs sandbox-exec' },
+  ]);
+  assert.equal(note, '\nNot run in the tool sandbox (3):\n- needs sandbox-exec: a; c.\n- needs /bin/ps: b.');
+  assert.equal(sandboxSkipNote([]), '');
+  const many = sandboxSkipNote(Array.from({ length: 200 }, (_, i) => ({ name: `test number ${i}`, why: 'needs sandbox-exec' })));
+  assert.ok(many.length <= 1500, String(many.length));
+  assert.match(many, /And \d+ more, named in the test log\.$/);
 });

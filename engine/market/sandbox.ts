@@ -777,7 +777,18 @@ export interface ChildEnvExtra {
   env?: Record<string, string>;
   /** The base side gets its own home, cache and tmp (see ProfileInput.side). */
   side?: 'head' | 'base';
+  /** The broker's stage: a `checks` command is told it runs in the tool sandbox (IN_TOOL_SANDBOX_ENV). */
+  stage?: 'working' | 'install' | 'checks';
 }
+
+/**
+ * Set to `1` for a check (stage `checks`): the repo's suite runs inside the
+ * tool profile, where a nested sandbox-exec, real network and a loopback
+ * server reached through the egress proxy are all refused. A test that
+ * needs one skips itself on it, saying why (test/tool-sandbox.ts), and the
+ * test check names each such skip (checks.ts parseSandboxSkips).
+ */
+export const IN_TOOL_SANDBOX_ENV = 'PALIMPSEST_IN_TOOL_SANDBOX';
 
 /** The URL a run's children use for their egress proxy, carrying the run's token. */
 export function proxyUrl(port: number, token: string): string {
@@ -847,5 +858,6 @@ export function childEnv(runRoot: string, extra: ChildEnvExtra = {}): Record<str
   if (rustup) env.RUSTUP_HOME = rustup;
   const pyenv = toolchains.find((t) => t.endsWith('/.pyenv'));
   if (pyenv) env.PYENV_ROOT = pyenv;
+  if (extra.stage === 'checks') env[IN_TOOL_SANDBOX_ENV] = '1';
   return { ...env, ...(extra.env ?? {}) };
 }

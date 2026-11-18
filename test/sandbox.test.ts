@@ -10,6 +10,7 @@ import { defaultHome } from '../engine/home.js';
 import {
   CLAUDE_RUNTIME_PATHS,
   childEnv,
+  IN_TOOL_SANDBOX_ENV,
   hardlinkRule,
   cliProfile,
   selectedShell,
@@ -22,6 +23,7 @@ import {
   type CliProfileInput,
   type ProfileInput,
 } from '../engine/market/sandbox.js';
+import { NEEDS, outsideToolSandbox } from './tool-sandbox.js';
 
 const HOME = '/Users/someone';
 const DATA = `${HOME}/Library/Application Support/Palimpsest`;
@@ -278,7 +280,7 @@ describe('the hardlink rule in every profile (Phase 5 Task 19)', () => {
     ]);
   });
 
-  test('the rule alone stops the escape: on an allow-by-default profile a link from outside the writable folder fails and one inside works', { skip: process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') }, () => {
+  test('the rule alone stops the escape: on an allow-by-default profile a link from outside the writable folder fails and one inside works', { skip: process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || outsideToolSandbox(NEEDS.nestedSandbox) }, () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-hardlink-rule-')));
     try {
       const w = join(dir, 'w');
@@ -476,6 +478,13 @@ describe('wrap and the child environment', () => {
     assert.ok(env.PATH.split(':').includes('/usr/bin'));
   });
 
+  test('childEnv tells a check it runs in the tool sandbox, and only a check', () => {
+    const root = '/private/tmp/palimpsest-run-root';
+    assert.equal(childEnv(root, { toolchains: [], stage: 'checks' })[IN_TOOL_SANDBOX_ENV], '1');
+    assert.equal(IN_TOOL_SANDBOX_ENV, 'PALIMPSEST_IN_TOOL_SANDBOX');
+    for (const stage of ['working', 'install', undefined] as const) assert.ok(!(IN_TOOL_SANDBOX_ENV in childEnv(root, { toolchains: [], stage })), String(stage));
+  });
+
   test('childEnv points the proxy at a closed port when the run has none', () => {
     const env = childEnv('/private/tmp/palimpsest-no-proxy', { toolchains: [] });
     assert.match(env.HTTPS_PROXY, /@127\.0\.0\.1:9$/);
@@ -501,7 +510,7 @@ function run(argv: string[], opts: { cwd?: string; env?: Record<string, string> 
   });
 }
 
-describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is not available' }, () => {
+describe('execution under sandbox-exec', { skip: (!hasSandbox && 'sandbox-exec is not available') || outsideToolSandbox(NEEDS.nestedSandbox) }, () => {
   let t: string;
   let home: string;
   let data: string;
@@ -769,7 +778,7 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
   });
 });
 
-describe('the trainer profile under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is not available' }, () => {
+describe('the trainer profile under sandbox-exec', { skip: (!hasSandbox && 'sandbox-exec is not available') || outsideToolSandbox(NEEDS.nestedSandbox) }, () => {
   let t: string;
   let home: string;
   let school: string;
@@ -861,7 +870,7 @@ describe('the trainer profile under sandbox-exec', { skip: !hasSandbox && 'sandb
  * into a folder it may write. Every profile gets a rule that says so by name
  * (hardlinkRule), proved here on each profile by execution.
  */
-describe('the hardlink escape under sandbox-exec (Phase 5 Task 19)', { skip: !hasSandbox && 'sandbox-exec is not available' }, () => {
+describe('the hardlink escape under sandbox-exec (Phase 5 Task 19)', { skip: (!hasSandbox && 'sandbox-exec is not available') || outsideToolSandbox(NEEDS.nestedSandbox) }, () => {
   let t: string;
   let home: string;
   let data: string;

@@ -97,7 +97,8 @@ describe('smoke run refusals', () => {
     assert.match(smokeRefusal() ?? '', /real data home/);
     process.env.PALIMPSEST_HOME = join(defaultHome(), '..', 'Palimpsest');
     assert.match(smokeRefusal() ?? '', /real data home/, 'however it is spelled');
-    process.env.PALIMPSEST_HOME = join(process.env.HOME ?? '/Users/x', 'palimpsest-smoke');
+    // Not his HOME: a check's HOME is the run's fake home, which may itself sit under a temp dir.
+    process.env.PALIMPSEST_HOME = '/Users/palimpsest-nobody/palimpsest-smoke';
     assert.match(smokeRefusal() ?? '', /temp/, 'a home outside the temp dir is refused');
 
     process.env.PALIMPSEST_HOME = join(tempDir, 'data');

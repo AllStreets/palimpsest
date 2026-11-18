@@ -579,3 +579,28 @@ test('the design check shoots only routes from the site root: no host, no backsl
   assert.deepEqual(shots(['/about', '//evil.example', '/\\evil.example', '/a\\b', 'pricing']), ['/about', '/pricing']);
   assert.deepEqual(shots(['/\\x']), ['/'], 'nothing left: the root alone');
 });
+
+test('the test check runs with the tool sandbox flag set and names each test the suite skipped there', { timeout: 120_000 }, async () => {
+  const skipping =
+    "import { test } from 'node:test';\n" +
+    "const inBox = process.env.PALIMPSEST_IN_TOOL_SANDBOX === '1';\n" +
+    "test('serves a loopback fake', { skip: inBox ? 'not run in the tool sandbox: needs a loopback server' : false }, () => { throw new Error('ran in the box'); });\n" +
+    "test('one', () => {});\n";
+  const repo = makeRepo(checks({ test: 'node --test' }), {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    'test/a.test.mjs': skipping,
+    'src/header.ts': 'export const header = 1;\n',
+  });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'src/header.ts', 'export const header = 2;\n'));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    const t = insp.checks.find((c) => c.name === 'test');
+    assert.equal(t?.status, 'pass');
+    assert.match(t?.detail ?? '', /Not run in the tool sandbox \(1\):\n- needs a loopback server: serves a loopback fake\./);
+  } finally {
+    lease.release();
+  }
+});

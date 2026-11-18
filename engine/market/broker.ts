@@ -326,7 +326,7 @@ class Spooler {
 
 /** Runs argv under the tool profile with the child environment and collects its output. */
 async function runSandboxed(
-  o: { runId: string; runRoot: string; dir: string; signal: AbortSignal; log: (l: RunLogLine) => void; side?: 'head' | 'base'; readOnly?: string[] },
+  o: { runId: string; runRoot: string; dir: string; signal: AbortSignal; log: (l: RunLogLine) => void; side?: 'head' | 'base'; readOnly?: string[]; stage?: ToolStage },
   argv: string[],
   maxMs: number,
   stdin: string | undefined,
@@ -339,7 +339,7 @@ async function runSandboxed(
   if (o.signal.aborted) return { code: null, stdout: '', stderr: 'aborted before the command ran\n', timedOut: false, aborted: true };
   const child: Spawned = getSpawner()(wrapped[0], wrapped.slice(1), {
     cwd: o.dir,
-    env: childEnv(o.runRoot, { side }),
+    env: childEnv(o.runRoot, { side, ...(o.stage ? { stage: o.stage } : {}) }),
     clearEnv: true,
     maxMs,
     // At its limit, and when the run ends, the whole group is killed at once while the spawner can still prove it is

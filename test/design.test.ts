@@ -28,6 +28,7 @@ import { judgeText } from '../engine/market/ollama.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { makeUnderstudy } from './understudy-fixtures.js';
 import { addAgent, checks, makeRepo, makeRun, PNG, postJob, setUp, tearDown, workLease, write } from './guild-fixtures.js';
+import { NEEDS, outsideToolSandbox } from './tool-sandbox.js';
 
 let judged: JudgeInput[] = [];
 let commands: string[] = [];
@@ -770,7 +771,8 @@ test('the base side has its own home, cache and tmp, out of the head profile\'s 
   assert.doesNotMatch(writes(baseText), /\/home"|\/cache"|\/repo"|\/ship"/);
 
   // By execution where sandbox-exec exists: a head-side command cannot write the base side's home.
-  if (!existsSync(SANDBOX_EXEC)) return t.skip('sandbox-exec is missing');
+  const cannot = !existsSync(SANDBOX_EXEC) ? 'sandbox-exec is missing' : outsideToolSandbox(NEEDS.nestedSandbox);
+  if (cannot) return t.skip(cannot);
   const { realSpawner } = await import('../engine/exec.js');
   const { execTool } = await import('../engine/market/broker.js');
   setSpawner(realSpawner);

@@ -22,6 +22,7 @@ import { acceptProposed, dismissProposed, listJobs, transition } from '../engine
 import { SANDBOX_EXEC } from '../engine/market/sandbox.js';
 import { HARNESS_KEY, repoMarketDefaults } from '../shared/market-rules.js';
 import type { Repo, RepoChecks } from '../shared/types.js';
+import { IN_TOOL_SANDBOX } from './tool-sandbox.js';
 
 let tempDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -50,7 +51,8 @@ beforeEach(() => {
   for (const k of ENV) saved[k] = process.env[k];
   tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-baseline-test-'));
   process.env.PALIMPSEST_HOME = join(tempDir, 'home');
-  if (existsSync(SANDBOX_EXEC)) delete process.env.PALIMPSEST_SANDBOX;
+  // Inside the tool sandbox a nested sandbox-exec is refused, so the suite runs unsandboxed there and the baseline is still exercised.
+  if (existsSync(SANDBOX_EXEC) && !IN_TOOL_SANDBOX) delete process.env.PALIMPSEST_SANDBOX;
   else process.env.PALIMPSEST_SANDBOX = 'off';
   commands = [];
   launchers = [];
@@ -121,7 +123,7 @@ test('the baseline caches per sha', { timeout: 120_000 }, async () => {
   const ran = commands.filter((c) => c === 'node --test').length;
   assert.equal(ran, 1);
   // The repo's own suite ran under the tool profile wherever sandbox-exec exists.
-  if (existsSync(SANDBOX_EXEC)) assert.deepEqual([...new Set(launchers)], [SANDBOX_EXEC]);
+  if (existsSync(SANDBOX_EXEC) && !IN_TOOL_SANDBOX) assert.deepEqual([...new Set(launchers)], [SANDBOX_EXEC]);
 
   // The same sha comes from the cache: nothing runs again.
   const again = await baseline(repo, first);

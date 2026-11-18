@@ -261,6 +261,61 @@ export function parseTestsRun(output: string): number | null {
   return null;
 }
 
+/** The reason a test gives when it skips itself in the tool sandbox (test/tool-sandbox.ts). */
+export const SANDBOX_SKIP = 'not run in the tool sandbox: ';
+
+/** A test the suite skipped because it ran in the tool sandbox, and why. */
+export interface SandboxSkip {
+  name: string;
+  why: string;
+}
+
+/**
+ * The tests a suite skipped because it ran in the tool sandbox, from node
+ * --test's TAP (`ok 1 - name # SKIP reason`) or spec (`﹣ name (1ms) #
+ * reason`) lines; any other runner's line that carries the reason is kept
+ * whole as the name.
+ */
+export function parseSandboxSkips(output: string): SandboxSkip[] {
+  const out = new Map<string, SandboxSkip>();
+  for (const raw of output.replace(ANSI, '').split('\n')) {
+    const at = raw.indexOf(SANDBOX_SKIP);
+    if (at < 0) continue;
+    const why = raw.slice(at + SANDBOX_SKIP.length).trim();
+    const tap = /^\s*ok \d+ - (.*?) # SKIP\s*$/.exec(raw.slice(0, at));
+    const spec = /^\s*\uFE63 (.*?) \([\d.]+m?s\) #\s*$/.exec(raw.slice(0, at));
+    const name = tap?.[1] ?? spec?.[1] ?? raw.trim();
+    out.set(`${name}\0${why}`, { name, why });
+  }
+  return [...out.values()];
+}
+
+/** Characters of a test check's detail the sandbox skips may take, so the failure beside them still shows. */
+const MAX_SKIP_NOTE = 1500;
+
+/** What a test check's detail says of the tests the sandbox kept from running, grouped by why. */
+export function sandboxSkipNote(skips: SandboxSkip[]): string {
+  if (!skips.length) return '';
+  const byWhy = new Map<string, string[]>();
+  for (const s of skips) byWhy.set(s.why, [...(byWhy.get(s.why) ?? []), s.name]);
+  let text = `\nNot run in the tool sandbox (${skips.length}):`;
+  let shown = 0;
+  for (const [why, names] of byWhy) {
+    const lead = `\n- ${why || 'no reason given'}: `;
+    if (text.length + lead.length > MAX_SKIP_NOTE - 60) break;
+    text += lead;
+    const kept: string[] = [];
+    for (const n of names) {
+      if (text.length + kept.join('; ').length + n.length + 2 > MAX_SKIP_NOTE - 60) break;
+      kept.push(n);
+    }
+    text += `${kept.join('; ')}.`;
+    shown += kept.length;
+    if (kept.length < names.length) break;
+  }
+  return shown < skips.length ? `${text}\nAnd ${skips.length - shown} more, named in the test log.` : text;
+}
+
 /** Output kept per check for its log file and for the count. */
 const MAX_CHECK_LOG_BYTES = 4 * 1024 * 1024;
 
@@ -302,13 +357,15 @@ export async function runCheck(
     logPath = null;
   }
   const testsRun = name === 'test' ? parseTestsRun(output) : null;
+  // What the suite did not exercise in the sandbox, bounded so the cut at 4000 characters never drops it.
+  const skipped = name === 'test' ? sandboxSkipNote(parseSandboxSkips(output)) : '';
   if (r.refused) return { name, status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath, testsRun: null, inconclusive: 'refused' };
   if (r.code !== 0 || ctx.signal.aborted) {
     const tail = output.trim().split('\n').slice(-5).join('\n');
     const how = ctx.signal.aborted ? 'was stopped' : `exited ${r.code ?? 'without a code'}`;
-    return { name, status: 'fail', detail: `${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000), durationMs, logPath, testsRun, ...(r.timedOut ? { inconclusive: 'timed out' as const } : {}) };
+    return { name, status: 'fail', detail: `${`${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000 - MAX_SKIP_NOTE - 100)}${skipped}`, durationMs, logPath, testsRun, ...(r.timedOut ? { inconclusive: 'timed out' as const } : {}) };
   }
-  return { name, status: 'pass', detail: command, durationMs, logPath, testsRun };
+  return { name, status: 'pass', detail: `${command.slice(0, 2000)}${skipped}`, durationMs, logPath, testsRun };
 }
 
 export { unanswered };

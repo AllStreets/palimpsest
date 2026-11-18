@@ -27,6 +27,7 @@ import {
 import type { RunLogLine } from '../engine/market/provider.js';
 import { liveRunPorts, wrap } from '../engine/market/sandbox.js';
 import { LOOP_TOOLS } from '../engine/market/toolloop.js';
+import { NEEDS, outsideToolSandbox } from './tool-sandbox.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX', 'PALIMPSEST_BROKER_TEST_SENTINEL'];
 let previousEnv: Record<string, string | undefined>;
@@ -349,7 +350,7 @@ describe('startBroker', () => {
     assert.ok(!liveRunPorts().includes(broker.port));
   });
 
-  test('the token is on no argv', async () => {
+  test('the token is on no argv', { skip: outsideToolSandbox(NEEDS.ps) }, async () => {
     const a = makeRun('run-argv');
     const broker = await startBroker(a.runId, { runRoot: a.runRoot, dir: a.dir, log: () => {}, signal: new AbortController().signal });
     open.push(broker);
@@ -409,7 +410,7 @@ describe('startBroker', () => {
 });
 
 describe('under the tool profile', () => {
-  const skip = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') ? 'sandbox-exec is missing' : false;
+  const skip = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') ? 'sandbox-exec is missing' : outsideToolSandbox(NEEDS.nestedSandbox);
 
   test('commands and file tools run under the sandbox, and what the guard misses the sandbox still refuses', { skip }, async () => {
     process.env.PALIMPSEST_SANDBOX = 'on';
@@ -504,7 +505,7 @@ afterEach(() => {
   }
 });
 
-const noSandbox = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : false;
+const noSandbox = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : outsideToolSandbox(NEEDS.nestedSandbox);
 
 describe('the reaper', () => {
   // The daemon writes its pid, then waits for the test's `go` file before it
@@ -603,7 +604,7 @@ describe('the reaper', () => {
 });
 
 describe('the reaper by sandbox membership', () => {
-  const skip = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : false;
+  const skip = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : outsideToolSandbox(NEEDS.nestedSandbox);
 
   // As above: each daemon writes its pid, then waits for the test's `go` file before it writes.
   const escaper = (dir: string, target: string) => {
