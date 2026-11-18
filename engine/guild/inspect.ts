@@ -304,6 +304,52 @@ async function changedFiles(dir: string, base: string, head: string): Promise<Ch
   return out;
 }
 
+/** Names a detail lists at most; the check's failingTests carries them all. */
+const MAX_NAMED = 20;
+
+function named(names: string[]): string {
+  const shown = names.slice(0, MAX_NAMED).join('; ');
+  return names.length > MAX_NAMED ? `${shown}; and ${names.length - MAX_NAMED} more` : shown;
+}
+
+/**
+ * The test check at head read against the baseline's (`was`, absent when
+ * there is no baseline). Tests that ran before and no longer run fail it,
+ * whatever the exit code says. A test that fails at head and not at base
+ * fails it and is named, even when the base failed too. When every test
+ * failing at head failed at base, it is `preexisting`. A baseline cached
+ * before failing tests were named cannot be compared by name: a failure at
+ * both is read as preexisting, as it was, and the detail says so.
+ */
+export function compareTestCheck(r: CheckResult, was: CheckResult | undefined): CheckResult {
+  const cut = (detail: string) => detail.slice(0, 4000);
+  const disappeared = r.testsRun !== null && typeof was?.testsRun === 'number' && r.testsRun < was.testsRun;
+  if (disappeared) {
+    return { ...r, status: 'fail', detail: cut(`${was!.testsRun} tests ran before the change, ${r.testsRun} after: tests disappeared. ${r.detail}`) };
+  }
+  if (r.status !== 'fail' || !was) return r;
+  const baseNames = was.failingTests;
+  const headNames = r.failingTests;
+  // Names on both sides, and a head that names what failed: compare them.
+  if (baseNames && headNames && headNames.length) {
+    const old = new Set(baseNames);
+    const fresh = headNames.filter((n) => !old.has(n));
+    if (fresh.length) {
+      const lead = fresh.length === 1 ? '1 test fails after the change that passed before' : `${fresh.length} tests fail after the change that passed before`;
+      return { ...r, status: 'fail', detail: cut(`${lead}: ${named(fresh)}. ${r.detail}`) };
+    }
+    if (was.status !== 'fail') return r;
+    const now = new Set(headNames);
+    const fixed = baseNames.filter((n) => !now.has(n)).length;
+    return { ...r, status: 'preexisting', detail: cut(`No new failures: the same ${headNames.length} tests fail before the change, ${fixed} now pass. ${r.detail}`) };
+  }
+  if (was.status !== 'fail') return r;
+  const why = !baseNames
+    ? 'The baseline names no failing tests (it was cached before they were kept), so a new failure cannot be told from an old one. '
+    : 'The run named no failing tests, so a new failure cannot be told from an old one. ';
+  return { ...r, status: 'preexisting', detail: cut(`Failing before the change too. ${why}${r.detail}`) };
+}
+
 /**
  * Inspects `run`'s committed change under its work `lease` (Task 13 calls it
  * in the `inspecting` stage with the egress set to allow nothing). Rejects,
@@ -392,14 +438,9 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
       const r = await runCheck(headCtx, name, command, log);
       halt();
       const was = before?.find((b) => b.name === name);
-      // Tests that ran before and no longer run are a failure, whatever the exit code says.
-      if (name === 'test' && r.status !== 'fail' && r.testsRun !== null && typeof was?.testsRun === 'number' && r.testsRun < was.testsRun) {
-        done({ ...r, status: 'fail', detail: `${was.testsRun} tests ran before the change, ${r.testsRun} after: tests disappeared. ${r.detail}`.slice(0, 4000) });
-      } else if (r.status === 'fail' && was?.status === 'fail') {
-        const fewer = name === 'test' && r.testsRun !== null && typeof was.testsRun === 'number' && r.testsRun < was.testsRun;
-        if (fewer) done({ ...r, detail: `${was.testsRun} tests ran before the change, ${r.testsRun} after: tests disappeared. ${r.detail}`.slice(0, 4000) });
-        else done({ ...r, status: 'preexisting', detail: `Failing before the change too. ${r.detail}`.slice(0, 4000) });
-      } else done(r);
+      if (name === 'test') done(compareTestCheck(r, was));
+      else if (r.status === 'fail' && was?.status === 'fail') done({ ...r, status: 'preexisting', detail: `Failing before the change too. ${r.detail}`.slice(0, 4000) });
+      else done(r);
     }
 
     // 3. Scope.

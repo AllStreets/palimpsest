@@ -251,3 +251,34 @@ test("a name the engine could not find is the reviewer's concern, whatever the r
     lease.release();
   }
 });
+
+test('the review prompt says a preexisting check with no new failures is the base state, and an unrunnable acceptance line is a note', async () => {
+  const { reviewPrompt } = await import('../engine/market/claude.js');
+  const job = { id: 'j', repo: 'a/b', title: 't', body: 'b' } as never;
+  const prompt = reviewPrompt({ job, agent: {} as never, persona: '', diff: '+x', acceptance: ['a'], checks: [] });
+  assert.match(prompt, /preexisting/);
+  assert.match(prompt, /base's state, not the change's/);
+  assert.match(prompt, /not on its own a reason to withhold approval/);
+  assert.match(prompt, /Judge the change on its merits/);
+  assert.match(prompt, /GPU or UI harness/);
+  assert.match(prompt, /a note, not a failure, unless the diff gives a concrete reason to doubt it/);
+  // The rest of the reviewer's rules stay.
+  assert.match(prompt, /weakens, skips or deletes a check/);
+  assert.match(prompt, /Name each one that does not exist as a concern/);
+  assert.match(prompt, /Approve only if the change meets every acceptance line/);
+});
+
+test("a preexisting check with no new failures reaches the reviewer marked as the base's state", { timeout: 60_000 }, async () => {
+  const { job, run } = await setting({ id: 'ann', firmId: 'aaa', model: 'claude:sonnet' });
+  addAgent('bea', 'bbb', 'claude:sonnet');
+  const lease = await workLease();
+  const pre = { name: 'test' as const, status: 'preexisting' as const, detail: 'No new failures: the same 128 tests fail before the change, 0 now pass. npm test exited 1: # fail 128', durationMs: 1, logPath: null, testsRun: 900 };
+  try {
+    await review(run, job, '+x\n', [pre], lease);
+  } finally {
+    lease.release();
+  }
+  const seen = reviewed[0].checks.find((c) => c.name === 'test')!;
+  assert.match(seen.detail, /base's state, not the change's/);
+  assert.match(seen.detail, /No new failures: the same 128 tests/);
+});

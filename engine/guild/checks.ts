@@ -261,6 +261,52 @@ export function parseTestsRun(output: string): number | null {
   return null;
 }
 
+/** Failing test names a check keeps at most, and characters of each. */
+const MAX_FAILING = 5000;
+const MAX_FAILING_NAME = 300;
+
+/**
+ * The names of the tests that failed, from the node test runner's TAP (`not ok 1 -
+ * name`, leaving out a suite, whose YAML block says `type: 'suite'`) or
+ * spec output (its "failing tests:" summary, which lists each failed test
+ * once and no suite). Each name once, in the order first seen; empty when
+ * the output names none.
+ */
+export function parseFailingTests(output: string): string[] {
+  const lines = output.replace(ANSI, '').split('\n');
+  const out = new Set<string>();
+  const add = (name: string) => {
+    const n = name.trim().slice(0, MAX_FAILING_NAME);
+    if (n && out.size < MAX_FAILING) out.add(n);
+  };
+  const summary = lines.findIndex((l) => /^\u2716 failing tests:\s*$/.test(l));
+  if (summary >= 0) {
+    for (const l of lines.slice(summary + 1)) {
+      const m = /^\u2716 (.*?) \([\d.]+m?s\)\s*$/.exec(l);
+      if (m) add(m[1]);
+    }
+    return [...out];
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)not ok \d+ - (.*?)(\s+# (?:TODO|SKIP)\b.*)?$/.exec(lines[i]);
+    if (!m || m[3]) continue;
+    // The YAML block that follows, at deeper indentation, says whether this was a suite.
+    let suite = false;
+    for (let j = i + 1; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() === '') continue;
+      if (l.length - l.trimStart().length <= m[1].length) break;
+      if (/^\s*type: '?suite'?\s*$/.test(l)) {
+        suite = true;
+        break;
+      }
+      if (/^\s*\.\.\.\s*$/.test(l)) break;
+    }
+    if (!suite) add(m[2]);
+  }
+  return [...out];
+}
+
 /** The reason a test gives when it skips itself in the tool sandbox (test/tool-sandbox.ts). */
 export const SANDBOX_SKIP = 'not run in the tool sandbox: ';
 
@@ -357,15 +403,17 @@ export async function runCheck(
     logPath = null;
   }
   const testsRun = name === 'test' ? parseTestsRun(output) : null;
+  // Which tests failed, so the inspection can compare head's failures with the baseline's by name.
+  const failing = name === 'test' ? { failingTests: parseFailingTests(output) } : {};
   // What the suite did not exercise in the sandbox, bounded so the cut at 4000 characters never drops it.
   const skipped = name === 'test' ? sandboxSkipNote(parseSandboxSkips(output)) : '';
   if (r.refused) return { name, status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath, testsRun: null, inconclusive: 'refused' };
   if (r.code !== 0 || ctx.signal.aborted) {
     const tail = output.trim().split('\n').slice(-5).join('\n');
     const how = ctx.signal.aborted ? 'was stopped' : `exited ${r.code ?? 'without a code'}`;
-    return { name, status: 'fail', detail: `${`${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000 - MAX_SKIP_NOTE - 100)}${skipped}`, durationMs, logPath, testsRun, ...(r.timedOut ? { inconclusive: 'timed out' as const } : {}) };
+    return { name, status: 'fail', detail: `${`${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000 - MAX_SKIP_NOTE - 100)}${skipped}`, durationMs, logPath, testsRun, ...failing, ...(r.timedOut ? { inconclusive: 'timed out' as const } : {}) };
   }
-  return { name, status: 'pass', detail: `${command.slice(0, 2000)}${skipped}`, durationMs, logPath, testsRun };
+  return { name, status: 'pass', detail: `${command.slice(0, 2000)}${skipped}`, durationMs, logPath, testsRun, ...failing };
 }
 
 export { unanswered };

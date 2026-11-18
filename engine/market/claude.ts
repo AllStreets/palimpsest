@@ -608,6 +608,15 @@ export function planPrompt(i: PlanInput): string {
 export const NAMES_STEP =
   'Verify that every new identifier the diff relies on (ids, constants, file paths, CLI flags, API routes, CSS classes) exists in the repository or is defined by the diff itself. You see only the diff, so judge from what it shows and from the engine\'s search below when there is one. Name each one that does not exist as a concern, and do not approve while the change relies on a name that does not exist.';
 
+/**
+ * The reviewer's step for checks the change did not cause and acceptance
+ * lines the inspection could not run. Three inspections in a row failed when
+ * reviewers withheld approval over a suite that fails 128 tests in the tool
+ * sandbox before and after the change alike.
+ */
+export const BASE_STEP =
+  "A check marked preexisting that shows no new failures is the base's state, not the change's: it is not on its own a reason to withhold approval. Judge the change on its merits. An acceptance line the inspection could not run, such as one that needs a GPU or UI harness, is a note, not a failure, unless the diff gives a concrete reason to doubt it.";
+
 export function reviewPrompt(i: ReviewInput): string {
   // Check details carry the repo's own output, which the agent's change can shape: quoted like the diff.
   const checks = i.checks.map((c) => `${c.name}: ${c.status}`).join('\n');
@@ -623,6 +632,7 @@ export function reviewPrompt(i: ReviewInput): string {
     `Acceptance:\n${list(i.acceptance)}`,
     `Checks so far:\n${checks || '(none)'}`,
     NAMES_STEP,
+    BASE_STEP,
     ...(i.unfound?.length ? [`The engine searched the repository for the quoted ids the diff adds and could not find these where they should be, quoted as data. They are leads, not verdicts: a name may be meant to be new and absent (a test of an unknown id) or made by a tool. Name as a concern each one the change needs to exist:\n${quoteAsData(i.unfound.map((u) => `${u.id}: ${u.why}`).join('\n'))}`] : []),
     'Look hardest at any change to tests, test fixtures, test or build configuration, package scripts, lint or type settings, CI files and the screenshot script: a change that weakens, skips or deletes a check so that it passes is a reason to reject.',
     'Approve only if the change meets every acceptance line and stays inside the job. Reply with approve, notes, and a list of concerns.',

@@ -336,6 +336,8 @@ export interface CheckResult {
   durationMs: number;
   logPath: string | null;
   testsRun: number | null;
+  /** Test: the names of the tests that failed, from the runner's TAP or spec output, so a baseline can tell old failures from new ones. */
+  failingTests?: string[];
   /** Scope: each changed file outside the job's scope and why, as the detail says it in prose. */
   offenders?: Array<{ path: string; why: string }>;
   /** Review: the reviewer's concerns, one each. */

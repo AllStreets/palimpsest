@@ -227,6 +227,22 @@ export interface ReviewOutcome {
   credits: number;
 }
 
+/** What the reviewer is told of a preexisting check that shows no new failures (inspect.ts compareTestCheck). */
+export const BASE_STATE_NOTE = "Preexisting, no new failures: this is the base's state, not the change's.";
+
+/**
+ * The checks as the reviewer reads them. A check marked preexisting that
+ * shows no new failures says so first, so the old failures of the base are
+ * not read as the change's (Kiln withheld approval of the vehicle-shade
+ * change on "# fail 128", which failed at the base too). The names of the
+ * failing tests stay out: the detail already says what the reviewer needs.
+ */
+export function checksForReviewer(checks: CheckResult[]): CheckResult[] {
+  return checks.map(({ failingTests: _names, ...c }) =>
+    c.status === 'preexisting' && c.detail.startsWith('No new failures:') ? { ...c, detail: `${BASE_STATE_NOTE} ${c.detail}`.slice(0, 4000) } : c,
+  );
+}
+
 /**
  * Has `run`'s committed change (`diff`) reviewed by an agent of another
  * firm, under a `review` sub-lease of the run's work `lease`. The review
@@ -244,6 +260,7 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
   const problems: string[] = [];
   let tries = 0;
   let tooLarge = false;
+  const shown = checksForReviewer(checks);
   const candidates = reviewerCandidates(run);
   const fits = candidates.filter((a) => diff.length <= reviewWindow(a.model));
   if (candidates.length && fits.length === 0) {
@@ -281,7 +298,7 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
     // The reviewer goes to the site, and home once it has read the change.
     startTrip(a, 'inspect', job.id, whereIs(a), siteOf(run.repo));
     try {
-      const out = await provider.review({ job, agent: a, persona: a.persona, diff, acceptance: job.acceptance, checks, ...(unfound.length ? { unfound } : {}) }, sub.signal);
+      const out = await provider.review({ job, agent: a, persona: a.persona, diff, acceptance: job.acceptance, checks: shown, ...(unfound.length ? { unfound } : {}) }, sub.signal);
       const u = cleanUsage(out.usage);
       usage = add(usage, u);
       bill(u, 0);

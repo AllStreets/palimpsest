@@ -14,7 +14,7 @@ import { realSpawner, setSpawner } from '../engine/exec.js';
 import { entries } from '../engine/ledger.js';
 import { paths } from '../engine/home.js';
 import { baseline } from '../engine/guild/baseline.js';
-import { canOpenPR, canPush, DENY_SCOPE, inspect, inspectionSummary, scopeCheck } from '../engine/guild/inspect.js';
+import { canOpenPR, canPush, compareTestCheck, DENY_SCOPE, inspect, inspectionSummary, scopeCheck } from '../engine/guild/inspect.js';
 import { abortLease } from '../engine/market/budget.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import { setProvider } from '../engine/market/providers.js';
@@ -621,6 +621,88 @@ test('an id the change relies on that the repo does not have reaches the reviewe
     const rv = insp.checks.find((c) => c.name === 'review');
     assert.match(rv?.detail ?? '', /corin-hale/);
     assert.doesNotMatch(rv?.detail ?? '', /dagny-hollis/);
+  } finally {
+    lease.release();
+  }
+});
+
+// Tonight's case: the suite fails 128 tests in the tool sandbox (the reaper's blocked /bin/ps), at base and head alike.
+const OLD = Array.from({ length: 128 }, (_, i) => `reaper case ${i + 1}`);
+const testCheck = (status: CheckResult['status'], failingTests: string[] | undefined, testsRun = 900): CheckResult => ({
+  name: 'test',
+  status,
+  detail: `npm test exited 1: # fail ${failingTests?.length ?? 0}`,
+  durationMs: 1,
+  logPath: null,
+  testsRun,
+  ...(failingTests ? { failingTests } : {}),
+});
+
+test('the same failures before and after the change are preexisting, and the detail says no new failures', () => {
+  const c = compareTestCheck(testCheck('fail', OLD), testCheck('fail', OLD));
+  assert.equal(c.status, 'preexisting');
+  assert.ok(c.detail.startsWith('No new failures: the same 128 tests fail before the change, 0 now pass.'), c.detail);
+});
+
+test('fewer of the old failures after the change is still preexisting, and says how many now pass', () => {
+  const c = compareTestCheck(testCheck('fail', OLD.slice(2)), testCheck('fail', OLD));
+  assert.equal(c.status, 'preexisting');
+  assert.ok(c.detail.startsWith('No new failures: the same 126 tests fail before the change, 2 now pass.'), c.detail);
+});
+
+test('a new failure hidden among 128 old ones fails the check and is named', () => {
+  const c = compareTestCheck(testCheck('fail', [...OLD, 'shade follows the vehicle']), testCheck('fail', OLD));
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /shade follows the vehicle/);
+  assert.match(c.detail, /^1 test fails after the change that passed before/);
+  assert.doesNotMatch(c.detail, /reaper case 1\b/);
+});
+
+test('a new failure against a passing base is named', () => {
+  const c = compareTestCheck(testCheck('fail', ['shade follows the vehicle']), testCheck('pass', []));
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /shade follows the vehicle/);
+});
+
+test('a head where every test passes is a pass', () => {
+  const head = { ...testCheck('pass', []), detail: 'npm test' };
+  assert.equal(compareTestCheck(head, testCheck('fail', OLD)).status, 'pass');
+});
+
+test('an old cached baseline without failing names keeps the old reading and says why', () => {
+  const c = compareTestCheck(testCheck('fail', [...OLD, 'new one']), testCheck('fail', undefined));
+  assert.equal(c.status, 'preexisting');
+  assert.match(c.detail, /^Failing before the change too\./);
+  assert.match(c.detail, /names no failing tests/);
+});
+
+test('tests that disappear still fail the check', () => {
+  const c = compareTestCheck(testCheck('pass', [], 700), testCheck('fail', OLD, 900));
+  assert.equal(c.status, 'fail');
+  assert.match(c.detail, /tests disappeared/);
+  const d = compareTestCheck(testCheck('fail', OLD, 700), testCheck('fail', OLD, 900));
+  assert.notEqual(d.status, 'preexisting');
+  assert.match(d.detail, /tests disappeared/);
+});
+
+test('a new failing test among old failures fails the inspection', { timeout: 120_000 }, async () => {
+  const repo = makeRepo(checks({ test: 'node --test' }), {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    'test/a.test.mjs': suite(true),
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const broken = "import { test } from 'node:test';\ntest('one', () => { throw new Error('new'); });\ntest('two', () => { throw new Error('no'); });\n";
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'test/a.test.mjs', broken));
+  const base = await baseline(repo, run.baseSha as string);
+  assert.deepEqual(base.find((c) => c.name === 'test')?.failingTests, ['two'], 'the baseline keeps the names that fail at base');
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    const t = insp.checks.find((c) => c.name === 'test')!;
+    assert.equal(t.status, 'fail');
+    assert.match(t.detail, /\bone\b/);
+    assert.equal(insp.passed, false);
   } finally {
     lease.release();
   }

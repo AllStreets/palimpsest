@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
-import { detectChecks, detectChecksInMirror, parseSandboxSkips, parseTestsRun, sandboxSkipNote } from '../engine/guild/checks.js';
+import { detectChecks, detectChecksInMirror, parseFailingTests, parseSandboxSkips, parseTestsRun, sandboxSkipNote } from '../engine/guild/checks.js';
 import { sampleGh } from '../engine/sample.js';
 
 let tempDir: string;
@@ -229,4 +229,53 @@ test("the test check's note names every sandbox skip under its reason, and stays
   const many = sandboxSkipNote(Array.from({ length: 200 }, (_, i) => ({ name: `test number ${i}`, why: 'needs sandbox-exec' })));
   assert.ok(many.length <= 1500, String(many.length));
   assert.match(many, /And \d+ more, named in the test log\.$/);
+});
+
+test("the failing tests are named from the node test runner's TAP output, suites left out", () => {
+  const tap = [
+    'TAP version 13',
+    '# Subtest: suite a',
+    '    # Subtest: inner bad',
+    '    not ok 1 - inner bad',
+    '      ---',
+    "      type: 'test'",
+    '      ...',
+    '    # Subtest: inner ok',
+    '    ok 2 - inner ok',
+    'not ok 1 - suite a',
+    '  ---',
+    "  type: 'suite'",
+    '  ...',
+    'not ok 2 - top bad',
+    '  ---',
+    '  ...',
+    'ok 3 - skipped one # SKIP not run in the tool sandbox: no ps',
+    '# tests 4',
+    '# fail 2',
+  ].join('\n');
+  assert.deepEqual(parseFailingTests(tap), ['inner bad', 'top bad']);
+});
+
+test('the failing tests are named from the spec summary, once each', () => {
+  const spec = [
+    '\u25b6 suite a',
+    '  \u2716 inner bad (0.18ms)',
+    '  \u2714 inner ok (0.03ms)',
+    '\u2716 suite a (0.5ms)',
+    '\u2716 top bad (0.05ms)',
+    '\u2139 tests 3',
+    '\u2139 fail 2',
+    '',
+    '\u2716 failing tests:',
+    '',
+    'test at s.test.mjs:2:29',
+    '\u2716 inner bad (0.18ms)',
+    '  Error: x',
+    '',
+    'test at s.test.mjs:3:1',
+    '\u2716 top bad (0.05ms)',
+    '  Error: y',
+  ].join('\n');
+  assert.deepEqual(parseFailingTests(spec), ['inner bad', 'top bad']);
+  assert.deepEqual(parseFailingTests('all green\n# tests 3\n# pass 3\n'), []);
 });
