@@ -9,6 +9,7 @@ import { placeHref } from '../router';
 import { cleanText } from './board';
 import { createSheet, el, type Sheet } from './controls';
 import type { Block, Inline, Names } from './detail';
+import { externalLink } from './external';
 
 export interface DetailSheet extends Sheet {
   trail: HTMLElement;
@@ -67,11 +68,7 @@ export function secHead(title: string, aside?: string | HTMLElement): HTMLElemen
 
 /** A link that leaves for GitHub. */
 export function outLink(className: string, text: string, href: string): HTMLAnchorElement {
-  const a = el('a', className, text);
-  a.href = href;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  return a;
+  return externalLink(el('a', className, text), href);
 }
 
 export function pageLink(className: string, text: string, route: Parameters<typeof placeHref>[0], id: string): HTMLAnchorElement {

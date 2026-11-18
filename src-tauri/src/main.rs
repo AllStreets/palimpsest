@@ -1,8 +1,8 @@
 // Palimpsest's Mac shell. The city is drawn by a local engine that runs as a launchd agent on
 // 127.0.0.1:4770; this window shows a splash, waits briefly for that engine, then opens its UI.
 // When the engine is not running the splash offers to install and start it, and when macOS
-// keeps the app out of the folder holding the repo, it says so and points to the setting. Links the city opens
-// in a new window (the inspector's pull request links) go to the default browser instead.
+// keeps the app out of the folder holding the repo, it says so and points to the setting. Links that
+// leave the city (GitHub, a screenshot) go to the default browser: the page asks open_external.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::io::Read;
@@ -206,6 +206,27 @@ fn open_folder_access(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The address open_external may hand the browser: an absolute http or https URL with a host.
+/// Every other scheme (file, javascript, a custom app scheme, x-apple settings) is refused.
+fn external_url(raw: &str) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|e| format!("not a link: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("only http and https links open in the browser, not {}:", url.scheme()));
+    }
+    if url.host_str().map_or(true, str::is_empty) {
+        return Err("the link has no host".into());
+    }
+    Ok(url)
+}
+
+/// Opens a link from the city in the default browser. The city's page is the engine's own origin,
+/// where WKWebView will not open a target=_blank window, so the page asks for it here.
+#[tauri::command]
+fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    let url = external_url(&url)?;
+    app.opener().open_url(url.as_str(), None::<&str>).map_err(|e| e.to_string())
+}
+
 /// Zooms the window, then shows it. A zoom that fails is logged and the window
 /// is shown anyway at its centred size, so the app never starts with its
 /// window hidden; only a failed show is an error.
@@ -222,8 +243,13 @@ fn zoom_then_show<E: std::fmt::Display>(
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![engine_healthy, open_city, install_engine, open_folder_access, engine_command])
+        .plugin(
+            // The plugin's own click script would take every target=_blank click and ask its
+            // open_url command, which the city's http://127.0.0.1 origin may not call; the page
+            // uses open_external instead, and a stray target=_blank link reaches on_new_window.
+            tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build(),
+        )
+        .invoke_handler(tauri::generate_handler![engine_healthy, open_city, install_engine, open_folder_access, engine_command, open_external])
         .setup(|app| {
             let handle = app.handle().clone();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -238,7 +264,7 @@ fn main() {
                 .background_color(ZENITH)
                 // target=_blank links leave the app for the default browser, never a second webview.
                 .on_new_window(move |url, _features| {
-                    if matches!(url.scheme(), "http" | "https") {
+                    if let Ok(url) = external_url(url.as_str()) {
                         let _ = handle.opener().open_url(url.as_str(), None::<&str>);
                     }
                     NewWindowResponse::Deny
@@ -256,6 +282,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_external_takes_http_and_https_links() {
+        assert_eq!(external_url("https://github.com/AllStreets/palimpsest/pull/13").unwrap().as_str(), "https://github.com/AllStreets/palimpsest/pull/13");
+        assert!(external_url("http://127.0.0.1:4770/api/inspections/i/shot/x/after").is_ok());
+    }
+
+    #[test]
+    fn open_external_refuses_every_other_scheme() {
+        for raw in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "x-apple.systempreferences:com.apple.preference.security",
+            "mailto:someone@example.com",
+            "tauri://localhost/index.html",
+            "ftp://github.com/x",
+            "data:text/html,<script>alert(1)</script>",
+            "/relative/path",
+            "",
+        ] {
+            assert!(external_url(raw).is_err(), "{raw} was let through");
+        }
+    }
 
     #[test]
     fn success_is_ok_whatever_stderr_says() {

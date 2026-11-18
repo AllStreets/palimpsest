@@ -23,6 +23,7 @@ import type { Names } from './detail';
 import { coalesce, detailSheet, keyedSlot, namesOf, refusal, setTrail } from './pages';
 import { longDate } from './story';
 import './market.css';
+import { externalLink } from './external';
 
 export { verdictMark, verdictWord } from './audit-words';
 
@@ -70,10 +71,7 @@ export function evidenceRef(repo: string, sha: string | null, e: Evidence): HTML
   const text = cleanText(evidenceText(e), 200);
   const href = e.verified ? evidenceHref(repo, sha, e) : null;
   if (!href) return el('span', `claim-ref${e.verified ? '' : ' unfound'}`, text);
-  const a = el('a', 'claim-evidence', text);
-  a.href = href;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
+  const a = externalLink(el('a', 'claim-evidence', text), href);
   a.title = `${text} at ${sha?.slice(0, 7)}, on GitHub`;
   return a;
 }
@@ -132,9 +130,7 @@ function colophon(v: AuditView, last = false): HTMLElement {
     parts.push(' at ');
     const sha = el('a', 'audit-sha', v.baseSha.slice(0, 7));
     const [owner, name] = v.repo.split('/');
-    sha.href = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name ?? '')}/tree/${v.baseSha}`;
-    sha.target = '_blank';
-    sha.rel = 'noopener noreferrer';
+    externalLink(sha, `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name ?? '')}/tree/${v.baseSha}`);
     sha.title = 'The commit the audit read, on GitHub';
     parts.push(sha);
   }

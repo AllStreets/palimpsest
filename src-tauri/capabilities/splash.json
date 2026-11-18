@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "splash",
+  "description": "The splash, served by the app itself: it checks for the engine, installs it and opens the city.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-engine-healthy",
+    "allow-open-city",
+    "allow-install-engine",
+    "allow-open-folder-access",
+    "allow-engine-command",
+    "allow-open-external"
+  ]
+}

@@ -28,6 +28,7 @@ import { awardRounds, type Names } from './detail';
 import { handoffs } from './handoffs';
 import { coalesce, namesOf, refusal, secHead } from './pages';
 import './market.css';
+import { externalLink } from './external';
 
 export interface BriefScreen {
   show(): void;
@@ -355,13 +356,10 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const head = headOf(item);
     if (a === 'open-pr') {
       if (!isGithub(item.refs.prUrl)) return null;
-      const link = el('a', 'textbtn brief-act', label);
-      link.href = item.refs.prUrl;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
+      // The open is asked for before look() records it, so a re-render the record starts cannot lose the click.
+      const link = externalLink(el('a', 'textbtn brief-act', label), item.refs.prUrl, () => look(item, 'open-pr'));
       link.dataset.action = a;
       link.setAttribute('aria-label', `${label}: ${head}, on GitHub`);
-      link.addEventListener('click', () => look(item, 'open-pr'));
       return link;
     }
     if (a === 'diff' && !item.refs.runId) return null;

@@ -12,5 +12,16 @@ fn main() {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     println!("cargo:rustc-env=PALIMPSEST_BUILD_NODE={node}");
-    tauri_build::build()
+    // Naming the app's commands turns on Tauri's access control for them: capabilities/ says which
+    // page may call which. The splash (local) calls the engine commands; the city, served by the
+    // engine over http://127.0.0.1:4770, may call open_external and nothing else.
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
+        "engine_healthy",
+        "open_city",
+        "install_engine",
+        "open_folder_access",
+        "engine_command",
+        "open_external",
+    ])))
+    .expect("failed to run the Tauri build script")
 }

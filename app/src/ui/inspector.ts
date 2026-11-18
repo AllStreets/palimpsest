@@ -1,6 +1,7 @@
 import type { LifeGraduate, LifeNet, LifeVoyage } from '../city/campus/life.js';
 import type { District, Era, Floor, FloorSize, Milestone, RootStyle, TowerSpec } from '../../../shared/types.js';
 import { milestoneNote } from '../city/milestones.js';
+import { externalLink } from './external.js';
 
 export const ROOT_NAMES: Record<RootStyle, string> = {
   beauxarts: 'Beaux-Arts',
@@ -276,11 +277,8 @@ export interface FloorListOptions {
 /** A link that opens beside the city, never selecting the row it sits in. */
 function link(text: string, href: string, title: string, external: boolean, className?: string, tabbable = false): HTMLAnchorElement {
   const a = el('a', className, text);
-  a.href = href;
-  if (external) {
-    a.target = '_blank';
-    a.rel = 'noopener';
-  }
+  if (external) externalLink(a, href);
+  else a.href = href;
   a.title = title;
   // In a listbox the row is the tab stop and its links are reached by pointer; in a plain list they are tab stops of their own.
   if (!tabbable) a.tabIndex = -1;

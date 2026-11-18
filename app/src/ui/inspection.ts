@@ -7,6 +7,7 @@ import { CHECK_WORDS, checkSummary, cleanLog, duration, inspectionTitle, redactL
 import { coalesce, detailSheet, keyedSlot, namesOf, pageLink, secHead, setTrail, statusMark } from './pages';
 import './market.css';
 import { clock } from './time-words';
+import { externalLink } from './external';
 
 export interface InspectionPage {
   show(id: string): void;
@@ -247,10 +248,7 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
           const url = s[which];
           // Only the engine's own shot route, by the id and route it names.
           if (url && url === api.shotUrl(i.id, s.route, which)) {
-            const a = el('a', 'insp-shot-link');
-            a.href = url;
-            a.target = '_blank';
-            a.rel = 'noopener';
+            const a = externalLink(el('a', 'insp-shot-link'), url);
             const img = el('img', 'insp-img');
             img.src = url;
             img.alt = `${s.route} ${which} the change`;

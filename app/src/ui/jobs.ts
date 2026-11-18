@@ -25,6 +25,7 @@ import { ago, button, checkRadio, createSheet, el, plural, rovingRadios, textBut
 import { tierPicker } from './audit';
 import { longDate } from './story';
 import './market.css';
+import { externalLink } from './external';
 
 export interface JobsScreen {
   /** Opens the board; with a job id, scrolls to that job and marks it. */
@@ -360,9 +361,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     if (j.source === 'issue' && j.issue !== null) {
       const ref = url ? el('a', 'job-ref', `#${j.issue}`) : el('span', 'job-ref', `#${j.issue}`);
       if (ref instanceof HTMLAnchorElement) {
-        ref.href = url!;
-        ref.target = '_blank';
-        ref.rel = 'noopener';
+        externalLink(ref, url!);
         ref.title = 'The issue on GitHub';
       }
       line.append(ref);
@@ -556,10 +555,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
         const p = el('p', 'job-pr');
         const url = githubUrl(r?.prUrl);
         if (r?.prNumber && url) {
-          const a = el('a', 'job-pr-link', `Pull request #${r.prNumber}`);
-          a.href = url;
-          a.target = '_blank';
-          a.rel = 'noopener';
+          const a = externalLink(el('a', 'job-pr-link', `Pull request #${r.prNumber}`), url);
           p.append(document.createTextNode('Passed inspection. '), a, document.createTextNode(' is open on GitHub: merge or close it there.'));
         } else {
           p.append(document.createTextNode('Passed inspection. Its pull request is open on GitHub: merge or close it there.'));
