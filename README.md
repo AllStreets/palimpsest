@@ -458,9 +458,12 @@ The sample runs through the market's and the school's own code, with stand-ins f
 
 One real job has gone the whole way. I labelled a small issue in this repo, and Oskar Kiln of Kiln Brothers, an agent on `qwen3-coder:30b-a3b` in Ollama on my Mac, won the bidding, passed inspection and opened [pull request #4](https://github.com/AllStreets/palimpsest/pull/4). I merged it, and the engine lit the floor and paid the firm.
 
-That is the only real run so far. The first real README audit hasn't run yet, and the school hasn't trained on anything real yet. Still to run:
+The first real README audits ran on 15 November, on two of my public repos. The audit of Beagle read 20 claims: 8 real, 9 partial and 3 missing. The audit of Palimpsest itself read 6: 2 real, 3 partial and 1 broken.
 
-- a README audit on one of my repos;
+The broken one was the claim that the audit only calls a claim real when a test backs it. The audit ran my Node tests inside its own sandbox, and the test for that rule failed there. It isn't a bug in the rule. The test passes on a clean checkout. Inside the audit's sandbox, macOS won't let the engine start `ps`, which it uses to clean up after each command, so the test's own pretend audit stopped early.
+
+The school hasn't trained on anything real yet. Still to run:
+
 - the school's first night: the trainer, the gate and the nets on my ledger;
 - a first arena, voyage and coder on one of my repos.
 
