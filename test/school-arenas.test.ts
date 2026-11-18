@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
@@ -102,7 +102,20 @@ function tinyRepo(over: Partial<Repo> = {}): Repo {
   return repo;
 }
 
-const gradingSpawns = (id: string) => spawns.filter((s) => s.cwd.includes(`arena-${id}-grade`));
+/**
+ * Whether a spawn ran in an arena's grading root under this test's data home.
+ * Judged from its place under paths().runs, never by a substring of the whole
+ * path: when this suite is itself an arena's head grade, the outer run root is
+ * named arena-<id>-grade too, and every temp path here sits inside it.
+ */
+function gradingRootOf(s: Spawn): string | null {
+  const rel = relative(paths().runs, s.cwd);
+  if (rel === '' || rel.startsWith('..')) return null;
+  const top = rel.split(sep)[0];
+  return /^arena-.+-grade$/.test(top) ? top : null;
+}
+const isGrading = (s: Spawn) => gradingRootOf(s) !== null;
+const gradingSpawns = (id: string) => spawns.filter((s) => gradingRootOf(s) === `arena-${id}-grade`);
 const installSpawns = () => spawns.filter((s) => s.args.join(' ').includes('touch installed.txt'));
 
 beforeEach(() => {
@@ -232,7 +245,7 @@ test('a gate loss pauses and resumes the rest', async () => {
   assert.equal(done.id, paused.id, 'the next night resumes the paused arena');
   assert.equal(done.status, 'ready', done.reason ?? '');
   const second = spawns.slice(before);
-  assert.equal(second.filter((s) => s.cwd.includes(`arena-${done.id}-grade`)).length, paused.candidates - triedFirst, 'only the untried candidates run');
+  assert.equal(second.filter((s) => gradingRootOf(s) === `arena-${done.id}-grade`).length, paused.candidates - triedFirst, 'only the untried candidates run');
   assert.equal(installSpawns().length, 1, 'the install is not run again');
   const states = candidatesOf(done.id);
   for (const c of first.filter((x) => x.state !== 'untried')) {
@@ -244,7 +257,7 @@ test('turning the school off stops a build, which pauses', async () => {
   const repo = tinyRepo();
   let graded = 0;
   onSpawn = (s) => {
-    if (s.cwd.includes('-grade') && ++graded === 2) schoolOff(NOW);
+    if (isGrading(s) && ++graded === 2) schoolOff(NOW);
   };
   const info = await buildPlanted(repo, NOW);
   assert.equal(info.status, 'paused');
@@ -264,7 +277,7 @@ test('a build holds an arena train while it runs: its row says building, and a v
   let row: ArenaInfo | undefined;
   let voyage: Promise<unknown> | null = null;
   onSpawn = (s) => {
-    if (seen !== null || !s.cwd.includes('-grade')) return;
+    if (seen !== null || !isGrading(s)) return;
     seen = liveTrains();
     row = listArenas(FULL)[0];
     voyage = sailVoyage('any-arena', NOW).then(
@@ -301,7 +314,7 @@ test('a build is refused in plain words while another train runs, and pauseAll s
 
   let graded = 0;
   onSpawn = (s) => {
-    if (s.cwd.includes('-grade') && ++graded === 2) void pauseAll('the engine is stopping');
+    if (isGrading(s) && ++graded === 2) void pauseAll('the engine is stopping');
   };
   const info = await buildPlanted(repo, NOW);
   assert.equal(info.status, 'paused');
@@ -352,7 +365,7 @@ test('a gate that fails mid-grade stops the build within the poll, not at the gr
   let closed: (() => Promise<GateState>) | null = null;
   setGate(async (kind) => (closed ? closed() : { ...gateState(true), kind }));
   onSpawn = (s) => {
-    if (s.cwd.includes('-grade')) closed = async () => gateState(false, 'on battery');
+    if (isGrading(s)) closed = async () => gateState(false, 'on battery');
   };
   const t0 = Date.now();
   const info = await buildPlanted(getRepo(FULL)!, NOW);
@@ -363,7 +376,7 @@ test('a gate that fails mid-grade stops the build within the poll, not at the gr
   // a gate that cannot be read stops it too
   closed = null;
   onSpawn = (s) => {
-    if (s.cwd.includes('-grade')) closed = async () => Promise.reject(new Error('pmset fell over'));
+    if (isGrading(s)) closed = async () => Promise.reject(new Error('pmset fell over'));
   };
   const t1 = Date.now();
   const again = await buildPlanted(getRepo(FULL)!, NOW);
@@ -713,7 +726,7 @@ test('a past task directory holds no object of the fix', async () => {
   const w = pastWorld();
   const seen: Array<{ git: boolean; commits: string; fixObject: boolean }> = [];
   onSpawn = (sp) => {
-    if (!sp.cwd.includes('-grade')) return;
+    if (!isGrading(sp)) return;
     let math = '';
     let test = '';
     try {
