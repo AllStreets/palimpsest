@@ -14,6 +14,7 @@
  * the home deny comes before the run root allows, the named secret denies
  * come after every allow, and the port denies come after the loopback allow.
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -53,6 +54,12 @@ export interface ProfileInput {
    * Real paths.
    */
   readOnly?: string[];
+  /**
+   * His xcrun lookup cache (xcrunCache()), read-allowed so the developer
+   * tools' shims (/usr/bin/git, cc, make) resolve from it. Default: the
+   * detected one; null for none.
+   */
+  xcrunCache?: string | null;
 }
 
 export interface CliProfileInput extends ProfileInput {
@@ -401,6 +408,30 @@ function devWrites(): string[] {
   ];
 }
 
+let xcrunDb: string | null | undefined;
+
+/**
+ * The xcrun lookup cache in his own temp folder (`$(getconf
+ * DARWIN_USER_TEMP_DIR)/xcrun_db`), or null when there is none to read.
+ *
+ * Every developer tools shim (/usr/bin/git, cc, make, python3) asks xcrun
+ * where the real tool is. xcrun answers from this cache, and on a miss runs
+ * `xcodebuild -find` and writes the answer back. A tool child may write
+ * nothing in his temp folder, so before this rule every shim call missed
+ * and launched xcodebuild: about 1.5 s idle and 7 s under a test suite's
+ * load per `git`, against 0.02 s outside the sandbox, which put a repo's
+ * own suite past the check's time cap. The child may read the cache, never
+ * write it: the engine's own git calls outside the sandbox keep it filled,
+ * and a cache a child could write would point the engine's git elsewhere.
+ */
+export function xcrunCache(): string | null {
+  if (xcrunDb !== undefined) return xcrunDb;
+  if (process.platform !== 'darwin') return (xcrunDb = null);
+  const r = spawnSync('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf8', timeout: 5_000 });
+  const dir = r.status === 0 ? r.stdout.trim() : '';
+  return (xcrunDb = dir.startsWith('/') ? join(realish(dir), 'xcrun_db') : null);
+}
+
 /** The tool profile (ruling 9): every command an agent runs, installs and checks. */
 export function toolProfile(o: ProfileInput): string {
   const r = resolveInput(o);
@@ -413,6 +444,12 @@ export function toolProfile(o: ProfileInput): string {
   lines.push('');
 
   lines.push(...readRules(r));
+  const db = o.xcrunCache === undefined ? xcrunCache() : o.xcrunCache;
+  if (db) {
+    lines.push("; his xcrun lookup cache, read only: the developer tools' shims resolve from it instead of running xcodebuild");
+    lines.push(`(allow file-read* ${lit(realish(db))})`);
+    lines.push('');
+  }
 
   lines.push('; writes: the clones, tmp, the fake home and the caches; ctl stays read-only');
   const writable = RUN_WRITE[o.side ?? 'head'].map((d) => join(r.runRoot, d));

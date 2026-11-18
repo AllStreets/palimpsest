@@ -18,6 +18,7 @@ import {
   trainerProfile,
   unregisterRunPorts,
   wrap,
+  xcrunCache,
   type CliProfileInput,
   type ProfileInput,
 } from '../engine/market/sandbox.js';
@@ -70,6 +71,15 @@ function lineAt(text: string, ...needles: string[]): number {
 }
 
 describe('profile text', () => {
+  test("the tool profile reads the developer tools' lookup cache and never writes it, so /usr/bin/git runs no xcodebuild", () => {
+    const db = '/private/var/folders/ab/cdef/T/xcrun_db';
+    const p = toolProfile({ ...input, xcrunCache: db });
+    const read = lineAt(p, '(allow file-read*', `(literal "${db}")`);
+    assert.ok(read > lineAt(p, '(deny file-read*', `(subpath "${HOME}")`), 'read after the home deny');
+    assert.ok(!p.split('\n').some((l) => /^\(allow file-(write|link)/.test(l) && l.includes('/private/var/folders')), 'his temp folder is never writable');
+    assert.ok(!toolProfile({ ...input, xcrunCache: null }).includes('xcrun_db'), 'no cache, no rule');
+  });
+
   test('tool profile denies by default', () => {
     const p = toolProfile(input);
     assert.ok(p.startsWith('(version 1)'));
@@ -539,6 +549,13 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     const argv = wrap(['/bin/sh', '-c', cmd], 'tool', { ...o, ...over });
     return run(argv, { cwd: join(runRoot, 'repo'), env: childEnv(runRoot, { proxyPort: o.proxyPort, proxyToken: 't', toolchains: [] }) });
   }
+
+  test("/usr/bin/git under the tool profile resolves through his xcrun cache instead of launching xcodebuild on every call", { skip: (!existsSync(xcrunCache() ?? '') || !existsSync('/usr/bin/git')) && 'no xcrun cache on this Mac' }, async () => {
+    const r = await run(wrap(['/usr/bin/git', 'version'], 'tool', o), { cwd: join(runRoot, 'repo'), env: { PATH: '/usr/bin:/bin', HOME: join(runRoot, 'home'), xcrun_verbose: '1' } });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /git version/);
+    assert.doesNotMatch(r.stderr, /xcodebuild/, 'the lookup came from the cache');
+  });
 
   test('a write outside the run root fails', async () => {
     const r = await tool(`echo x > '${home}/new.txt'; echo x > '${t}/new.txt'; echo x > '${data}/new.txt'; echo x > '${runRoot}/new.txt'; echo x > '${runRoot}/ctl/gitconfig'`);
