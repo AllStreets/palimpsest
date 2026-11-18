@@ -163,3 +163,91 @@ test('the review prompt points at changes to checks and tests', async () => {
   assert.match(prompt, /weakens, skips or deletes a check/);
   assert.match(prompt, /tests, test fixtures/);
 });
+
+test('the review prompt asks the reviewer to check that every new name the change relies on exists', async () => {
+  const { reviewPrompt } = await import('../engine/market/claude.js');
+  const job = { id: 'j', repo: 'a/b', title: 't', body: 'b' } as never;
+  const prompt = reviewPrompt({ job, agent: {} as never, persona: '', diff: '+x', acceptance: ['a'], checks: [] });
+  assert.match(prompt, /exists? in the repository or (is )?defined by the diff/);
+  for (const kind of ['ids', 'constants', 'file paths', 'CLI flags', 'API routes', 'CSS classes']) assert.ok(prompt.includes(kind), kind);
+  assert.match(prompt, /Name each one that does not exist as a concern/);
+});
+
+test("the names the engine could not find reach the reviewer's prompt as quoted data", async () => {
+  const { reviewPrompt } = await import('../engine/market/claude.js');
+  const job = { id: 'j', repo: 'a/b', title: 't', body: 'b' } as never;
+  const prompt = reviewPrompt({ job, agent: {} as never, persona: '', diff: '+x', acceptance: ['a'], checks: [], unfound: [{ id: 'corin-hale', why: 'not found in the repository' }] });
+  assert.match(prompt, /^> corin-hale: not found in the repository$/m);
+  const none = reviewPrompt({ job, agent: {} as never, persona: '', diff: '+x', acceptance: ['a'], checks: [] });
+  assert.doesNotMatch(none, /corin-hale/);
+});
+
+// The slip PR #13 shipped: a walker id the sample roster does not have.
+const PR13 = [
+  'diff --git a/tools/commute-check.ts b/tools/commute-check.ts',
+  '--- a/tools/commute-check.ts',
+  '+++ b/tools/commute-check.ts',
+  '@@ -11,0 +12,2 @@',
+  "+export const TRAM_WALKERS = ['dagny-hollis', 'corin-hale', 'ines-ashlar'] as const;",
+  "+const MODE = 'tram-leg'; // no-op",
+  " const kept = 'old-name';",
+  "-const gone = 'removed-name';",
+  '',
+].join('\n');
+
+test('diffIds takes the quoted kebab-case ids from added lines only', async () => {
+  const { diffIds } = await import('../engine/guild/review.js');
+  assert.deepEqual([...diffIds(PR13).keys()].sort(), ['corin-hale', 'dagny-hollis', 'ines-ashlar', 'tram-leg']);
+  assert.equal(diffIds(PR13).get('corin-hale'), 1);
+});
+
+test("strangers names an id quoted beside roster ids in a list whose roster does not have it, as PR #13's 'corin-hale'", async () => {
+  const { strangers, namesCheck } = await import('../engine/guild/review.js');
+  // corin-hale is in the repo (the sample economy), but not in the roster that holds its neighbours.
+  const holders = new Map([
+    ['dagny-hollis', new Set(['engine/market/firms.ts', 'engine/market/sample-economy.ts', 'tools/ui-test-firms.ts', 'tools/commute-check.ts'])],
+    ['ines-ashlar', new Set(['engine/market/firms.ts', 'engine/market/sample-economy.ts', 'tools/ui-test-firms.ts', 'tools/commute-check.ts'])],
+    ['corin-hale', new Set(['engine/market/sample-economy.ts', 'tools/commute-check.ts'])],
+    ['tram-leg', new Set(['tools/commute-check.ts'])],
+  ]);
+  const s = strangers(PR13, holders);
+  assert.deepEqual(s.map((u) => u.id), ['corin-hale']);
+  assert.match(s[0].why, /engine\/market\/firms\.ts, tools\/ui-test-firms\.ts have those and not 'corin-hale'/);
+  // Before the change the repo has every walker id, so only the roster check catches it; tram-leg is used once and is nowhere.
+  const base = new Map([...holders].filter(([id]) => id !== 'tram-leg').map(([id, f]) => [id, new Set([...f].filter((x) => x !== 'tools/commute-check.ts'))]));
+  assert.deepEqual(namesCheck(PR13, base, holders).map((u) => u.id), ['tram-leg', 'corin-hale']);
+  // A test that happens to quote two of them is no roster: dagny-hollis is not named for missing from it.
+  holders.get('corin-hale')!.add('test/detail.test.ts');
+  holders.get('ines-ashlar')!.add('test/detail.test.ts');
+  assert.deepEqual(strangers(PR13, holders).map((u) => u.id), ['corin-hale']);
+  // Missing from only one of the three files its neighbours share (as teodor-vane, the fix, is): not named.
+  holders.get('corin-hale')!.add('tools/ui-test-firms.ts');
+  assert.deepEqual(strangers(PR13, holders), []);
+  holders.get('corin-hale')!.delete('tools/ui-test-firms.ts');
+  // A walker the diff adds to the roster too is no stranger.
+  holders.get('corin-hale')!.add('engine/market/firms.ts');
+  assert.deepEqual(strangers(PR13, holders), []);
+});
+
+test('unfoundIds names an id found neither in the repo nor elsewhere in the diff', async () => {
+  const { unfoundIds } = await import('../engine/guild/review.js');
+  // The base has dagny-hollis and ines-ashlar (the roster); tram-leg is defined twice in the diff.
+  const twice = `${PR13}+++ b/tools/modes.ts\n+export const MODES = ['tram-leg'];\n`;
+  assert.deepEqual(unfoundIds(twice, new Set(['dagny-hollis', 'ines-ashlar'])), ['corin-hale']);
+  assert.deepEqual(unfoundIds(twice, new Set(['dagny-hollis', 'ines-ashlar', 'corin-hale'])), []);
+});
+
+test("a name the engine could not find is the reviewer's concern, whatever the reviewer says", { timeout: 60_000 }, async () => {
+  const { job, run } = await setting({ id: 'ann', firmId: 'aaa', model: 'claude:sonnet' });
+  addAgent('bea', 'bbb', 'claude:sonnet');
+  const lease = await workLease();
+  try {
+    const out = await review(run, job, PR13, [], lease, { unfound: [{ id: 'corin-hale', why: 'not found in the repository' }] });
+    assert.deepEqual(reviewed[0].unfound?.map((u) => u.id), ['corin-hale']);
+    assert.equal(out.result.status, 'pass');
+    assert.ok(out.result.concerns?.some((c) => /^The engine could not find 'corin-hale'/.test(c)));
+    assert.match(out.result.detail, /corin-hale/);
+  } finally {
+    lease.release();
+  }
+});

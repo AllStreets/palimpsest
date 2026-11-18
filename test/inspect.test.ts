@@ -604,3 +604,24 @@ test('the test check runs with the tool sandbox flag set and names each test the
     lease.release();
   }
 });
+
+test('an id the change relies on that the repo does not have reaches the reviewer and the verdict', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), {
+    'src/roster.ts': "export const ROSTER = ['dagny-hollis', 'ines-ashlar'];\n",
+    'src/walkers.ts': 'export const WALKERS = [];\n',
+  });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  const { run, diff } = await makeRun(repo, job, worker, (d) => write(d, 'src/walkers.ts', "export const WALKERS = ['dagny-hollis', 'corin-hale'];\n"));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(reviewed.length, 1);
+    assert.deepEqual(reviewed[0].unfound?.map((u) => u.id), ['corin-hale']);
+    const rv = insp.checks.find((c) => c.name === 'review');
+    assert.match(rv?.detail ?? '', /corin-hale/);
+    assert.doesNotMatch(rv?.detail ?? '', /dagny-hollis/);
+  } finally {
+    lease.release();
+  }
+});

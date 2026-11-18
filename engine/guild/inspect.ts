@@ -58,7 +58,7 @@ import { createShipDir, engineGit } from '../market/worktree.js';
 import { cachedBaseline } from './baseline.js';
 import { CHECK_ORDER, runCheck, unanswered, unansweredWhy } from './checks.js';
 import { designPasses, judgeDesign, prepareBase, shoot, UI_FILES, type Screenshotter, type Shot } from './design.js';
-import { isTooLarge, review } from './review.js';
+import { diffIds, isTooLarge, MAX_NAME_IDS, namesCheck, review, type Unfound } from './review.js';
 
 export { DENY_SCOPE, denied, globRegex } from '../../shared/market-rules.js';
 
@@ -251,6 +251,43 @@ async function reviewDiff(dir: string, base: string, head: string, files: Change
   return lines.length ? `${r.stdout}${r.stdout && !r.stdout.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n` : r.stdout;
 }
 
+/**
+ * The files of `rev` that carry each of `ids` as text, from one `git grep`
+ * in the ship clone (no textconv, binaries skipped). Throws when git fails.
+ */
+async function idHolders(dir: string, rev: string, ids: string[]): Promise<Map<string, Set<string>>> {
+  const holders = new Map(ids.map((id) => [id, new Set<string>()]));
+  if (!ids.length) return holders;
+  const r = await engineGit(dir, ['grep', '-o', '-I', '-F', '--no-color', ...ids.flatMap((id) => ['-e', id]), rev, '--']);
+  if (r.code === 1) return holders;
+  if (r.code !== 0) throw new Error(`git grep failed: ${r.stderr.trim()}`);
+  const prefix = `${rev}:`;
+  for (const line of r.stdout.split('\n')) {
+    if (!line.startsWith(prefix)) continue;
+    const cut = line.lastIndexOf(':');
+    holders.get(line.slice(cut + 1))?.add(line.slice(prefix.length, cut));
+  }
+  return holders;
+}
+
+/**
+ * The names pre-check before the review (review.ts namesCheck): the ids the
+ * diff quotes, looked up at the base and the head. A git failure skips it,
+ * logged; it never fails the inspection on its own.
+ */
+async function namesPrecheck(dir: string, base: string, head: string, patch: string, note: (t: string) => void): Promise<Unfound[]> {
+  try {
+    const ids = [...diffIds(patch).keys()].slice(0, MAX_NAME_IDS);
+    if (!ids.length) return [];
+    const unfound = namesCheck(patch, await idHolders(dir, base, ids), await idHolders(dir, head, ids));
+    if (unfound.length) note(`names the change relies on that were not found: ${unfound.map((u) => u.id).join(', ')}`);
+    return unfound;
+  } catch (err) {
+    note(`the names pre-check did not run: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
 /** The changed files of `base..head` with their gitlink flags, from `git diff --raw`. */
 async function changedFiles(dir: string, base: string, head: string): Promise<ChangedFile[]> {
   const r = await engineGit(dir, ['diff', '--raw', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', base, head, '--']);
@@ -374,7 +411,9 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
   //    inspection, so no review call is spent on it; scope and design alone still get one.
   const checkFailed = checks.some((c) => CHECK_NAMES.has(c.name) && c.status === 'fail');
   if (!moved && !checkFailed) {
-    const rv = await review(run, job, patch, checks.slice(), lease);
+    const unfound = await namesPrecheck(ship, base as string, head as string, patch, note);
+    halt();
+    const rv = await review(run, job, patch, checks.slice(), lease, { unfound });
     halt();
     cost += rv.credits;
     reviewer = { agentId: rv.reviewerAgentId, firmId: rv.reviewerFirmId };

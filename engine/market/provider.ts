@@ -43,6 +43,8 @@ export interface ReviewInput {
   diff: string;
   acceptance: string[];
   checks: CheckResult[];
+  /** Names the change relies on that the engine's pre-check could not find (review.ts namesCheck), each with why. */
+  unfound?: Array<{ id: string; why: string }>;
 }
 
 /** Base64 PNGs per route, before and after. */
