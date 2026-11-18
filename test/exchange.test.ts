@@ -11,7 +11,7 @@ import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { districtOrigin } from '../shared/district-layout.js';
 import type { Floor, Quarter, TowerSpec } from '../shared/types.js';
 import { CAMPANILE, onExchange, CIVIC_LAMPS, EXCHANGE_SLOTS, FOUNTAIN, HALL, JOBS_ROUTE, LAMPS_PER_SLOT, boardLabel, makeExchange, toteBoard } from '../app/src/city/exchange.js';
-import { BLOCK, PITCH, standingLots } from '../app/src/city/lots.js';
+import { BLOCK, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, standingLots } from '../app/src/city/lots.js';
 import * as exchangeModule from '../app/src/city/exchange.js';
 import type { JobStatus } from '../shared/types.js';
 
@@ -212,6 +212,45 @@ test('the campanile rises well over the hall and stays below the district towers
   // Five clocks (the entrance and each face of the campanile), every hand in one instanced batch.
   assert.equal((ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh).count, 10);
   ex.dispose();
+});
+
+test('the campanile stands apart from the hall, halfway from its back to the apex lamp of the plaza ring', () => {
+  // The apex: the ring lamp whose bearing from the plaza's centre is nearest the campanile's old site, on the axis
+  // behind the hall (z -52, its foot against the back wall).
+  const old = Math.atan2(-52, 0);
+  let apex = { x: 0, z: 0 };
+  let best = Infinity;
+  for (let k = 0; k < PLAZA_LAMPS; k++) {
+    const a = (k / PLAZA_LAMPS) * Math.PI * 2;
+    const off = Math.abs(Math.atan2(Math.sin(a - old), Math.cos(a - old)));
+    if (off < best) [best, apex] = [off, { x: Math.cos(a) * PLAZA_LAMP_RING, z: Math.sin(a) * PLAZA_LAMP_RING }];
+  }
+  // The hall's footprint edge on that side: its back wall, at the point nearest the lamp.
+  const edge = { x: Math.max(-HALL.width / 2, Math.min(HALL.width / 2, apex.x)), z: HALL.z0 };
+  const mid = { x: (edge.x + apex.x) / 2, z: (edge.z + apex.z) / 2 };
+  const c = CAMPANILE as typeof CAMPANILE & { x: number };
+  assert.equal(typeof c.x, 'number', 'the campanile says where it stands across the plan');
+  assert.ok(Math.hypot(c.x - mid.x, c.z - mid.z) < 0.5, `its centre (${c.x.toFixed(1)}, ${c.z.toFixed(1)}) is the midpoint (${mid.x.toFixed(1)}, ${mid.z.toFixed(1)})`);
+  // It clears the building, measured on the hall as built (the stylobate's lowest step its back), by its own half-width.
+  const hall = makeExchange('medium', { campanile: false } as never);
+  hall.object.updateMatrixWorld(true);
+  const back = new THREE.Box3().setFromObject(hall.object.getObjectByName('exchange:hall-at-scale')!).min.z;
+  hall.dispose();
+  assert.ok(back - c.z >= c.half, `its centre stands ${(back - c.z).toFixed(1)} m behind the hall's back (half-width ${c.half.toFixed(2)} m)`);
+  // Built, the tower's foot touches neither the hall nor the apex lamp, so the lamp stays in the ring.
+  const ex = makeExchange('medium');
+  ex.object.updateMatrixWorld(true);
+  const all = new THREE.Box3().setFromObject(ex.object.getObjectByName('exchange:hall-at-scale')!);
+  ex.dispose();
+  const foot = c.half + 1;
+  assert.ok(c.z + foot < back, 'its granite foot stands clear of the hall');
+  assert.ok(Math.abs(all.min.z - (c.z - foot)) < 0.2, `the tower's foot is the exchange's back (${all.min.z.toFixed(2)} m)`);
+  assert.ok(!onExchange(apex.x, apex.z, 3), 'the apex lamp is not taken off the ring');
+  assert.ok(Math.abs(apex.z) - Math.abs(c.z - foot) > 1, 'its foot is short of the apex lamp');
+  // Clear of the forecourt: the fountain, the four standards, the stair and its queue are all in front of the hall.
+  assert.ok(Math.hypot(c.x - FOUNTAIN.x, c.z - FOUNTAIN.z) > FOUNTAIN.radius + foot + 10);
+  for (const l of CIVIC_LAMPS) assert.ok(Math.abs(l.x - c.x) > foot + 2 || Math.abs(l.z - c.z) > foot + 2);
+  assert.ok(c.z + foot < HALL.z0, 'behind the hall, never toward its stair');
 });
 
 test('the campanile skips a small new district', () => {

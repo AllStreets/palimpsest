@@ -23,6 +23,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { JobStatus } from '../../../shared/types.js';
 import { VIEW_PX } from './lod-shader.js';
+import { PLAZA_LAMP_RING, PLAZA_LAMPS } from './lots.js';
 import { flutedShaft, Kit, lathe, M, ME, type MatKey, paneData, PANE_SASH, PANE_SILL, piercedWall, roundArch, type TowerMaterials, wedge } from './tower/kit.js';
 
 /** The route the hall opens when picked: the job board screen (Task 36). */
@@ -44,10 +45,45 @@ export const HALL_SCALE = 1.25;
 const HALL_SHIFT = 4;
 /** The hall's footprint in the city, in metres from the plaza's centre. */
 export const HALL = { width: D.width * HALL_SCALE, depth: D.depth * HALL_SCALE, z0: D.z0 * HALL_SCALE + HALL_SHIFT, stair: (D.stair + 1.6) * HALL_SCALE };
-/** The campanile behind the hall, in the hall's own numbers: its centre on the plan, half its side, and its height to the finial. */
-const TOWER = { z: D.z0 - 4.8, half: 4.6, top: 86 };
+/** The campanile's half side and its height to the finial, in the hall's own numbers. */
+const TOWER_SIZE = { half: 4.6, top: 86 };
+/** Where the campanile stood, in the city, against the middle of the hall's back wall: the side it stands on still. */
+const CAMPANILE_SIDE = { x: 0, z: (D.z0 - 4.8) * HALL_SCALE + HALL_SHIFT };
+
+/**
+ * The lamp at the apex of the civic plaza's ring on the campanile's side:
+ * of the ring's lanterns (grid.ts, PLAZA_LAMPS round PLAZA_LAMP_RING), the
+ * one whose bearing from the plaza's centre is nearest the campanile's side.
+ */
+export function campanileApexLamp(): { x: number; z: number } {
+  const want = Math.atan2(CAMPANILE_SIDE.z, CAMPANILE_SIDE.x);
+  let best = { x: 0, z: 0 };
+  let off = Infinity;
+  for (let k = 0; k < PLAZA_LAMPS; k++) {
+    const a = (k / PLAZA_LAMPS) * Math.PI * 2;
+    const d = Math.abs(Math.atan2(Math.sin(a - want), Math.cos(a - want)));
+    if (d < off) [off, best] = [d, { x: Math.cos(a) * PLAZA_LAMP_RING, z: Math.sin(a) * PLAZA_LAMP_RING }];
+  }
+  return best;
+}
+
+/**
+ * The campanile's centre in the city: stood apart from the hall, halfway
+ * between the hall's footprint edge (its back wall, at the point nearest the
+ * lamp) and the apex lamp of the plaza's ring behind it.
+ */
+function campanileSite(): { x: number; z: number } {
+  const lamp = campanileApexLamp();
+  const edge = { x: Math.max(-HALL.width / 2, Math.min(HALL.width / 2, lamp.x)), z: HALL.z0 };
+  // On the axis to the millimetre: the ring's lamp sits there but for the float in its cosine.
+  const x = (edge.x + lamp.x) / 2;
+  return { x: Math.abs(x) < 1e-6 ? 0 : x, z: (edge.z + lamp.z) / 2 };
+}
+const SITE = campanileSite();
+/** The campanile in the hall's own numbers: its centre on the plan, half its side, and its height to the finial. */
+const TOWER = { x: SITE.x / HALL_SCALE, z: (SITE.z - HALL_SHIFT) / HALL_SCALE, ...TOWER_SIZE };
 /** The campanile in the city: its centre, half its side, and its top, in metres. */
-export const CAMPANILE = { z: TOWER.z * HALL_SCALE + HALL_SHIFT, half: TOWER.half * HALL_SCALE, top: TOWER.top * HALL_SCALE };
+export const CAMPANILE = { x: SITE.x, z: SITE.z, half: TOWER.half * HALL_SCALE, top: TOWER.top * HALL_SCALE };
 /** The forecourt fountain: its centre and the basin's outer radius. */
 export const FOUNTAIN = { x: 0, z: 42, radius: 10 };
 /** The four lamp standards on the forecourt (the ground lights a pool under each). */
@@ -62,7 +98,8 @@ export const CIVIC_LAMPS: ReadonlyArray<{ x: number; z: number }> = [
 export function onExchange(x: number, z: number, margin: number): boolean {
   const steps = 1.6 * HALL_SCALE;
   const hall = Math.abs(x) < HALL.width / 2 + steps + margin && z > HALL.z0 - steps - margin && z < HALL.z0 + HALL.depth + HALL.stair + margin;
-  const tower = Math.abs(x) < CAMPANILE.half + 1 + margin && z > CAMPANILE.z - CAMPANILE.half - 1 - margin && z < HALL.z0 + margin;
+  // The campanile on its own granite foot (a side 1 m wider than the shaft), apart from the hall.
+  const tower = Math.abs(x - CAMPANILE.x) < CAMPANILE.half + 1 + margin && Math.abs(z - CAMPANILE.z) < CAMPANILE.half + 1 + margin;
   return hall || tower;
 }
 
@@ -837,14 +874,15 @@ function clockFace(k: Kit, F: THREE.Matrix4, r: number): THREE.Matrix4 {
 function campanile(k: Kit, rand: () => number): THREE.Matrix4[] {
   const L = X('limestone');
   const T = TOWER.half;
+  const x = TOWER.x;
   const z = TOWER.z;
-  const face = (s: number): THREE.Matrix4 => M(0, 0, z, (s * Math.PI) / 2).multiply(M(0, 0, T));
-  k.box(X('granite'), 2 * T + 1.6, PODIUM + 0.4, 2 * T + 1.6, M(0, (PODIUM + 0.4) / 2, z));
+  const face = (s: number): THREE.Matrix4 => M(x, 0, z, (s * Math.PI) / 2).multiply(M(0, 0, T));
+  k.box(X('granite'), 2 * T + 1.6, PODIUM + 0.4, 2 * T + 1.6, M(x, (PODIUM + 0.4) / 2, z));
   const shaft0 = PODIUM + 0.4;
   const stage = 56;
-  k.box(L, 2 * T, stage - shaft0, 2 * T, M(0, (shaft0 + stage) / 2, z));
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) k.box(L, 2.0, stage - shaft0, 2.0, M(sx * (T - 0.45), (shaft0 + stage) / 2, z + sz * (T - 0.45)));
-  for (const y of [shaft0 + 0.2, 20, 38]) k.add(L, rectSweep(T + 0.55, T + 0.55, z, [[-1, y], [0.12, y], [0.3, y + 0.2], [0.3, y + 0.7], [0.05, y + 0.9], [-1, y + 0.9]]));
+  k.box(L, 2 * T, stage - shaft0, 2 * T, M(x, (shaft0 + stage) / 2, z));
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) k.box(L, 2.0, stage - shaft0, 2.0, M(x + sx * (T - 0.45), (shaft0 + stage) / 2, z + sz * (T - 0.45)));
+  for (const y of [shaft0 + 0.2, 20, 38]) k.add(L, rectSweep(T + 0.55, T + 0.55, z, [[-1, y], [0.12, y], [0.3, y + 0.2], [0.3, y + 0.7], [0.05, y + 0.9], [-1, y + 0.9]]), M(x, 0, 0));
   for (let s = 0; s < 4; s++) {
     const F = face(s);
     // A sunk panel up each face, a lit slit window in it every stage.
@@ -855,34 +893,34 @@ function campanile(k: Kit, rand: () => number): THREE.Matrix4[] {
     }
   }
   // The clock stage: a cornice under it, a dial on every face.
-  k.add(L, rectSweep(T, T, z, [[-1, stage], [0.6, stage], [0.6, stage + 0.5], [0.3, stage + 0.8], [-1, stage + 0.8]]));
+  k.add(L, rectSweep(T, T, z, [[-1, stage], [0.6, stage], [0.6, stage + 0.5], [0.3, stage + 0.8], [-1, stage + 0.8]]), M(x, 0, 0));
   const clock0 = stage + 0.8;
   const clock1 = clock0 + 8;
-  k.box(L, 2 * T, clock1 - clock0, 2 * T, M(0, (clock0 + clock1) / 2, z));
+  k.box(L, 2 * T, clock1 - clock0, 2 * T, M(x, (clock0 + clock1) / 2, z));
   const hands: THREE.Matrix4[] = [];
   for (let s = 0; s < 4; s++) hands.push(clockFace(k, face(s).multiply(M(0, (clock0 + clock1) / 2, 0.02)), 3.0));
   // The belfry: four arched faces round a chamber lit from within.
-  k.add(L, rectSweep(T, T, z, [[-1, clock1], [0.7, clock1], [0.7, clock1 + 0.6], [0.4, clock1 + 0.9], [-1, clock1 + 0.9]]));
+  k.add(L, rectSweep(T, T, z, [[-1, clock1], [0.7, clock1], [0.7, clock1 + 0.6], [0.4, clock1 + 0.9], [-1, clock1 + 0.9]]), M(x, 0, 0));
   const bel0 = clock1 + 0.9;
   const belH = 8.6;
   for (let s = 0; s < 4; s++) {
     const arches = [-1.9, 1.9].map((u) => roundArch(u, 2.6, 0.9, 5.4, 14));
     k.add(L, piercedWall(2 * T, belH, 0.9, arches), face(s).multiply(M(0, bel0, -0.9)));
   }
-  k.box(X('glow'), 2 * T - 2.4, belH - 0.6, 2 * T - 2.4, M(0, bel0 + belH / 2, z));
+  k.box(X('glow'), 2 * T - 2.4, belH - 0.6, 2 * T - 2.4, M(x, bel0 + belH / 2, z));
   const top = bel0 + belH;
-  k.add(L, rectSweep(T, T, z, [[-1, top], [0.75, top], [0.75, top + 0.7], [0.35, top + 1.0], [-1, top + 1.0]]));
+  k.add(L, rectSweep(T, T, z, [[-1, top], [0.75, top], [0.75, top + 0.7], [0.35, top + 1.0], [-1, top + 1.0]]), M(x, 0, 0));
   // The lantern: an octagon of glazed bays between colonnettes, a copper cap and a brass finial.
   const l0 = top + 1.0;
-  k.add(L, new THREE.CylinderGeometry(3.4, 3.6, 0.8, 8).translate(0, 0.4, 0), M(0, l0, z, Math.PI / 8));
-  k.add(X('glow'), new THREE.CylinderGeometry(2.5, 2.5, 4.6, 8, 1, true).translate(0, 2.3, 0), M(0, l0 + 0.8, z, Math.PI / 8), false);
+  k.add(L, new THREE.CylinderGeometry(3.4, 3.6, 0.8, 8).translate(0, 0.4, 0), M(x, l0, z, Math.PI / 8));
+  k.add(X('glow'), new THREE.CylinderGeometry(2.5, 2.5, 4.6, 8, 1, true).translate(0, 2.3, 0), M(x, l0 + 0.8, z, Math.PI / 8), false);
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
-    k.inst('exchange:colonnette', L, () => new THREE.CylinderGeometry(0.17, 0.2, 3.0, 10), M(Math.sin(a) * 2.75, l0 + 0.8 + 2.3, z + Math.cos(a) * 2.75, 0, 1, 4.6 / 3.0, 1));
+    k.inst('exchange:colonnette', L, () => new THREE.CylinderGeometry(0.17, 0.2, 3.0, 10), M(x + Math.sin(a) * 2.75, l0 + 0.8 + 2.3, z + Math.cos(a) * 2.75, 0, 1, 4.6 / 3.0, 1));
   }
-  k.add(L, new THREE.CylinderGeometry(3.3, 3.1, 0.6, 8).translate(0, 0.3, 0), M(0, l0 + 5.4, z, Math.PI / 8));
-  k.add(X('copper'), lathe([[0, 0], [3.1, 0], [2.8, 0.7], [2.0, 1.6], [1.0, 2.6], [0.35, 3.1], [0, 3.2]], 8), M(0, l0 + 6.0, z, Math.PI / 8), false);
-  k.add(X('brass'), lathe([[0, 0], [0.24, 0], [0.34, 0.35], [0.14, 0.7], [0.24, 1.05], [0.06, TOWER.top - l0 - 9.2 - 0.1], [0, TOWER.top - l0 - 9.2]], 12), M(0, l0 + 9.2, z), false);
+  k.add(L, new THREE.CylinderGeometry(3.3, 3.1, 0.6, 8).translate(0, 0.3, 0), M(x, l0 + 5.4, z, Math.PI / 8));
+  k.add(X('copper'), lathe([[0, 0], [3.1, 0], [2.8, 0.7], [2.0, 1.6], [1.0, 2.6], [0.35, 3.1], [0, 3.2]], 8), M(x, l0 + 6.0, z, Math.PI / 8), false);
+  k.add(X('brass'), lathe([[0, 0], [0.24, 0], [0.34, 0.35], [0.14, 0.7], [0.24, 1.05], [0.06, TOWER.top - l0 - 9.2 - 0.1], [0, TOWER.top - l0 - 9.2]], 12), M(x, l0 + 9.2, z), false);
   return hands;
 }
 
