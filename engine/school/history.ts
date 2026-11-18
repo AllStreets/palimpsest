@@ -265,12 +265,16 @@ function changeOf(c: LogEntry, kind: VerifiedKind, ref: string, at: string): Ver
 /**
  * His verified past work on `repo` at `now` (ruling 23), oldest first. With
  * `check`, commits awaiting a test check are checked (at most
- * CHECKS_PER_CALL, each only while the heavy gate holds) and the results
+ * CHECKS_PER_CALL, each only while the heavy gate holds at the moment it
+ * would start, read on `o.clock`, by default `now` plus the time since the call began) and the results
  * cached by sha; a commit not yet checked is not verified. The list is
  * written to `verified` for `verifiedCounts()`. Throws when the mirror or
  * GitHub cannot be read, leaving the last list in place.
  */
-export async function verifiedChanges(repo: Repo, now: number, o: { check?: boolean; signal?: AbortSignal } = {}): Promise<VerifiedChange[]> {
+export async function verifiedChanges(repo: Repo, now: number, o: { check?: boolean; signal?: AbortSignal; clock?: () => number } = {}): Promise<VerifiedChange[]> {
+  // The gate is re-read before every check, on the clock of the moment: `now` is when the pass began, and a pass can outlast the window.
+  const began = Date.now();
+  const clock = o.clock ?? (() => now + (Date.now() - began));
   const fullName = repo.fullName;
   await syncMirror(fullName);
   const all = await readBranch(repo);
@@ -325,7 +329,7 @@ export async function verifiedChanges(repo: Repo, now: number, o: { check?: bool
       if (command) {
         let check = rows.get(c.sha)?.check ?? null;
         if (check && check.command !== command) check = null;
-        if (!check && o.check && checks < CHECKS_PER_CALL && !signal.aborted && (await gateNow('heavy', now)).ok) {
+        if (!check && o.check && checks < CHECKS_PER_CALL && !signal.aborted && (await gateNow('heavy', clock())).ok) {
           checks++;
           const got = await (testCheck ?? realTestCheck)(repo, c.sha, signal);
           if (got) {

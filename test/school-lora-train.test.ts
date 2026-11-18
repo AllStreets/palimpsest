@@ -558,7 +558,9 @@ test('the nightly tick trains a LoRA once the base is ready, and tries a refused
     assert.deepEqual(calls, [], 'no base, no try');
     baseReady();
     await s.tick(NIGHT + 600_000);
-    assert.deepEqual(calls, [NIGHT + 600_000]);
+    assert.equal(calls.length, 1);
+    // the tick hands the step its time plus what the pass has taken so far: within a second
+    assert.ok(calls[0] >= NIGHT + 600_000 && calls[0] < NIGHT + 601_000);
     await s.tick(NIGHT + 1_200_000);
     assert.equal(calls.length, 1, 'a refusal is not tried again tonight');
     await s.tick(NIGHT + 86_400_000);

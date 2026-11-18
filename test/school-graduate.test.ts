@@ -513,6 +513,9 @@ test('an evaluation never runs beside a heavy train: refused while one holds the
   assert.deepEqual(schoolDiffs(), []);
 });
 
+/** A tick hands its later steps the tick's time plus what the pass has taken so far: within a second of it. */
+const soon = (at: number) => (t: number): boolean => t >= at && t < at + 1000;
+
 test('the tick scores an adapter after the LoRA, once a night, and not while a train runs', async () => {
   const counts = Object.fromEntries(TRAIN_ORDER.map((n) => [n, 0])) as Record<NetName, number>;
   const tried: number[] = [];
@@ -537,15 +540,15 @@ test('the tick scores an adapter after the LoRA, once a night, and not while a t
   try {
     await school.tick(NOW);
     await school.tick(NOW + 60_000);
-    assert.deepEqual(tried, [NOW]);
+    assert.deepEqual(tried.map(soon(NOW)), [true]);
     assert.deepEqual(order.slice(0, 2), ['lora', 'graduate']);
     // a voyage holds a train: the next night's tick scores nothing while it runs
     const unhold = holdTrain({ id: 'train-voyage-x', kind: 'voyage', status: 'running', reason: null, startedAt: new Date(NOW).toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 }, () => {});
     await school.tick(NOW + 24 * HOUR);
     unhold();
-    assert.deepEqual(tried, [NOW]);
+    assert.deepEqual(tried.map(soon(NOW)), [true]);
     await school.tick(NOW + 24 * HOUR + 60_000);
-    assert.deepEqual(tried, [NOW, NOW + 24 * HOUR + 60_000]);
+    assert.deepEqual(tried.map((t, i) => soon(i === 0 ? NOW : NOW + 24 * HOUR + 60_000)(t)), [true, true]);
   } finally {
     school.stop();
   }

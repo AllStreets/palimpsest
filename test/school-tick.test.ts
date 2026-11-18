@@ -342,6 +342,30 @@ test('a stopped school ticks no more', async () => {
   assert.equal(children.length, 0);
 });
 
+test('the steps after a long net are handed the time it is, not the time the pass began', async () => {
+  const seen: Record<string, number> = {};
+  const school = startSchool({
+    train: async (net) => {
+      await new Promise((r) => setTimeout(r, 40));
+      return { net, status: 'trained', reason: null, version: null, promoted: false, train: null };
+    },
+    labels: () => ({ ...all(0), master: 50 }),
+    resume: async (now: number) => {
+      seen.resume = now;
+    },
+    sail: async (now: number) => {
+      seen.sail = now;
+    },
+  });
+  try {
+    await school.tick(NOW);
+    assert.ok(seen.resume >= NOW + 35, 'the arena resume reads the gate at the current time');
+    assert.ok(seen.sail >= NOW + 35, 'the voyage reads the gate at the current time');
+  } finally {
+    school.stop();
+  }
+});
+
 test('after the nets the tick sails a voyage, and not while a train runs or the gate is closed', async () => {
   const order: string[] = [];
   const school = startSchool({

@@ -246,6 +246,9 @@ export function startSchool(o: SchoolOptions = {}): School {
         return skip(g.reason ?? 'the gate closed', asked, acted);
       }
       const night = nightOf(now);
+      // The steps below each read the heavy gate when they begin, and the ones before them can run for hours: they get the time it is, not the time the pass began.
+      const began = Date.now();
+      const later = (): number => now + (Date.now() - began);
       for (const key of tried) if (!key.startsWith(`${night}\n`)) tried.delete(key);
       const counts = labels(now, deps);
       const due = TRAIN_ORDER.filter((net) => {
@@ -265,7 +268,7 @@ export function startSchool(o: SchoolOptions = {}): School {
       // A paused arena build (never a new one: only his click starts those) goes on with its untried candidates.
       if (!stopped && getSettings().school.enabled) {
         try {
-          await resume(now);
+          await resume(later());
         } catch (err) {
           console.error('palimpsest: the school could not resume an arena build:', err);
         }
@@ -274,7 +277,7 @@ export function startSchool(o: SchoolOptions = {}): School {
       // train while it sails, so later ticks find a train running and train no net meanwhile.
       if (!stopped && getSettings().school.enabled) {
         try {
-          await sail(now);
+          await sail(later());
         } catch (err) {
           console.error('palimpsest: the school could not sail a voyage:', err);
         }
@@ -284,7 +287,7 @@ export function startSchool(o: SchoolOptions = {}): School {
       const loraKey = `${night}\nlora`;
       if (!stopped && getSettings().school.enabled && getSettings().school.baseModelReady && liveTrains().length === 0 && !tried.has(loraKey)) {
         try {
-          const r = await lora(now);
+          const r = await lora(later());
           if (r.status !== 'waiting' && r.status !== 'paused') tried.add(loraKey);
         } catch (err) {
           tried.add(loraKey);
@@ -297,7 +300,7 @@ export function startSchool(o: SchoolOptions = {}): School {
       if (!stopped && getSettings().school.enabled && getSettings().school.baseModelReady && liveTrains().length === 0 && !tried.has(gradKey)) {
         tried.add(gradKey);
         try {
-          await graduate(now);
+          await graduate(later());
         } catch (err) {
           console.error('palimpsest: the school could not score its adapter:', err);
         }

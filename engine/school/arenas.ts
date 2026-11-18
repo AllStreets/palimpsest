@@ -1063,11 +1063,13 @@ export function pauseStrandedBuilds(now: number = Date.now()): ArenaInfo[] {
  */
 export async function resumeArenas(now: number): Promise<ArenaInfo[]> {
   const out: ArenaInfo[] = [];
+  const began = Date.now();
   for (const a of listArenas()) {
     if (a.status !== 'paused' || live) continue;
     const repo = getRepo(a.repo);
     if (!repo || refusal(repo)) continue;
-    const g = await readGate('heavy', now);
+    // each build can run for hours: the gate is read at the time the next one would start, not when the pass began
+    const g = await readGate('heavy', now + (Date.now() - began));
     if (!g.ok) break;
     out.push(await build(a.kind, repo, now, {}));
   }

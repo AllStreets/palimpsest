@@ -252,6 +252,18 @@ test('the test check runs only under the heavy gate, and an unchecked commit is 
   assert.deepEqual(byKind(without, 'pr'), [w.prMerge]);
 });
 
+test('a pass that starts inside the window stops starting checks once its clock crosses the window end', async () => {
+  const w = world();
+  const start = new Date(2026, 10, 12, 5, 30).getTime();
+  let calls = 0;
+  // the first check is gated at 05:50, inside the window; the next at 06:10, after it closed
+  const clock = () => start + 20 * 60 * 1000 * ++calls;
+  const list = await verifiedChanges(w.repo, start, { check: true, clock });
+  assert.equal(checked.length, 1, 'only the check begun inside the window ran');
+  assert.ok(calls >= 2, 'every check re-read the clock');
+  assert.ok(list.every((x) => x.sha !== w.failed || x.kind !== 'commit'), 'an unchecked commit is not verified');
+});
+
 test('with no test check declared, a surviving commit is verified without one', async () => {
   const w = world(null);
   const list = await verifiedChanges(w.repo, NOW, {});
