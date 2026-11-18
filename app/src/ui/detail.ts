@@ -553,9 +553,16 @@ function awardProse(chosen: Bid | null, bids: Bid[], names: Names, worth: number
   const stated = pct(chosen.calibrated) === pct(chosen.confidence) ? '(as it stated)' : `(it stated ${pct(chosen.confidence)}; its record trims that)`;
   const parts = [`${firm} won at ${money(chosen.price)} credits, an expected value of ${money(chosen.ev)}: the ${worth} credit job, times the ${pct(chosen.calibrated)} chance the city gives its work of passing ${stated}, less the ${money(chosen.price)} it asked.`];
   parts.push(`${names.agent(chosen.agentId)} ${current ? 'does' : 'did'} the work.`);
-  const next = bids.find((b) => b.id !== chosen.id);
-  if (!next) parts.push('It was the only bid.');
-  else if (next.price < chosen.price) parts.push(`${names.firm(next.firmId)} asked less, ${money(next.price)} credits, but at a ${pct(next.calibrated)} chance its expected value came to only ${money(next.ev)}, so it lost.`);
+  // The next best is another firm's best bid. A firm can bid more than once (one bid per agent),
+  // so the winner's own other bids are told apart by agent, never named as its rival.
+  const others = bids.filter((b) => b.id !== chosen.id);
+  const own = others.find((b) => b.firmId === chosen.firmId);
+  const next = others.find((b) => b.firmId !== chosen.firmId);
+  if (!others.length) parts.push('It was the only bid.');
+  else if (own) parts.push(`${firm} also bid through ${names.agent(own.agentId)}, at ${money(own.price)} credits.`);
+  if (!next) {
+    if (others.length) parts.push('No other firm bid.');
+  } else if (next.price < chosen.price) parts.push(`${names.firm(next.firmId)} asked less, ${money(next.price)} credits, but at a ${pct(next.calibrated)} chance its expected value came to only ${money(next.ev)}, so it lost.`);
   else parts.push(`Next best was ${names.firm(next.firmId)} at ${money(next.price)} credits, an expected value of ${money(next.ev)}.`);
   return parts.join(' ');
 }

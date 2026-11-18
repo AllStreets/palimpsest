@@ -258,6 +258,21 @@ test('the award reads as prose: who won, at what price, the calibrated chance ag
   assert.equal(none.prose, 'No firm bid in this round, so the job went back on the board.');
 });
 
+test('the next best is another firm: a winner that also bid through a second agent is not its own rival', () => {
+  // The real case: Quickset won at 12, and Quickset also bid 12 through another agent.
+  const won = bid('q1', 'quickset', 'priya-rao', 12, 0.7, 0.7, 2.7);
+  const twin = bid('q2', 'quickset', 'corin-hale', 12, 0.7, 0.7, 2.7);
+  const lode = bid('l1', 'lodestar', 'hal-meridian', 14, 0.7, 0.7, 0.7);
+  const award = (considered: Bid[]): LedgerRow[] => [{ id: 1, at: '2026-11-17T10:00:00Z', kind: 'job.awarded', data: { jobId: 'job-1', considered, chosen: won, satOut: [] } }];
+  const [alone] = awardRounds(award([won, twin]), names, 20);
+  assert.ok(!alone.prose.includes('Next best was Quickset'), alone.prose);
+  assert.ok(alone.prose.endsWith('Priya Rao does the work. Quickset also bid through Corin Hale, at 12 credits. No other firm bid.'), alone.prose);
+  const [rival] = awardRounds(award([won, twin, lode]), names, 20);
+  assert.ok(rival.prose.endsWith('Quickset also bid through Corin Hale, at 12 credits. Next best was Lodestar at 14 credits, an expected value of 0.70.'), rival.prose);
+  const [single] = awardRounds(award([won]), names, 20);
+  assert.ok(single.prose.endsWith('Priya Rao does the work. It was the only bid.'), single.prose);
+});
+
 test('the ledger trail is a dated list of plain sentences', () => {
   const rows: LedgerRow[] = [
     { id: 1, at: '2026-11-09T22:10:00', kind: 'job.posted', data: { job: { source: 'issue', issue: 214 } } },
