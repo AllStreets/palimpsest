@@ -4,8 +4,10 @@
  *
  * Both kinds need the school on, the stop file absent, AC power, a power mode
  * other than Low Power (unless `school.allowLowPower`), the local time inside
- * `school.window` (unless "Train now" is live), and no local work live or
- * awarded. `heavy` (LoRA, voyages, arena builds) adds 15 idle minutes (unless
+ * `school.window` (unless "Train now" is live), and no local work live. An
+ * awarded local job waiting for its slot closes the gate only outside the
+ * window: inside it the school takes the local slot first and the award
+ * waits its turn (tick.ts holds the claim; a run in flight is never killed). `heavy` (LoRA, voyages, arena builds) adds 15 idle minutes (unless
  * "Train now"), nominal thermals and 20 GB free. "Train now" never skips
  * power, power mode, thermals or disk. A probe that cannot be read fails.
  *
@@ -212,7 +214,9 @@ export async function gateNow(kind: GateKind, now: number): Promise<GateState> {
     () => (powerMode === null ? 'could not read the power mode' : powerMode === 1 && !s.allowLowPower ? 'in Low Power mode' : null),
     () => (windowNow || trainNowUntil ? null : 'outside the training window'),
     () => (liveWork('local') > 0 ? 'a local job is running' : null),
-    () => (localAwardWaiting() ? 'a local job is waiting' : null),
+    // Inside the window the school takes the local slot first (tick.ts claims it): a waiting award waits its turn.
+    // Outside it (Train now) the school still yields to one.
+    () => (!windowNow && localAwardWaiting() ? 'a local job is waiting' : null),
   ];
   if (kind === 'heavy') {
     reasons.push(

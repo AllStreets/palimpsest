@@ -8,6 +8,7 @@ import { paths } from '../engine/home.js';
 import {
   acquire,
   charge,
+  claimLocalForSchool,
   creditEntries,
   JUDGE_ESTIMATE,
   lastSseAt,
@@ -761,4 +762,31 @@ test('the plan as it stands now is the one figure Settings and the brief both sh
   assert.equal(now.fiveHour, windowNowPct(t.fiveHour));
   assert.equal(now.fiveHour, 45, 'not the reading alone');
   assert.equal(now.sevenDay, windowNowPct(t.sevenDay));
+});
+
+test('while the school claims the local slot a market local run waits, a run in flight is never aborted, and Claude runs and school leases go on', async () => {
+  reading({ five: 10 });
+  const inFlight = await lease('ollama:qwen3:30b', 'work');
+  const release = claimLocalForSchool();
+  assert.equal(inFlight.signal.aborted, false, 'the claim never kills a run in flight');
+  inFlight.release();
+
+  const busy = await acquire('ollama:qwen3:30b', 'work', 10, { now: NOW });
+  assert.equal(busy.ok, false);
+  assert.ok(!busy.ok && /school/.test(busy.reason.detail), !busy.ok ? busy.reason.detail : '');
+  // A Claude run's local reviewer waits too; its Claude slot does not.
+  const run = await lease('claude:opus', 'work');
+  const localReview = run.sub('review', 'ollama:qwen3:30b', REVIEW_ESTIMATE);
+  assert.ok('ok' in localReview && localReview.ok === false);
+  run.release();
+  // The school's own local leases are granted under its claim.
+  const school = await acquire('ollama:qwen3:30b', 'school', 0, { now: NOW });
+  assert.ok(school.ok);
+  school.lease.release();
+  assert.equal(liveWork('local'), 0);
+
+  release();
+  const after = await acquire('ollama:qwen3:30b', 'work', 10, { now: NOW });
+  assert.ok(after.ok, "the slot is the market's again once the school lets go");
+  after.lease.release();
 });

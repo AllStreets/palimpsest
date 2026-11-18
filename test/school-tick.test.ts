@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { realSpawner, setSpawner, type SpawnLine, type Spawned, type Spawner } from '../engine/exec.js';
+import { acquire } from '../engine/market/budget.js';
 import { query, record } from '../engine/ledger.js';
 import type { TrainNetResult } from '../engine/school/nets.js';
 import { registerAbort, schoolOff, startSchool, TRAIN_ORDER, TURNED_OFF_REASON } from '../engine/school/tick.js';
@@ -374,5 +375,57 @@ test('after the nets the tick sails a voyage, and not while a train runs or the 
     assert.equal(query({ kind: 'voyage.started' }).length, 0);
   } finally {
     real.stop();
+  }
+});
+
+test('inside the window the school holds the local slot for its pass: a market local run waits its turn and gets the slot after', async () => {
+  const marketTries: boolean[] = [];
+  const tryMarket = async (): Promise<boolean> => {
+    const got = await acquire('ollama:qwen2.5-coder:7b', 'work', 1, { now: NOW });
+    if (got.ok) got.lease.release();
+    return got.ok;
+  };
+  const train = async (net: NetName): Promise<TrainNetResult> => {
+    marketTries.push(await tryMarket());
+    return { net, status: 'trained', reason: null, version: null, promoted: false, train: null };
+  };
+  const school = startSchool({ train, labels: () => ({ ...all(0), master: 50 }), sail: async () => marketTries.push(await tryMarket()) });
+  try {
+    const r = await school.tick(NOW);
+    assert.equal(r.reason, null);
+    assert.deepEqual(marketTries, [false, false], 'no market local run starts while the school trains or sails in its window');
+    assert.equal(await tryMarket(), true, 'the slot is handed back between passes');
+
+    // Outside the window (Train now) the school claims nothing and yields as before.
+    marketTries.length = 0;
+    const DAYTIME = NOW + 11 * 60 * MIN;
+    gate = { ...ok(), inWindow: false, trainNowUntil: new Date(DAYTIME + 60 * MIN).toISOString() };
+    await school.tick(DAYTIME + 2 * DAY);
+    assert.deepEqual(marketTries, [true, true]);
+  } finally {
+    school.stop();
+  }
+});
+
+test('inside the window a market run in flight is waited for, never killed, and no new one starts before the next tick', async () => {
+  const running = await acquire('ollama:qwen2.5-coder:7b', 'work', 1, { now: NOW });
+  assert.ok(running.ok);
+  gate = { ...ok(), ok: false, reason: 'a local job is running' };
+  const school = startSchool({ train: fakeTrain([]), labels: () => ({ ...all(0), master: 50 }) });
+  try {
+    const r = await school.tick(NOW);
+    assert.equal(r.reason, 'a local job is running');
+    assert.equal(running.lease.signal.aborted, false);
+    running.lease.release();
+    const next = await acquire('ollama:qwen2.5-coder:7b', 'work', 1, { now: NOW });
+    assert.equal(next.ok, false, 'the slot waits for the school until its next tick');
+    gate = ok();
+    const r2 = await school.tick(NOW + 10 * MIN);
+    assert.equal(r2.reason, null);
+    const after = await acquire('ollama:qwen2.5-coder:7b', 'work', 1, { now: NOW });
+    assert.equal(after.ok, true);
+    after.lease.release();
+  } finally {
+    school.stop();
   }
 });

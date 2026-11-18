@@ -8,7 +8,11 @@
  *   where he granted it (`act`, ruling 18: every act behind `mayAct`, the
  *   switch and the stop file read again between acts). Then it
  *   does nothing more unless no train is live and the light gate holds (AC
- *   power, the window, the stop file; gate.ts). Then it trains, one at a time and in
+ *   power, the window, the stop file; gate.ts). Inside the window the tick
+ *   first claims the local slot (`claimLocalForSchool`): no new market local
+ *   run starts until the pass ends, a run in flight is waited for and never
+ *   killed, and a waiting local award no longer closes the gate, so a market
+ *   backlog cannot starve the school. Then it trains, one at a time and in
  *   `TRAIN_ORDER` (appraiser, router, durability, triage, taste, master
  *   last, so the master is trained on the other nets as they stand), every
  *   net that has at least `NEEDS` labels and more of them than its last
@@ -38,8 +42,10 @@
  *   `school.enabled` on every call, so nothing else needs telling.
  */
 import { localDay } from '../../shared/day.js';
+import { inWindow } from '../../shared/school-rules.js';
 import type { GateState, Grant, NetName } from '../../shared/types.js';
 import { record } from '../ledger.js';
+import { claimLocalForSchool } from '../market/budget.js';
 import { getSettings, setSchoolOffHook } from '../settings.js';
 // the asks (ruling 17) and the acts (ruling 18); loading it installs the suspend and revert hooks into decisions.ts
 import { act as actDue, askDue } from './autonomy.js';
@@ -195,13 +201,22 @@ export function startSchool(o: SchoolOptions = {}): School {
   const tried = new Set<string>();
   let busy = false;
   let stopped = false;
+  /** The school's claim on the local slot (inside the window), held across a pass, or to the next tick while a market run ends. */
+  let claim: (() => void) | null = null;
+  const letGo = (): void => {
+    claim?.();
+    claim = null;
+  };
 
   const skip = (reason: string, asked: Grant[] = [], acted = 0, night: string | null = null): TickResult => ({ reason, night, asked, acted, trained: [], results: [] });
 
   async function tick(nowIn?: number): Promise<TickResult> {
     const now = nowIn ?? Date.now();
     if (stopped) return skip('the school tick is stopped');
-    if (!getSettings().school.enabled) return skip('the school is off');
+    if (!getSettings().school.enabled) {
+      if (!busy) letGo();
+      return skip('the school is off');
+    }
     // The asks come first: they wait on no train and no gate, and an ask that fails never stops the retrain.
     let asked: Grant[] = [];
     try {
@@ -219,9 +234,18 @@ export function startSchool(o: SchoolOptions = {}): School {
     }
     if (busy || liveTrains().length > 0) return skip('a train is already running', asked, acted);
     busy = true;
+    // Inside the window the school takes the local slot first: from here no new market local run starts
+    // (a run in flight is waited for, never killed) until the pass ends. Outside it the school yields as before.
+    letGo();
+    if (inWindow(getSettings().school.window, now)) claim = claimLocalForSchool();
+    let holdClaim = false;
     try {
       const g = await gate('light', now);
-      if (!g.ok) return skip(g.reason ?? 'the gate closed', asked, acted);
+      if (!g.ok) {
+        // a market run in flight ends on its own; the slot then waits for the school's next tick
+        holdClaim = g.reason === 'a local job is running';
+        return skip(g.reason ?? 'the gate closed', asked, acted);
+      }
       const night = nightOf(now);
       for (const key of tried) if (!key.startsWith(`${night}\n`)) tried.delete(key);
       const counts = labels(now, deps);
@@ -281,6 +305,7 @@ export function startSchool(o: SchoolOptions = {}): School {
       }
       return out;
     } finally {
+      if (!holdClaim || stopped) letGo();
       busy = false;
     }
   }
@@ -294,6 +319,7 @@ export function startSchool(o: SchoolOptions = {}): School {
     tick,
     stop() {
       stopped = true;
+      if (!busy) letGo();
       clearInterval(timer);
     },
   };

@@ -435,6 +435,36 @@ function rootOf(rec: LeaseRec): LeaseRec {
   return r;
 }
 
+// ---------------------------------------------------------------- the school's claim on the local slot
+
+/** Live claims by the school on the local slot (its training window; see tick.ts). */
+const schoolClaims = new Set<symbol>();
+
+const CLAIMED: Refusal = {
+  ok: false,
+  reason: { reason: 'busy', detail: 'The school holds the local slot in its training window, so this local run waits its turn.' },
+};
+
+/**
+ * The school takes the local slot first inside its training window: while
+ * any claim is held, no new market work (a run, an audit, or a reviewer or
+ * judge in the local pool) is granted a local slot. A run already in flight
+ * is never aborted, and the school's own leases are granted as before.
+ * Returns the function that lets the slot go; calling it twice is harmless.
+ */
+export function claimLocalForSchool(): () => void {
+  const key = Symbol('school claim');
+  schoolClaims.add(key);
+  return () => {
+    schoolClaims.delete(key);
+  };
+}
+
+/** Whether the school holds a claim on the local slot now. */
+export function localClaimedBySchool(): boolean {
+  return schoolClaims.size > 0;
+}
+
 /**
  * Work slots on `pool` held now by the market's own runs (and their reviews
  * and design checks), never by the school's leases: the real work the
@@ -523,6 +553,7 @@ function sub(parent: LeaseRec, kind: 'review' | 'judge', model: ModelRef, estima
   const paused = gate(pool, estimate, c);
   if (paused) return { ok: false, reason: paused };
   const otherPool = pool !== rootPool(parent);
+  if (otherPool && pool === 'local' && localClaimedBySchool()) return CLAIMED;
   if (otherPool && workCount(pool) >= workMax(pool, c, now)) {
     return { ok: false, reason: { reason: 'busy', detail: `Every ${pool} slot is taken.` } };
   }
@@ -605,6 +636,7 @@ export function acquire(
   if (kind === 'school') return acquireSchool(pool, estimate, now, c, opts.waitUntil);
 
   if (kind === 'work') {
+    if (pool === 'local' && localClaimedBySchool()) return Promise.resolve(CLAIMED);
     if (workCount(pool) >= workMax(pool, c, now)) {
       return Promise.resolve({ ok: false, reason: { reason: 'busy', detail: `Every ${pool} run slot is taken.` } });
     }
@@ -849,6 +881,7 @@ export function resetBudget(): void {
     for (const w of [...queues[pool].splice(0), ...schoolQueues[pool].splice(0)]) clearTimeout(w.timer);
   }
   live.clear();
+  schoolClaims.clear();
   hardStopListeners.length = 0;
   lastHard = null;
   keepAwakeFn = null;
