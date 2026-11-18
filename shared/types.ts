@@ -366,7 +366,10 @@ export interface Inspection {
   at: string;
   /**
    * Why the inspection could not reach a verdict on the agent's work (the
-   * diff is too large for any reviewer, or no reviewer could take it).
+   * diff is too large for any reviewer, or no reviewer could take it, or a
+   * check never answered: it ran out of its time cap or was refused). A
+   * check that never answered is the engine's own failure: it counts on the
+   * job's engineFailures, which hold the job at the third in a row.
    * An inconclusive inspection is never a strike and never counts against
    * the firm; the job returns to the board without spending an attempt.
    */

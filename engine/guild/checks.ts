@@ -11,6 +11,7 @@
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { unanswered } from '../../shared/market-rules.js';
 import type { CheckName, CheckResult, RepoChecks } from '../../shared/types.js';
 import { getRunner } from '../exec.js';
 import { mirrorReadEnv } from '../mirror.js';
@@ -308,6 +309,13 @@ export async function runCheck(
     return { name, status: 'fail', detail: `${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000), durationMs, logPath, testsRun, ...(r.timedOut ? { inconclusive: 'timed out' as const } : {}) };
   }
   return { name, status: 'pass', detail: command, durationMs, logPath, testsRun };
+}
+
+export { unanswered };
+
+/** Why an unanswered check gave no answer, in words for the verdict and the hold note. */
+export function unansweredWhy(c: CheckResult): string {
+  return c.inconclusive === 'timed out' ? `The ${c.name} check ran out of its ${CHECK_MS / 60_000} minute limit` : `The ${c.name} check was refused`;
 }
 
 /** The configured checks of a repo, in the order they run. */

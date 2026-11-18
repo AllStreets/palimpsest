@@ -459,6 +459,51 @@ test('no reviewer available is inconclusive: no strike, nothing against the firm
   }
 });
 
+/** Cuts the time cap of the check `command` to `ms`, so the check runs out of time as a slow suite would at CHECK_MS. */
+function capCheck(command: string, ms: number): void {
+  setSpawner((cmd, args, opts) => realSpawner(cmd, args, args.at(-1) === command ? { ...opts, maxMs: ms } : opts));
+}
+
+test("a test check that runs out of time is inconclusive, the engine's limit: no strike, nothing against the firm", { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks({ test: 'sleep 30', build: 'node -e 0' }), { 'src/a.ts': 'export const a = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  record('job.awarded', { jobId: job.id, tier: job.tier, considered: [], satOut: [], chosen: { id: 'b1', jobId: job.id, firmId: 'alpha', agentId: 'wanda', confidence: 0.8 }, why: 'test', at: new Date().toISOString(), coolOffUntil: null });
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'src/a.ts', 'export const a = 2;\n'));
+  capCheck('sleep 30', 300);
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    const t = insp.checks.find((c) => c.name === 'test');
+    assert.equal(t?.inconclusive, 'timed out');
+    assert.equal(insp.passed, false, 'an unanswered check is never a pass');
+    assert.match(insp.inconclusive ?? '', /timed out/);
+    assert.equal(getRepo(FULL)!.strikes, 0, 'no strike against the repo');
+    assert.equal(resolvedBids().length, 0, 'the inconclusive verdict is no outcome for the firm');
+    const v = entries().find((e) => e.kind === 'inspection.done')?.data as { inconclusive: string | null };
+    assert.match(v.inconclusive ?? '', /timed out/, 'the ledger records the verdict as inconclusive');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a timed-out test check beside a check that really failed is a failed inspection', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks({ test: 'sleep 30', build: 'node -e "process.exit(1)"' }), { 'src/a.ts': 'export const a = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'src/a.ts', 'export const a = 2;\n'));
+  capCheck('sleep 30', 300);
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(insp.passed, false);
+    assert.equal(insp.inconclusive, null, 'the build failed on its own: a verdict was reached');
+    assert.equal(getRepo(FULL)!.strikes, 1);
+  } finally {
+    lease.release();
+  }
+});
+
 test('an Ollama reviewer whose prompt overflowed its context is inconclusive, never a pass', { timeout: 60_000 }, async () => {
   const { TooLargeError } = await import('../engine/market/ollama.js');
   const local = fakeProvider({

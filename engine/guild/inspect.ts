@@ -56,7 +56,7 @@ import { haltRepo, type RunDiff } from '../market/runs.js';
 import { reapRun } from '../market/reaper.js';
 import { createShipDir, engineGit } from '../market/worktree.js';
 import { cachedBaseline } from './baseline.js';
-import { CHECK_ORDER, runCheck } from './checks.js';
+import { CHECK_ORDER, runCheck, unanswered, unansweredWhy } from './checks.js';
 import { designPasses, judgeDesign, prepareBase, shoot, UI_FILES, type Screenshotter, type Shot } from './design.js';
 import { isTooLarge, review } from './review.js';
 
@@ -158,7 +158,9 @@ export function inspectionSummary(i: Inspection): string {
   const by = (s: CheckResult['status']) => i.checks.filter((c) => c.status === s).map((c) => c.name);
   const failed = by('fail');
   const pre = by('preexisting');
-  const parts = [i.passed ? 'Passed.' : i.inconclusive ? 'Inconclusive: no reviewer could read the change.' : failed.length ? `Failed: ${failed.join(', ')}.` : 'Failed.'];
+  const silent = i.checks.filter(unanswered);
+  const why = silent.length ? `Inconclusive: ${silent.map(unansweredWhy).join('; ')}.` : 'Inconclusive: no reviewer could read the change.';
+  const parts = [i.passed ? 'Passed.' : i.inconclusive ? why : failed.length ? `Failed: ${failed.join(', ')}.` : 'Failed.'];
   if (pre.length) parts.push(`Failing before the change too: ${pre.join(', ')}.`);
   if (i.design) parts.push(i.design.diffOnly ? `Design ${i.design.after} of 10 from the diff alone.` : `Design ${i.design.before ?? 'none'} before, ${i.design.after} after.`);
   return parts.join(' ');
@@ -396,10 +398,15 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
 
   const passed = canOpenPR(checks);
   // Only the review failed, and no reviewer read the change: the city's limit, not the agent's failure.
-  // So is a design judge that may not have read the change (its prompt filled the context).
+  // So is a design judge that may not have read the change (its prompt filled the context), and so is a
+  // check that never answered (out of its time cap, or refused): a verdict needs a check that really failed.
   const failing = checks.filter((c) => c.status === 'fail');
   const unread = (c: CheckResult) => (c.name === 'review' && reviewer.agentId === null) || (c.name === 'design' && designTooLarge);
-  const inconclusive = !passed && failing.length > 0 && failing.every(unread) ? failing.map((c) => c.detail).join(' ').slice(0, 600) : null;
+  const silent = (c: CheckResult) => unread(c) || unanswered(c);
+  const inconclusive =
+    !passed && failing.length > 0 && failing.every(silent)
+      ? failing.map((c) => (unanswered(c) ? `${unansweredWhy(c)}: ${c.detail}` : c.detail)).join(' ').slice(0, 600)
+      : null;
   const inspection: Inspection = {
     id: `insp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
     runId: run.id,

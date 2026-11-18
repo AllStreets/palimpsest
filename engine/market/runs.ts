@@ -66,7 +66,7 @@ import { emit } from '../events.js';
 import { getSpawner, type Spawned } from '../exec.js';
 import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
-import { detectChecks } from '../guild/checks.js';
+import { detectChecks, unanswered } from '../guild/checks.js';
 import { SYNC_FAILED, syncMirror } from '../mirror.js';
 import { CHECKS_UNKNOWN, checksKnown, getRepo, learnChecks, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
@@ -847,6 +847,14 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     st.toolStage = 'checks';
     st.egress.setStage('checks', hostsFor('checks', ecosystems, null));
     const inspection = await guarded(st, config.inspect(st.run, st.job, st.repo, diff, st.lease, { log, egress: st.egress }));
+    // A check that never answered (out of its time cap, or refused) is the engine's own failure, like a failed
+    // install: no scar, no attempt, the firm not excluded, and the job held once the engine has failed it
+    // MAX_ENGINE_FAILURES times in a row.
+    if (!inspection.passed && inspection.inconclusive && inspection.checks.some(unanswered) && !st.lease.signal.aborted) {
+      st.run = { ...st.run, inspectionId: inspection.id };
+      saveRun(st.run);
+      return end(st, 'crashed', `The inspection could not reach a verdict: ${inspection.inconclusive}`, { job: 'engine' });
+    }
     // No reviewer could read the change: not the agent's failure. No scar, no attempt, the firm not excluded.
     // The third time in a row the job leaves the board, halted with a note for his daily brief.
     if (!inspection.passed && inspection.inconclusive && !st.lease.signal.aborted) {

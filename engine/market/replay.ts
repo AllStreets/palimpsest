@@ -75,7 +75,7 @@ import type {
   VoyageView,
 } from '../../shared/types.js';
 import { isLedgerKind, type LedgerKind } from '../../shared/ledger-kinds.js';
-import { START_BALANCE } from '../../shared/market-rules.js';
+import { START_BALANCE, unanswered } from '../../shared/market-rules.js';
 import { openDb } from '../db.js';
 import { entries, type LedgerEntry } from '../ledger.js';
 
@@ -425,8 +425,9 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
       if (r && r.outcome === null) r.inspectionId = i.id;
       const inconclusive = !i.passed && !!i.inconclusive;
       if (inconclusive) {
+        // A check that never answered is the engine's failure, counted by the job's engineFailures (job.changed), not here.
         const j = s.jobs[i.jobId];
-        if (j) j.inconclusive = (j.inconclusive ?? 0) + 1;
+        if (j && !(i.checks ?? []).some(unanswered)) j.inconclusive = (j.inconclusive ?? 0) + 1;
       } else if (i.repo) {
         s.strikes[i.repo] = i.passed ? 0 : (s.strikes[i.repo] ?? 0) + 1;
       }

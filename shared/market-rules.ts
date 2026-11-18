@@ -3,7 +3,7 @@
  * reputation score and era, firm money and the job transition table. Shared
  * by the engine and the UI; imports nothing from engine/.
  */
-import type { BudgetWindow, Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
+import type { BudgetWindow, CheckResult, Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
 
 /**
  * Credits as every screen and sentence sets them (Phase 5 audit): a
@@ -437,3 +437,12 @@ export function runsHoldingSlots(u: RunsUnderWay, held: { claude: number; local:
 export const AUDIT_MODEL_SHAPE = /^(?:claude|ollama|anthropic|mlx):(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
 /** The range the audit's credit cap may take. */
 export const AUDIT_CREDITS_RANGE = { lo: 10, hi: 200 } as const;
+
+/**
+ * A failed check that never answered: the guard refused it, or it ran out of
+ * its time cap. It says nothing about the change, so it is the engine's
+ * limit, never the firm's failure (no scar, no attempt, no exclusion).
+ */
+export function unanswered(c: Pick<CheckResult, 'status' | 'inconclusive'>): boolean {
+  return c.status === 'fail' && !!c.inconclusive;
+}

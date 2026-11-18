@@ -718,6 +718,60 @@ test('a firm failure between the engine\'s own failures starts the count again',
   assert.equal(job(j.id)?.status, 'open');
 });
 
+/** An inspection whose test check ran out of its time cap, as the guild records it: inconclusive, the engine's limit. */
+function timedOutInspection(r: Run): Inspection {
+  const test: CheckResult = { name: 'test', status: 'fail', detail: 'npm test exited without a code: ok 47 - the credit cap', durationMs: 900_954, logPath: null, testsRun: null, inconclusive: 'timed out' };
+  const build: CheckResult = { name: 'build', status: 'pass', detail: 'npm run build', durationMs: 1_622, logPath: null, testsRun: null };
+  return { ...inspection(r, false), checks: [test, build], inconclusive: 'The test check timed out: npm test exited without a code' };
+}
+
+test("a test check that ran out of the inspection's time is the engine's failure: no scar, no attempt, the firm not excluded, held after three", async () => {
+  useScript({});
+  makeRepo();
+  const a = addAgent('c1', 'alpha', 'claude:sonnet');
+  const { job: j } = awarded(FULL, a);
+  const s = createScheduler(deps({ inspect: async (r) => timedOutInspection(r) }).deps);
+  for (let round = 1; round <= MAX_ENGINE_FAILURES; round++) {
+    if (round > 1) reaward(j, a);
+    await s.tick();
+    await s.idle();
+    const r = runsOf(j.id).at(-1) as Run;
+    assert.notEqual(r.outcome, 'failed', 'the firm did not fail: the check never answered');
+    assert.equal(r.scar, false, 'no scar floor for the engine\'s limit');
+    assert.match(r.endedReason ?? '', /timed out/);
+    const after = job(j.id) as Job;
+    assert.equal(after.attempts, 0, 'no attempt spent');
+    assert.deepEqual(after.excludedFirms, [], 'the firm is not excluded');
+    assert.equal(after.engineFailures, round, 'counted as the engine\'s own failure');
+    assert.equal(after.inconclusive ?? 0, 0, 'not a reviewer that could not read the change');
+    if (round < MAX_ENGINE_FAILURES) assert.equal(after.status, 'open', `round ${round} reposts the job`);
+  }
+  const held = job(j.id) as Job;
+  assert.equal(held.status, 'halted', 'the engine kept failing the job, so it is held');
+  assert.match(held.haltNote ?? '', /timed out/);
+  assert.doesNotMatch(held.haltNote ?? '', /needs a reviewer/);
+  assert.equal(getRepo(FULL)!.strikes, 0, 'no strike against the repo');
+  // Nothing on the ledger counts against the firm, and the school learns no label from these runs.
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0);
+  const ended = entries().filter((e) => e.kind === 'run.ended' && (e.data as { jobId?: string }).jobId === j.id);
+  assert.equal(ended.length, MAX_ENGINE_FAILURES);
+  assert.ok(ended.every((e) => (e.data as { outcome: string }).outcome === 'crashed'));
+  assert.ok(!entries().some((e) => e.kind === 'floor.scarred' && (e.data as { jobId?: string }).jobId === j.id));
+});
+
+test('a timed-out test check beside a real failure is still the firm\'s failure', async () => {
+  useScript({});
+  const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const typecheck: CheckResult = { name: 'typecheck', status: 'fail', detail: 'tsc found 2 errors', durationMs: 900, logPath: null, testsRun: null };
+  const s = createScheduler(deps({ inspect: async (r) => ({ ...timedOutInspection(r), inconclusive: null, checks: [...timedOutInspection(r).checks, typecheck] }) }).deps);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'failed');
+  assert.equal(job(j.id)?.attempts, 1);
+  assert.deepEqual(job(j.id)?.excludedFirms, ['alpha']);
+});
+
 test('a failed inspection still spends one attempt and excludes the firm', async () => {
   useScript({});
   const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
