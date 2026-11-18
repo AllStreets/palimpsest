@@ -16,6 +16,8 @@ import { execTool } from './broker.js';
 import { hostsFor, type Egress } from './egress.js';
 import { lockSources, refusalText } from './lock-sources.js';
 import type { RunLogLine } from './provider.js';
+import { childEnv } from './sandbox.js';
+import { seedTarballs } from './tarballs.js';
 
 /** Wall time the install stage may take. */
 export const INSTALL_MS = 10 * 60_000;
@@ -59,6 +61,15 @@ export const installDeps: InstallDeps = async (ctx, repo) => {
   const sources = lockSources(ctx.dir);
   if (sources.refused.length) {
     const detail = `Cannot install: ${refusalText(sources.refused)}.`.slice(0, 4000);
+    ctx.log({ at: new Date().toISOString(), kind: 'engine', text: `[palimpsest] ${detail}` });
+    return { name: 'install', status: 'fail', detail, durationMs: Date.now() - started, logPath: null, testsRun: null };
+  }
+  // A GitHub tarball the lockfile pins comes from the engine, checked against its integrity, into the run's own npm
+  // cache: npm streams a tarball with no time limit of its own, so a trickling 284 MB download held the install to its limit.
+  const cacheDir = childEnv(ctx.runRoot, { side: ctx.side ?? 'head', toolchains: [] }).npm_config_cache;
+  const pinned = await seedTarballs({ dir: ctx.dir, cacheDir, signal: ctx.signal, log: ctx.log });
+  if (pinned.failed) {
+    const detail = `Cannot install: ${pinned.failed}.`.slice(0, 4000);
     ctx.log({ at: new Date().toISOString(), kind: 'engine', text: `[palimpsest] ${detail}` });
     return { name: 'install', status: 'fail', detail, durationMs: Date.now() - started, logPath: null, testsRun: null };
   }

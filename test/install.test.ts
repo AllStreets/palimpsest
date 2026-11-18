@@ -4,7 +4,8 @@
  * registry is reached.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -12,6 +13,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { realSpawner, setSpawner, type Spawned, type SpawnOpts } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { installDeps, needsReinstall, type RunContext } from '../engine/market/install.js';
+import { cachePathOf, setTarballFetch } from '../engine/market/tarballs.js';
 import type { RunLogLine } from '../engine/market/provider.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Repo, RepoChecks } from '../shared/types.js';
@@ -42,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setSpawner(realSpawner);
+  setTarballFetch(null);
   for (const k of ENV) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -217,4 +220,45 @@ test('a host the proxy refuses stops the install at once, naming the host, inste
   assert.ok(killed.includes('SIGKILL'), 'the command was stopped');
   assert.equal(listeners.length, 0, 'it stops listening once the install is over');
   assert.ok(lines.some((l) => /objects\.example\.net/.test(l.text) && l.kind === 'engine'), 'the run log says why');
+});
+
+test('a GitHub tarball the lockfile pins is in the run\'s npm cache before npm runs, so the install never streams it', async () => {
+  const bytes = Buffer.from('beagle at its pin');
+  const hex = createHash('sha512').update(bytes).digest('hex');
+  const fetched: string[] = [];
+  setTarballFetch(async (url) => {
+    fetched.push(url);
+    return new Response(bytes);
+  });
+  const ctx = context([], []);
+  writeFileSync(
+    join(ctx.dir, 'package-lock.json'),
+    JSON.stringify({ name: 'x', lockfileVersion: 3, packages: { '': { name: 'x' }, 'node_modules/beagle': { version: '0.1.0', resolved: `https://codeload.github.com/AllStreets/beagle/tar.gz/${SHA}`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } } }),
+  );
+  let seenAtSpawn = false;
+  setSpawner((cmd, args, opts): Spawned => {
+    spawned.push({ cmd, args, opts });
+    seenAtSpawn = existsSync(cachePathOf(opts.env?.npm_config_cache ?? '', hex));
+    return { pid: null as unknown as number, lines: (async function* () {})(), kill() {}, done: Promise.resolve({ code: 0, signal: null }) };
+  });
+  const r = await installDeps(ctx, repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  assert.equal(r.status, 'pass');
+  assert.deepEqual(fetched, [`https://codeload.github.com/AllStreets/beagle/tar.gz/${SHA}`]);
+  assert.ok(seenAtSpawn, 'npm finds the tarball by its integrity in its own cache');
+});
+
+test('a pinned tarball the engine cannot fetch fails the install with its name, before npm runs', async () => {
+  setTarballFetch(async () => new Response('gone', { status: 404 }));
+  const lines: RunLogLine[] = [];
+  const ctx = context([], lines);
+  writeFileSync(
+    join(ctx.dir, 'package-lock.json'),
+    JSON.stringify({ name: 'x', lockfileVersion: 3, packages: { '': { name: 'x' }, 'node_modules/beagle': { version: '0.1.0', resolved: `https://codeload.github.com/AllStreets/beagle/tar.gz/${SHA}`, integrity: `sha512-${'A'.repeat(86)}==` } } }),
+  );
+  const r = await installDeps(ctx, repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  assert.equal(r.status, 'fail');
+  assert.match(r.detail, /beagle/);
+  assert.match(r.detail, /404/);
+  assert.equal(spawned.length, 0, 'npm never runs');
+  assert.ok(lines.some((l) => /beagle/.test(l.text) && l.kind === 'engine'));
 });
