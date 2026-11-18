@@ -5028,6 +5028,24 @@ a.brief-act {
   line-height: 1.45;
   color: var(--ink-2);
 }
+.brief-why-summary > * + * {
+  margin-top: 6px;
+}
+.brief-why-summary strong {
+  font-weight: 400;
+  font-style: normal;
+  color: var(--ink);
+}
+.brief-why-summary em {
+  color: var(--ink);
+}
+.brief-why-summary .md-code {
+  font-style: normal;
+  font-size: 12px;
+}
+.brief-why-summary .md-list li::marker {
+  font-style: normal;
+}
 .brief-why-more {
   margin-top: 8px;
   font-size: 12.5px;

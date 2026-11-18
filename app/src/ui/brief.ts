@@ -29,6 +29,7 @@ import { handoffs } from './handoffs';
 import { coalesce, namesOf, refusal, secHead } from './pages';
 import './market.css';
 import { externalLink } from './external';
+import { summaryBlocks, summaryNodes } from './summary-md';
 
 export interface BriefScreen {
   show(): void;
@@ -297,9 +298,13 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       const round = awardRounds(d.ledger, names, d.job.value, false).at(-1);
       if (round) box.append(el('p', 'brief-why-text award', round.prose));
       if ((item.kind === 'pr' || item.kind === 'merged') && run?.summary) {
-        const q = el('blockquote', 'brief-why-summary');
-        q.append(el('p', '', cleanText(run.summary, 400)));
-        box.append(q);
+        // The agent's summary is markdown: set as paragraphs and lists, every piece as text (summary-md.ts).
+        const nodes = summaryNodes(summaryBlocks(run.summary, 400));
+        if (nodes.length) {
+          const q = el('blockquote', 'brief-why-summary');
+          q.append(...nodes);
+          box.append(q);
+        }
       }
       if (!box.childElementCount) box.append(el('p', 'brief-why-text', 'The job has no award on record.'));
       box.append(link("The job's page", placeHref('job', jobId)));
