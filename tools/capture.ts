@@ -88,6 +88,7 @@ import { PROFILE, capturePort, profileLoopArc } from './film.js';
 import { seededWeek } from './seeded-week.js';
 import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
+import { MAX_RETRIES, TRAM_WALKERS, boardedTram } from './commute-check.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
 import { paneFraming } from './pane-framing.js';
 import { decodePng, labOf } from './png.js';
@@ -2074,29 +2075,45 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await chrome(page, false);
         await callDebug(page, 'd.peopleLantern(true)');
         const [tFrom, tTo] = (process.env.COMMUTE_TRAM ? JSON.parse(process.env.COMMUTE_TRAM) : [[560, -300], [600, 200]]) as [[number, number], [number, number]];
-        await sendPerson(page, 'dagny-hollis', tFrom, tTo);
-        const legs = ((await person(page, 'dagny-hollis')) ? await callDebug<Array<{ mode: string }>>(page, `d.vehicleTrip(${JSON.stringify(tFrom)}, ${JSON.stringify(tTo)})`) : []).map((l) => l.mode);
+        const legs = (await callDebug<Array<{ mode: string }>>(page, `d.vehicleTrip(${JSON.stringify(tFrom)}, ${JSON.stringify(tTo)})`).catch(() => [])).map((l) => l.mode);
         console.log(`  tram trip legs: ${legs.join(' > ')}`);
-        await callDebug(page, 'd.peopleSkip(8)');
-        await follow('dagny-hollis', 4);
-        // On the platform, as the tram comes in: from up the platform, looking back at her. The eye stands 11 m up the
-        // platform and 0.6 m to her right (final review I3: 1.8 m further out from the shelter than it was, along the same
-        // line), so the blank wall behind the shelter leaves the frame and the street and the far platform come in. Two
-        // metres further back stood the eye behind the platform's tree (Task 32's probe).
-        const w = await until('dagny-hollis', (x) => x.mode === 'tram' && x.stage === 'wait');
-        if (w) {
-          const f0 = await until('dagny-hollis', (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 90 && v.speed > 0.5), 1200);
-          const at = f0 ?? w;
-          const eye = aroundPerson(at.position, at.heading, COMMUTE_EYE.along, COMMUTE_EYE.out, at.position[1] + 2.4);
-          const target = aroundPerson(at.position, at.heading, -1.5, COMMUTE_EYE.out - 2.1, at.position[1] + 1.2);
-          for (let i = 0; i < Math.round(6 * FPS); i++) await shoot1(eye, target);
-          // Riding: beside the tram, keeping pace with it.
-          const r = await until('dagny-hollis', (x) => x.stage === 'ride', 240);
-          if (r) {
-            await callDebug(page, 'd.peopleSkip(4)');
-            await follow('dagny-hollis', 5, (f, v) => (v ? [aroundPerson(v.position, v.heading, -20, 1.5, v.position[1] + 7), aroundPerson(v.position, v.heading, 10, 0, v.position[1] + 1.5)] : followView(f)));
-          } else console.log('  dagny never rode the tram');
-        } else console.log('  dagny never waited for a tram');
+        // The tram leg: filmed with one walker, kept only if she boarded the tram within the clip (the people system's
+        // trip state); otherwise its frames are dropped and the next walker is tried, up to MAX_RETRIES more.
+        let tramOk = false;
+        for (const [attempt, id] of TRAM_WALKERS.slice(0, MAX_RETRIES + 1).entries()) {
+          for (const f of readdirSync(dir)) rmSync(join(dir, f), { force: true });
+          n = 0;
+          const seen: Array<FigureProbe | null> = [];
+          if (attempt) console.log(`  ${TRAM_WALKERS[attempt - 1]} never boarded the tram; retrying with ${id} (retry ${attempt} of ${MAX_RETRIES})`);
+          await sendPerson(page, id, tFrom, tTo);
+          await callDebug(page, 'd.peopleSkip(8)');
+          await follow(id, 4);
+          // On the platform, as the tram comes in: from up the platform, looking back at her. The eye stands 11 m up the
+          // platform and 0.6 m to her right (final review I3: 1.8 m further out from the shelter than it was, along the same
+          // line), so the blank wall behind the shelter leaves the frame and the street and the far platform come in. Two
+          // metres further back stood the eye behind the platform's tree (Task 32's probe).
+          const w = await until(id, (x) => x.mode === 'tram' && x.stage === 'wait');
+          if (w) {
+            const f0 = await until(id, (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 90 && v.speed > 0.5), 1200);
+            const at = f0 ?? w;
+            const eye = aroundPerson(at.position, at.heading, COMMUTE_EYE.along, COMMUTE_EYE.out, at.position[1] + 2.4);
+            const target = aroundPerson(at.position, at.heading, -1.5, COMMUTE_EYE.out - 2.1, at.position[1] + 1.2);
+            for (let i = 0; i < Math.round(6 * FPS); i++) await shoot1(eye, target);
+            // Riding: beside the tram, keeping pace with it.
+            const r = await until(id, (x) => x.stage === 'ride', 240);
+            seen.push(r);
+            if (r) {
+              await callDebug(page, 'd.peopleSkip(4)');
+              await follow(id, 5, (f, v) => (v ? [aroundPerson(v.position, v.heading, -20, 1.5, v.position[1] + 7), aroundPerson(v.position, v.heading, 10, 0, v.position[1] + 1.5)] : followView(f)));
+              seen.push(await person(page, id));
+            }
+          }
+          if (boardedTram(seen)) {
+            tramOk = true;
+            break;
+          }
+        }
+        if (!tramOk) throw new Error(`commute: no walker boarded the tram within the clip after ${MAX_RETRIES + 1} attempts (${TRAM_WALKERS.slice(0, MAX_RETRIES + 1).join(', ')}); not writing a clip without its tram leg`);
         // Hal's cab: at the kerb as it pulls up, then away.
         const [cFrom, cTo] = (process.env.COMMUTE_CAB ? JSON.parse(process.env.COMMUTE_CAB) : [[446.5, 330], [1100, -200]]) as [[number, number], [number, number]];
         await sendPerson(page, 'hal-meridian', cFrom, cTo);
