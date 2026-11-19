@@ -321,3 +321,20 @@ test('an arena says how far its grading has come', async () => {
   assert.equal(arenaCount({ candidates: 1, kept: 1, graded: 1, untried: 0 }), '1 of 1 graded, 1 kept');
   assert.equal(arenaCount({ candidates: 12, kept: 5 }), '5 of 12 candidates kept', 'an older row without the counts keeps its old words');
 });
+
+test('a sailing voyage says when its last run finished and how fast it goes, and says plainly when it looks stuck', () => {
+  const at = (hm: string) => Date.parse(`2026-11-08T${hm}:00.000Z`);
+  const v = voyage({ lastRunAt: '2026-11-08T03:30:00.000Z' });
+  assert.equal(voyageLine(v, { now: at('03:34'), gateOpen: true }), 'Sailing: generation 2 of 4, 137 of 480 runs. Last run 4 minutes ago, about 55 runs an hour. A voyage spans several nights.');
+  // no timestamp on an older row: the line is as it was
+  assert.equal(voyageLine(voyage({}), { now: at('03:34'), gateOpen: true }), 'Sailing: generation 2 of 4, 137 of 480 runs. A voyage spans several nights.');
+  // under 90 minutes of quiet is not stuck
+  assert.match(voyageLine(v, { now: at('04:59'), gateOpen: true }), /Last run 1 hour ago/);
+  assert.doesNotMatch(voyageLine(v, { now: at('04:59'), gateOpen: true }), /stuck/);
+  // over 90 minutes with the gate open: stuck
+  assert.equal(voyageLine(v, { now: at('05:10'), gateOpen: true }), 'Sailing: generation 2 of 4, 137 of 480 runs. Last run 1 hour ago, about 55 runs an hour. It looks stuck: nothing has finished in over 90 minutes and the gate is open. A voyage spans several nights.');
+  // with the gate shut the quiet is expected
+  assert.doesNotMatch(voyageLine(v, { now: at('05:10'), gateOpen: false }), /stuck/);
+  // no rate before there is time to measure one
+  assert.equal(voyageLine(voyage({ runs: { done: 1, of: 480 }, lastRunAt: '2026-11-08T01:02:00.000Z' }), { now: at('01:02') + 30_000, gateOpen: true }), 'Sailing: generation 2 of 4, 1 of 480 runs. Last run just now. A voyage spans several nights.');
+});

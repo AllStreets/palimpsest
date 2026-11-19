@@ -256,12 +256,26 @@ export function sealedLine(info: { sealedUses: number }): string {
 
 const place = (v: VoyageView): string => `generation ${v.generation} of ${v.of}, ${v.runs.done} of ${v.runs.of} runs`;
 
+/** Quiet beyond this with the gate open, and a sailing voyage looks stuck. */
+export const STUCK_MINUTES = 90;
+
+/** " Last run 4 minutes ago, about 55 runs an hour." and, when stale with the gate open, that it looks stuck; empty without a timestamp. */
+function sailingPulse(v: VoyageView, ctx?: { now: number; gateOpen: boolean }): string {
+  const last = v.lastRunAt ? Date.parse(v.lastRunAt) : NaN;
+  if (!ctx || Number.isNaN(last)) return '';
+  const sailed = last - Date.parse(v.startedAt);
+  const rate = v.runs.done > 0 && sailed >= 10 * 60_000 ? `, about ${Math.max(1, Math.round((v.runs.done / sailed) * 3_600_000))} runs an hour` : '';
+  const ran = ` Last run ${ago(last, ctx.now)}${rate}.`;
+  const stuck = ctx.gateOpen && ctx.now - last > STUCK_MINUTES * 60_000;
+  return stuck ? `${ran} It looks stuck: nothing has finished in over ${STUCK_MINUTES} minutes and the gate is open.` : ran;
+}
+
 /** A voyage in one line: how far it has sailed, or why it waits, or what its champion claims. */
-export function voyageLine(v: VoyageView): string {
+export function voyageLine(v: VoyageView, ctx?: { now: number; gateOpen: boolean }): string {
   if (v.queued) return `Queued.${v.reason ? ` ${stop(v.reason)}` : ''}`;
   switch (v.status) {
     case 'sailing':
-      return `Sailing: ${place(v)}. A voyage spans several nights.`;
+      return `Sailing: ${place(v)}.${sailingPulse(v, ctx)} A voyage spans several nights.`;
     case 'paused':
       return `Paused at ${place(v)}${v.reason ? `: ${lower(stop(v.reason))}` : '.'}`;
     case 'done': {

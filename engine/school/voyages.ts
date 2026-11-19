@@ -249,6 +249,7 @@ function onEvent(s: Sail, e: BeagleRaceEvent): void {
   if (e.type === 'waiting') s.lastWait = e.reason;
   if (e.type !== 'run') return;
   s.view.runs.done++;
+  s.view.lastRunAt = iso(s.clock());
   if (!checkNow(s)) void checkGate(s);
 }
 
@@ -511,6 +512,7 @@ async function sail(info: ArenaInfo, now: number): Promise<VoyageView> {
       repo: info.repo,
       reason: null,
       pausedAt: null,
+      lastRunAt: null,
       champion: null,
       vsLocal: [],
       claim: false,

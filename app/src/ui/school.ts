@@ -529,7 +529,7 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
     const line = el('div', 'net-name-line');
     line.append(a);
     if (v.commissionedBy) line.append(el('span', 'voyage-by', `commissioned by ${names().firm(v.commissionedBy)}`));
-    name.append(line, el('p', 'voyage-line', voyageLine(v)));
+    name.append(line, el('p', 'voyage-line', voyageLine(v, { now: Date.now(), gateOpen: view?.gate.heavy.ok === true })));
     r.append(name);
     const whenCell = cell('c-when');
     whenCell.append(el('span', 'voyage-when', v.queued ? 'not yet' : shortDate(v.startedAt)));
@@ -825,7 +825,7 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
       slots.nets(JSON.stringify(v.nets), () => netsSection(v));
       slots.master(JSON.stringify([v.nets.find((n) => n.net === 'master'), v.agreements, v.grants, Math.floor(minute / 10)]), () => masterSection(v));
       slots.arenas(JSON.stringify([v.arenas, v.arenaRefusals, minute]), () => arenasSection(v));
-      slots.voyages(JSON.stringify([v.voyages, v.arenas.length, firms.map((f) => [f.id, f.name])]), () => voyagesSection(v));
+      slots.voyages(JSON.stringify([v.voyages, v.arenas.length, v.gate.heavy.ok, minute, firms.map((f) => [f.id, f.name])]), () => voyagesSection(v));
       slots.graduates(JSON.stringify([v.graduates, v.lora, v.settings.baseModel, firms.map((f) => [f.id, f.name, f.agents.map((a) => [a.id, a.name])])]), () => graduatesSection(v));
       slots.training(JSON.stringify([v.trains, v.gate, v.trainer, v.settings]), () => trainingSection(v));
       if (scrollTo) {
@@ -872,7 +872,7 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
         slots.page('', () => null);
         return;
       }
-      sub.textContent = voyageLine(vv);
+      sub.textContent = voyageLine(vv, { now: Date.now(), gateOpen: v?.gate.heavy.ok === true });
       const arena = v?.arenas.find((a) => a.id === vv.arena) ?? null;
       slots.page(JSON.stringify([vv, arena, firms.map((f) => [f.id, f.name])]), () => voyagePage(vv, arena));
       return;

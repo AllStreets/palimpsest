@@ -1016,6 +1016,8 @@ export interface VoyageView {
   repo?: string;
   reason?: string | null;
   pausedAt?: string | null;
+  /** When its last run finished; absent on a view made before it was kept, null before any run. */
+  lastRunAt?: string | null;
   /**
    * The best kept genome of the last generation (a starter or a promoted child), or null.
    * `body`: its genome as Beagle bred it, so the roster can hire it (Task 23).
