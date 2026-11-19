@@ -1034,7 +1034,8 @@ test('the brief holds an ask and an acted item', async () => {
   assert.ok(acted, 'an act of the city on its own');
   assert.equal(acted.repo, 'ferro/quarry');
   assert.match(acted.text, /on its own, under its merge:normal grant/);
-  assert.deepEqual(acted.actions, ['why'], 'he has revoked that grant since');
+  assert.deepEqual(acted.actions, ['fly', 'diff', 'why'], 'he has revoked that grant since; the merge it folds in keeps its fly and diff');
+  assert.match(acted.text, /, and .+ was paid .+ credits\./, 'one item holds the payment too');
 });
 
 test('the sample never spawns python or mlx_lm', async () => {

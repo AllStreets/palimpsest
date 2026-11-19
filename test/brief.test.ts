@@ -760,3 +760,24 @@ test('an ask for autonomy waits on him, an act is news with revoke, and grant, d
   assert.throws(() => actOn(ask.id, 'grant', {}, now + 240_000), /does not offer grant/);
   assert.equal(grantOf('propose:readme-gap', FULL)?.state, 'declined');
 });
+
+test('a merge the city made on its own is one overnight item that keeps the payment and the "on its own" fact', () => {
+  seedFirms([]);
+  const repo = addRepo(FULL, { checks: checks({ test: 'npm test', build: 'npm run build' }) });
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  const now = Date.now();
+  installNet(constant('master', 1, 0.95), { at: new Date(now - HOUR).toISOString() });
+  agreedDecisions('merge:low', repo.fullName, 50, now - 50 * HOUR);
+  assert.equal(askDue(now).length, 1);
+  actOn(`autonomy:merge:low:${FULL}`, 'grant', {}, now);
+  const job = mergedJob(FULL, 'Fix the header');
+  noteActed('merge:low', FULL, job.id, now + 1000);
+  noteActResult('merge:low', FULL, job.id, { ok: true, reason: null }, now + 2000);
+  const b = briefData(now + 60_000);
+  const same = allItems(b).filter((i) => i.refs.jobId === job.id);
+  assert.equal(same.length, 1, 'one item for the one merge');
+  assert.equal(same[0].kind, 'acted');
+  assert.match(same[0].text, /^The city merged "Fix the header" on acme\/widgets on its own, under its merge:low grant, and .+ was paid 24 credits\.$/);
+  assert.ok(same[0].actions.includes('revoke') && same[0].actions.includes('fly') && same[0].actions.includes('diff'));
+  assert.equal(same[0].refs.firmId, 'quickset');
+});

@@ -362,15 +362,20 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
     // Revoke stands while the pair could act again without a new grant: granted, or suspended by the school.
     const state = pairs.find((g) => g.kind === a.kind && g.repo === a.repo)?.state;
     const live = state === 'granted' || state === 'suspended';
+    // The same merge is also the "Merged, and a firm was paid" item: one item for the one PR, with both facts.
+    const twin = a.kind.startsWith('merge:') ? drafts.findIndex((x) => x.kind === 'merged' && x.refs?.jobId === a.jobId) : -1;
+    const paid = twin >= 0 ? drafts[twin] : null;
+    const payment = paid?.text.match(/^Merged, and (.+ was paid .+ credits)\.$/)?.[1];
+    if (twin >= 0) drafts.splice(twin, 1);
     drafts.push({
       id: `acted:${a.e.id}`,
       kind: 'acted',
       repo: a.repo,
       title,
-      text: `The city ${did} on ${a.repo} on its own, under its ${a.kind} grant.${outcome}`,
+      text: `The city ${did} on ${a.repo} on its own, under its ${a.kind} grant${payment ? `, and ${payment}` : ''}.${outcome}`,
       at: (a.e.data as { at?: string }).at ?? a.e.at,
-      refs: { jobId: a.jobId, ...(r ? { runId: r.id, ...(r.prUrl ? { prUrl: redact(r.prUrl) } : {}) } : {}) },
-      actions: live ? ['revoke', 'why'] : ['why'],
+      refs: { jobId: a.jobId, ...(r ? { runId: r.id, ...(r.prUrl ? { prUrl: redact(r.prUrl) } : {}) } : {}), ...(paid?.refs?.firmId ? { firmId: paid.refs.firmId } : {}), ...(paid?.refs?.floorId ? { floorId: paid.refs.floorId } : {}) },
+      actions: [...(live ? ['revoke' as const] : []), ...(paid ? (['fly', 'diff'] as const) : []), 'why'],
     });
   }
   const repos = listRepos().filter((r: Repo) => r.connected);
