@@ -118,7 +118,8 @@ test('the kinds have plain labels', () => {
 test('the LoRA line says what was set aside and why, with real counts', () => {
   const base = { examples: 25, needs: 100, verified: 97, readAt: '2026-11-17T12:00:00.000Z', stale: false };
   assert.equal(loraSetAside({ ...base, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 22, 'no-edit': 50 } }), '97 verified changes, 72 set aside: 50 change no code, 22 repeat another');
-  assert.equal(loraSetAside({ ...base, examples: 97, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 } }), '97 verified changes, all of them usable');
+  assert.equal(loraSetAside({ ...base, examples: 97, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 } }), null);
+  assert.equal(loraSetAside({ ...base, examples: 97, stale: true, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 } }), null);
   const stale = loraSetAside({ ...base, stale: true, skipped: { sealed: 1, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 71 } });
   assert.match(stale ?? '', /^97 verified changes, 72 set aside: 71 change no code, 1 held back for testing\. Counted 17 Nov, before the latest read\.$/);
   assert.equal(loraSetAside({ ...base, examples: 0, verified: null, readAt: null, skipped: { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 } }), null);

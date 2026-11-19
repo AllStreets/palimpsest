@@ -227,17 +227,15 @@ const ASIDE: Array<[string, (n: number) => string]> = [
 
 /**
  * The quiet line under the count: how many verified changes there were and why some were set aside, with the
- * real counts. Says when it was counted if the history has moved since. Null before any build.
+ * real counts. Says when it was counted if the history has moved since. Null before any build, and when nothing was set aside.
  */
 export function loraSetAside(l: { examples: number; verified: number | null; skipped: Record<string, number>; readAt: string | null; stale: boolean }): string | null {
   if (l.verified === null) return null;
   const aside = l.verified - l.examples;
   let text = `${plural(l.verified, 'verified change')}, `;
-  if (aside <= 0) text += 'all of them usable';
-  else {
-    const why = ASIDE.filter(([k]) => (l.skipped[k] ?? 0) > 0).map(([k, f]) => f(l.skipped[k]));
-    text += `${aside} set aside${why.length ? `: ${why.join(', ')}` : ''}`;
-  }
+  if (aside <= 0) return null; // nothing set aside: the count above already says it
+  const why = ASIDE.filter(([k]) => (l.skipped[k] ?? 0) > 0).map(([k, f]) => f(l.skipped[k]));
+  text += `${aside} set aside${why.length ? `: ${why.join(', ')}` : ''}`;
   if (l.stale && l.readAt) text += `. Counted ${shortDate(l.readAt)}, before the latest read.`;
   return text;
 }
