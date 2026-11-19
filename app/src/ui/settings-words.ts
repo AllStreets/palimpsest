@@ -34,6 +34,12 @@ export const KEYCHAIN_NOTE = "The key goes into your Mac's keychain, never into 
 /** Beside the API's daily limit. */
 export const API_DAILY_NOTE = 'The most the firms may spend on the API in a day; past it, no firm calls the API until midnight.';
 
+/** Under the API's switch and limit while no key is stored. */
+export const API_NEEDS_KEY = 'These stay off until you store a key above.';
+
+/** Whether the API's switch and daily limit are off: until a key is known to be stored (only whether one exists is ever read, never the key). */
+export const apiControlsOff = (keySet: boolean | null): boolean => keySet !== true;
+
 /** What the Quality row says under the picker: the note, the one button it offers (or none), and the line under the button (or none). */
 export interface QualityNote {
   text: string;

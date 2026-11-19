@@ -1113,6 +1113,21 @@ a.repo-name:focus-visible {
 .apikey-controls[hidden] {
   display: none;
 }
+.apikey-controls.needs-key .apikey-enable-text,
+.apikey-controls.needs-key .apikey-daily-line,
+.apikey-controls.needs-key .apikey-daily-note {
+  opacity: 0.5;
+}
+.apikey-controls.needs-key .apikey-enable-text {
+  cursor: default;
+}
+.apikey-needs-key {
+  flex-basis: 100%;
+  margin: 0;
+}
+.apikey-needs-key[hidden] {
+  display: none;
+}
 .apikey-enable-wrap {
   display: flex;
   align-items: center;

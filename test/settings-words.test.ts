@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from '../app/src/ui/settings-words.js';
+import { API_DAILY_NOTE, API_NEEDS_KEY, apiControlsOff, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from '../app/src/ui/settings-words.js';
 
 test('Settings shows a window as it stands now, the figure the brief shows, not the reading alone', () => {
   // The audit's moment: the reading said 44%, the city has spent since, the brief says 45%.
@@ -48,4 +48,12 @@ test('the Quality note: nothing to reopen, a choice waiting for a reopen, and th
   assert.deepEqual(qualityNote({ stored: 'medium', drawn: 'medium', drop: { fps: 43 } }), none);
   // Opened at medium by choice (no drop), then High stored: an ordinary reopen.
   assert.deepEqual(qualityNote({ stored: 'high', drawn: 'medium', drop: null }), { text: 'Takes effect when the city reopens.', button: 'Reopen now', line: null });
+});
+
+test('the API switch and daily limit stay off until a key is stored, and say so in one quiet line', () => {
+  assert.equal(apiControlsOff(false), true);
+  assert.equal(apiControlsOff(null), true, 'a keychain that could not be asked is not a key');
+  assert.equal(apiControlsOff(true), false);
+  assert.equal(API_NEEDS_KEY, 'These stay off until you store a key above.');
+  assert.ok(!/\u2014|--/.test(API_NEEDS_KEY));
 });

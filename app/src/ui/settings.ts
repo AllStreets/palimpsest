@@ -3,7 +3,7 @@ import { pctFor } from '../../../shared/credits';
 import { api, type EngineEvent, type UsageState } from '../api';
 import { cleanText } from './board';
 import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE } from '../../../shared/market-rules';
-import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from './settings-words';
+import { API_DAILY_NOTE, API_NEEDS_KEY, apiControlsOff, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from './settings-words';
 import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton } from './controls';
 import { grantsAside, grantsBlock } from './autonomy';
 import { schoolSettings } from './settings-school';
@@ -252,7 +252,8 @@ export function createSettings(
   const dailyLine = el('div', 'apikey-daily-line');
   dailyLine.append(dailyWrap, el('span', 'cap-of', 'a day at most'));
   const dailyNote = el('p', 'set-note apikey-daily-note', API_DAILY_NOTE);
-  apiControls.append(enableWrap, dailyLine, dailyNote);
+  const needsKey = el('p', 'set-note apikey-needs-key', API_NEEDS_KEY);
+  apiControls.append(enableWrap, dailyLine, dailyNote, needsKey);
   apiP.main.append(apiLine, keyRow, keyForm, keyNote, keyError, apiControls, apiP.agents);
   let savedDaily = 0;
   const apiSync = latestWins<Partial<Settings['anthropicApi']>>(
@@ -297,6 +298,11 @@ export function createSettings(
   function fillKey(set: boolean | null): void {
     keyState.replaceChildren(el('span', `hook-mark${set ? ' on' : ''}`), document.createTextNode(set === null ? 'The keychain could not be asked.' : set ? 'A key is stored in your keychain.' : 'No key stored.'));
     keyClear.hidden = !set;
+    const off = apiControlsOff(set);
+    apiControls.classList.toggle('needs-key', off);
+    enable.setDisabled(off);
+    daily.disabled = off;
+    needsKey.hidden = !off;
     keySave.textContent = set ? 'Replace' : 'Store in keychain';
   }
 
