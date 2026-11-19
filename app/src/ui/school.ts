@@ -40,6 +40,7 @@ import {
   trainerLine,
   trainLine,
   voyageLine,
+  arenaCount,
 } from './school-words';
 import { longDate, shortDate } from './story';
 import './market.css';
@@ -488,7 +489,7 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
     repo.href = placeHref('repo', a.repo);
     line.append(repo, el('span', 'arena-kind', `, ${ARENA_KIND[a.kind] ?? a.kind}`));
     const t = a.tasks;
-    name.append(line, el('p', 'arena-line', `${t.breeding} breeding, ${t.race} race and ${t.sealed} sealed tasks; ${a.kept} of ${plural(a.candidates, 'candidate')} kept; ${sealedLine(a)}.`));
+    name.append(line, el('p', 'arena-line', `${t.breeding} breeding, ${t.race} race and ${t.sealed} sealed tasks; ${arenaCount(a)}; ${sealedLine(a)}.`));
     name.append(el('p', 'arena-when', `Built ${longDate(a.builtAt)} at ${cleanText(a.sha, 12).slice(0, 7)}.`));
     r.append(name);
     const state = cell('c-state', el('span', `grant-state g-${a.status}`, ARENA_STATUS[a.status] ?? a.status));

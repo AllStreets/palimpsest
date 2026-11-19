@@ -242,6 +242,12 @@ export function loraSetAside(l: { examples: number; verified: number | null; ski
   return text;
 }
 
+/** "47 of 120 graded, 18 kept"; an older row without the counts says how many candidates were kept. */
+export function arenaCount(a: { candidates: number; kept: number; graded?: number; untried?: number }): string {
+  if (a.graded === undefined) return `${a.kept} of ${plural(a.candidates, 'candidate')} kept`;
+  return `${a.graded} of ${a.candidates} graded, ${a.kept} kept`;
+}
+
 /** "sealed set used 3 of 10 times". */
 export function sealedLine(info: { sealedUses: number }): string {
   if (info.sealedUses === 0) return `sealed set not yet used, ${SEALED_USES} uses allowed`;

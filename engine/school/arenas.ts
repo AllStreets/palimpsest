@@ -330,6 +330,11 @@ function putInfo(info: ArenaInfo): ArenaInfo {
   return info;
 }
 
+/** The live counts of a building arena, written over its row after each grade. Not a ledger event: the steps record the whole row. */
+function putProgress(info: ArenaInfo): void {
+  openDb().prepare('UPDATE arenas SET json = ? WHERE id = ?').run(JSON.stringify(info), info.id);
+}
+
 // ---------------------------------------------------------------- refusals
 
 /** Why `repo` cannot have an arena built now, or null. */
@@ -812,6 +817,8 @@ function infoOf(s: BuildState, status: ArenaInfo['status'], reason: string | nul
     tasks: { breeding: 0, race: 0, sealed: 0 },
     candidates: c.length,
     kept: c.filter((x) => x.state === 'kept').length,
+    graded: c.filter((x) => x.state !== 'untried').length,
+    untried: c.filter((x) => x.state === 'untried').length,
     sealedUses: 0,
     sealedHash: null,
     builtAt: new Date(at).toISOString(),
@@ -926,6 +933,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       state.past = await plantPast(state.id, repo, state.sha ?? '', now, signal);
       if (signal.aborted) return await pause(stopReason());
       writeState(state);
+      putProgress(infoOf(state, 'building', null, now));
     }
     // Until one candidate's suite has passed in full, a grade has the whole check time; after, the cap.
     const cap = () => (state.headMs == null ? CHECK_MS : mutantCapMs(state.headMs));
@@ -944,6 +952,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       if (before.skipped || !before.failed) {
         c.state = before.skipped ? 'skipped' : 'dropped';
         writeState(state);
+        putProgress(infoOf(state, 'building', null, now));
         continue;
       }
       const after = await grade(state.id, repo, atChange(c), cap(), signal, log);
@@ -953,6 +962,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       c.failing = c.state === 'kept' ? failingTests(before.output) : [];
       c.output = c.state === 'kept' ? before.output : '';
       writeState(state);
+      putProgress(infoOf(state, 'building', null, now));
     }
     await clearRoot(gradeRunId(state.id));
     const kept = state.past.filter((x) => x.state === 'kept');
@@ -995,6 +1005,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
     if (!state.candidates) {
       state.candidates = await plant(state.id, state.sha, repo.checks?.test ?? '');
       writeState(state);
+      putProgress(infoOf(state, 'building', null, now));
     }
 
     for (const c of state.candidates) {
@@ -1009,6 +1020,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       c.failing = g.failed ? failingTests(g.output) : [];
       c.output = g.failed ? g.output : '';
       writeState(state);
+      putProgress(infoOf(state, 'building', null, now));
     }
 
     await clearRoot(gradeRunId(state.id));

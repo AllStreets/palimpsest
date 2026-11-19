@@ -313,3 +313,11 @@ test('the school says in plain words what a Brier score, its range and its basel
   assert.match(SCORE_KEY, /range/);
   assert.match(SCORE_KEY, /baseline/);
 });
+
+test('an arena says how far its grading has come', async () => {
+  const { arenaCount } = await import('../app/src/ui/school-words.js');
+  const a = { candidates: 120, kept: 18, graded: 47, untried: 73 };
+  assert.equal(arenaCount(a), '47 of 120 graded, 18 kept');
+  assert.equal(arenaCount({ candidates: 1, kept: 1, graded: 1, untried: 0 }), '1 of 1 graded, 1 kept');
+  assert.equal(arenaCount({ candidates: 12, kept: 5 }), '5 of 12 candidates kept', 'an older row without the counts keeps its old words');
+});

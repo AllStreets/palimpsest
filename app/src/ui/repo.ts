@@ -13,7 +13,7 @@ import { auditHeld, canProposeAgain, OPEN_STATUSES } from './audit-words';
 import { marketNote, PUSH_NOTE } from './repos';
 import { longDate, shortDate } from './story';
 import { grantsAside, grantsBlock } from './autonomy';
-import { sealedLine } from './school-words';
+import { arenaCount, sealedLine } from './school-words';
 import './market.css';
 
 export interface DistrictPage {
@@ -905,7 +905,8 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
           const link = el('a', 'darena-name', `An arena ${ARENA_WORD[a.kind]}`);
           link.href = placeHref('school', 'arenas');
           head.append(link, el('span', `darena-state g-${a.status}`, ARENA_STATUS[a.status] ?? a.status));
-          const facts = a.status === 'failed' || a.status === 'paused' ? (a.reason ? cleanText(a.reason, 300).replace(/\.?$/, '.') : '') : `${t.breeding} breeding, ${t.race} race and ${t.sealed} sealed tasks; ${sealedLine(a)}.`;
+          const count = `${arenaCount(a)}.`;
+          const facts = a.status === 'failed' || a.status === 'paused' ? `${count}${a.reason ? ` ${cleanText(a.reason, 300).replace(/\.?$/, '.')}` : ''}` : a.status === 'building' ? count : `${count} ${t.breeding} breeding, ${t.race} race and ${t.sealed} sealed tasks; ${sealedLine(a)}.`;
           li.append(head, el('p', 'darena-line', `Built ${shortDate(a.builtAt)}${facts ? `. ${facts}` : '.'}`));
           return li;
         }),

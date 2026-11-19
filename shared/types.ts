@@ -978,6 +978,9 @@ export interface ArenaInfo {
   tasks: { breeding: number; race: number; sealed: number };
   candidates: number;
   kept: number;
+  /** Candidates graded so far (kept, dropped or skipped) and still untried; absent in a row from before they were counted. */
+  graded?: number;
+  untried?: number;
   sealedUses: number;
   sealedHash: string | null;
   builtAt: string;

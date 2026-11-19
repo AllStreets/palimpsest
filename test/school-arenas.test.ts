@@ -800,3 +800,34 @@ test('a change whose dependencies differ from the head is skipped with the reaso
   // A change whose parent has the head's dependencies is still graded and kept.
   assert.ok(arenaTasks(info.id).some((x) => x.ref === w.r1));
 });
+
+test('the arena row keeps up with the grading: its kept count matches the build state after each grade', async () => {
+  const repo = tinyRepo();
+  const seen: Array<{ kept: number; graded: number; untried: number; candidates: number; status: string }> = [];
+  let before = 0;
+  onSpawn = (s) => {
+    if (!isGrading(s)) return;
+    // each grading spawn starts after the last candidate's grade was written
+    const row = listArenas(FULL)[0];
+    if (row) seen.push({ kept: row.kept, graded: row.graded ?? -1, untried: row.untried ?? -1, candidates: row.candidates, status: row.status });
+    before++;
+  };
+  const info = await buildPlanted(repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.ok(before > 3);
+  const states = candidatesOf(info.id);
+  // the planted candidates are known after the head grade; every later spawn is one candidate's grade
+  const withCandidates = seen.filter((r) => r.candidates > 0);
+  assert.ok(withCandidates.length >= states.length, 'a row was read at the start of each candidate grade');
+  const keptSeen = withCandidates.map((r) => r.kept);
+  assert.deepEqual(keptSeen, [...keptSeen].sort((a, b) => a - b), 'kept only climbs');
+  for (const r of withCandidates) assert.equal(r.graded + r.untried, r.candidates, 'graded and untried add up to the candidates');
+  withCandidates.forEach((r, i) => assert.equal(r.graded, i, 'the row counted every grade before this one'));
+  assert.equal(info.kept, states.filter((c) => c.state === 'kept').length);
+  assert.equal(info.graded, states.length);
+  assert.equal(info.untried, 0);
+  assert.equal(arenaInfoOf(info.id)?.graded, states.length);
+  // the progress rows are not ledger events: the ledger still holds the whole arena at each step
+  assert.deepEqual(query({ kind: 'arena.built' }).map((e) => (e.data as { arena: ArenaInfo }).arena.status), ['building', 'ready']);
+  assert.deepEqual(verifyReplay().diffs.filter((d) => /^arena/.test(d)), []);
+});
