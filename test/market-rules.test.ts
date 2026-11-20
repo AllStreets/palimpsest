@@ -238,6 +238,14 @@ test('the deny globs and their matcher live in shared and inspect.ts re-exports 
   assert.equal(shared.denied('.claude/settings.json'), '.claude/**');
   assert.equal(shared.denied('keys/id_rsa.pub'), '**/id_rsa*');
   assert.equal(shared.denied('src/env.ts'), null);
+  assert.equal(shared.denied('.ENV'), '.env');
+  assert.equal(shared.denied('.GitHub/workflows/a.yml'), '.github/workflows/**');
+  assert.equal(shared.denied('.CLAUDE/x'), '.claude/**');
+  assert.equal(shared.denied('a/.GIT/config'), '.git/**');
+  assert.equal(shared.denied('certs/Server.PEM'), '**/*.pem');
+  assert.equal(shared.denied('.env/x'), '.env');
+  assert.equal(shared.denied('src/app.ts'), null);
+  assert.equal(shared.denied('docs/env.md'), null);
   assert.ok(shared.globRegex('src/**/*.ts').test('src/a/b.ts'));
   assert.ok(!shared.globRegex('src/*.ts').test('src/a/b.ts'));
   assert.ok(shared.globRegex('{a,b}.md').test('b.md'));
