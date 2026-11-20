@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantMoves, grantState, itemSentence, kindWords, MOVE_LABEL, sinceLine, usageLine } from '../app/src/ui/brief-words.js';
+import { actedLine, actionLabel, agreementOf, auditCounts, briefMeta, briefTitle, capBounds, emptyMorning, grantMoves, grantState, itemReadouts, itemSentence, kindWords, leadFigures, MOVE_LABEL, sinceLine, usageLine } from '../app/src/ui/brief-words.js';
 import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant } from '../shared/types.js';
 
 const names = { agent: (id: string) => id, firm: (id: string) => ({ quickset: 'Quickset' })[id] ?? id };
@@ -30,23 +30,23 @@ test('the title is the day, written out', () => {
   assert.equal(briefTitle('2026-01-05'), 'Monday 5 January');
 });
 
-test('every action has its label', () => {
+test('every action has its label, a word or two on a key', () => {
   const want: Record<BriefAction, string> = {
-    accept: 'Post as a job',
-    tier: 'Change the tier',
+    accept: 'Post',
+    tier: 'Tier',
     dismiss: 'Dismiss',
-    why: 'Ask why',
-    diff: 'Open the diff',
-    fly: 'Fly to the floor',
+    why: 'Why',
+    diff: 'Diff',
+    fly: 'Fly there',
     retry: 'Retry',
     resume: 'Resume',
-    'open-pr': 'Open the PR',
-    cap: "Change today's limit",
-    audit: 'Audit it',
-    tour: 'Walk through the week',
-    grant: 'Let the city do this on its own here',
+    'open-pr': 'Open PR',
+    cap: 'Set limit',
+    audit: 'Audit',
+    tour: 'Walk the week',
+    grant: 'Let it act here',
     decline: 'Not yet',
-    revoke: 'Take it back',
+    revoke: 'Take back',
   };
   for (const [a, label] of Object.entries(want)) assert.equal(actionLabel(a as BriefAction), label, a);
 });
@@ -58,7 +58,8 @@ test('the empty morning is one quiet line', () => {
 test('a sentence never repeats the repo its dateline names', () => {
   const pr = item({ kind: 'pr', repo: 'hoshi/kumo', text: 'PR #312 on hoshi/kumo by Quickset waits for your review.' });
   assert.equal(itemSentence(pr, names), 'PR #312 by Quickset waits for your review.');
-  assert.equal(dateline(pr, Date.parse(pr.at) + 3_600_000), 'kumo, 18:30');
+  assert.deepEqual(briefMeta(pr, Date.parse(pr.at) + 3_600_000), { where: 'kumo', when: '18:30' });
+  assert.deepEqual(briefMeta(pr, Date.parse(pr.at) + 86_400_000), { where: 'kumo', when: 'yesterday 18:30' });
   const merged = item({ text: 'Merged, and Quickset was paid 28.37 credits.' });
   assert.equal(itemSentence(merged, names), 'Merged, and Quickset was paid 28.37 credits.');
 });
@@ -82,24 +83,25 @@ test('a proposal says its tier and what the city would pay; its claim waits unde
 test('the usage sentence rounds the windows to whole percents', () => {
   const u = item({ kind: 'usage', repo: null, title: 'The five-hour window is at 44.83%', text: 'The cap is 50%. The city pauses at the cap; you can change today\'s limit here, for today only.' });
   assert.equal(itemSentence(u, names), 'The five-hour window is at 45%. The cap is 50%. The city pauses at the cap; you can change today\'s limit here, for today only.');
-  assert.equal(dateline(u, Date.now()), '');
+  assert.deepEqual(briefMeta(u, Date.now()), { where: '', when: '' });
 });
 
 test('a recommendation to audit names the repo alone: when it connected is not the news', () => {
   const due = item({ kind: 'audit-due', repo: 'kestrel/fieldnotes', text: 'Its README has not been checked against its code. An audit reads the clone.' });
-  assert.equal(dateline(due, Date.now()), 'fieldnotes');
+  assert.deepEqual(briefMeta(due, Date.now()), { where: 'fieldnotes', when: '' });
   assert.equal(itemSentence(due, names), 'Its README has not been checked against its code.');
 });
 
-test('what he did with an item, and when, in quiet words', () => {
+test('what he did with an item, and when, as a short readout', () => {
   const at = new Date(2026, 10, 12, 9, 14).toISOString();
-  assert.equal(actedLine(item({ kind: 'proposal', acted: { action: 'accept', at } })), 'Posted as a job, 09:14');
-  assert.equal(actedLine(item({ acted: { action: 'dismiss', at } })), 'Dismissed, 09:14');
-  assert.equal(actedLine(item({ kind: 'failed', acted: { action: 'retry', at } })), 'Posted again, 09:14');
-  assert.equal(actedLine(item({ kind: 'halt', acted: { action: 'resume', at } })), 'Resumed, 09:14');
-  assert.equal(actedLine(item({ kind: 'proposal', tier: 'low', acted: { action: 'tier', at } })), 'Tier set to low, 09:14');
-  assert.equal(actedLine(item({ kind: 'audit-due', acted: { action: 'audit', at } })), 'Audit queued, 09:14');
-  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } }), 60), "Today's limit set to 60% by you, 09:14");
+  assert.equal(actedLine(item({ kind: 'proposal', acted: { action: 'accept', at } })), 'Posted 09:14');
+  assert.equal(actedLine(item({ acted: { action: 'dismiss', at } })), 'Dismissed 09:14');
+  assert.equal(actedLine(item({ kind: 'failed', acted: { action: 'retry', at } })), 'Posted again 09:14');
+  assert.equal(actedLine(item({ kind: 'halt', acted: { action: 'resume', at } })), 'Resumed 09:14');
+  assert.equal(actedLine(item({ kind: 'proposal', tier: 'low', acted: { action: 'tier', at } })), 'Tier low 09:14');
+  assert.equal(actedLine(item({ kind: 'audit-due', acted: { action: 'audit', at } })), 'Audit queued 09:14');
+  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } }), 60), 'Limit 60% 09:14');
+  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } })), 'Limit set 09:14');
   // Looking is not acting: Ask why, the diff, the floor and the PR leave no line.
   for (const a of ['why', 'diff', 'fly', 'open-pr'] as BriefAction[]) assert.equal(actedLine(item({ acted: { action: a, at } })), '', a);
   assert.equal(actedLine(item({})), '');
@@ -120,11 +122,40 @@ test('today\'s limit may rise to five points under the hard stop, never below fi
   assert.deepEqual(capBounds(8), { min: 5, max: 5 });
 });
 
-test('the line under the title says the window, and whether this is the day\'s first look', () => {
+test('the since readout says the window, and whether this is the day\'s first look', () => {
   const since = new Date(2026, 10, 11, 6, 40).toISOString();
-  assert.equal(sinceLine(since, '2026-11-12', true), 'Since yesterday at 06:40.');
-  assert.equal(sinceLine(since, '2026-11-12', false), 'Since yesterday at 06:40. You have opened it once already today.');
-  assert.equal(sinceLine(new Date(2026, 10, 9, 6, 40).toISOString(), '2026-11-12', true), 'Since Monday at 06:40.');
+  assert.equal(sinceLine(since, '2026-11-12', true), 'Since yesterday 06:40');
+  assert.equal(sinceLine(since, '2026-11-12', false), 'Since yesterday 06:40, second look');
+  assert.equal(sinceLine(new Date(2026, 10, 9, 6, 40).toISOString(), '2026-11-12', true), 'Since Monday 06:40');
+  assert.equal(sinceLine(new Date(2026, 10, 12, 6, 40).toISOString(), '2026-11-12', true), 'Since 06:40');
+});
+
+test('a row reads as figures and short labels; its sentence waits under Why', () => {
+  const p = item({ kind: 'proposal', tier: 'high', refs: { jobId: 'j', auditId: 'a' } });
+  assert.deepEqual(itemReadouts(p, names), [{ v: 'high', k: 'tier' }]);
+  const merged = item({ text: 'Merged, and Quickset was paid 28.37 credits.' });
+  assert.deepEqual(itemReadouts(merged, names), [{ v: 'merged', tone: 'ok' }, { v: '28.37', k: 'cr' }, { v: 'Quickset', tone: 'quiet' }]);
+  const pr = item({ kind: 'pr', repo: 'hoshi/kumo', text: 'PR #312 on hoshi/kumo by Quickset waits for your review.' });
+  assert.deepEqual(itemReadouts(pr, names), [{ v: '#312', k: 'PR' }, { v: 'Quickset', tone: 'quiet' }, { v: 'review', tone: 'warn' }]);
+  const failed = item({ kind: 'failed', text: 'Failed, with one attempt left. The run finished without changing anything.' });
+  assert.deepEqual(itemReadouts(failed, names), [{ v: 'failed', tone: 'fail' }, { v: '1', k: 'attempt left' }]);
+  assert.deepEqual(itemReadouts(item({ kind: 'failed', text: 'Failed for good after 2 attempts.' }), names), [{ v: 'failed', tone: 'fail' }, { v: 'no attempts left', tone: 'quiet' }]);
+  const audit = item({ kind: 'audit', text: '14 claims read: 8 real, 2 partial, 3 missing and 1 broken; 4 jobs proposed.' });
+  assert.deepEqual(itemReadouts(audit, names), [{ v: '4', k: 'jobs proposed' }]);
+  const usage = item({ kind: 'usage', repo: null, title: 'The five-hour window is at 44.83%', text: 'The cap is 50%. The city pauses at the cap.' });
+  assert.deepEqual(itemReadouts(usage, names), [{ v: '45%', k: 'five-hour' }, { v: '50%', k: 'cap' }]);
+  // A note has no figures: its first clause, cut at a word.
+  const note = item({ kind: 'note', repo: 'ferro/quarry', text: 'merged with changes: merged into release/2.4, not main.' });
+  assert.deepEqual(itemReadouts(note, names), [{ v: 'Merged with changes' }]);
+});
+
+test('the figures behind the instruments: the lead, an audit, an ask', () => {
+  assert.deepEqual(leadFigures('6 things wait on you; 11 merged since yesterday. The city spent 954.60 credits.'), { waiting: 6, merged: 11, spent: '954.60' });
+  assert.deepEqual(leadFigures('Nothing waits on you this morning. The city made no model calls.'), { waiting: 0, merged: 0, spent: null });
+  assert.deepEqual(auditCounts('14 claims read: 8 real, 2 partial, 3 missing and 1 broken; 4 jobs proposed.'), { real: 8, partial: 2, missing: 3, broken: 1, jobs: 4 });
+  assert.equal(auditCounts('The audit could not read the clone.'), null);
+  assert.deepEqual(agreementOf('The master has agreed with you on 48 of the last 50 propose:readme-gap decisions, and on its last 10 on tidewater/harbor-ledger.'), { agreed: 48, of: 50, here: 10 });
+  assert.equal(agreementOf('Nothing to say.'), null);
 });
 
 // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
@@ -189,9 +220,9 @@ test('a kind of work is said in words, never as its code', () => {
 
 test('his answer to an ask, and his taking back, in quiet words', () => {
   const at = new Date(2026, 10, 12, 9, 14).toISOString();
-  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted, 09:14');
-  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet; quiet for 30 days, 09:14');
-  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back, 09:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted 09:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet, quiet 30 days 09:14');
+  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back 09:14');
 });
 
 test('Waiting on you sets what needs a click first, then what he handled today, apart and quieter (audit 2026-11-17)', async () => {

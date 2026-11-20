@@ -1679,6 +1679,7 @@ async function main(): Promise<void> {
       requestAnimationFrame(find);
     },
     startTour,
+    city: { camera: city.camera, towerFrame: (repo) => city.towerFrame(repo), onFrame: (fn) => city.onFrame(fn) },
   });
 
   // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an

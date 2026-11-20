@@ -52,6 +52,8 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 | `newsreader.woff2`, `newsreader-italic.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type | Repo names, era headings |
 | `plex-sans.woff2` | [IBM Plex Sans](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Interface text |
 | `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Commit and PR refs |
+| `big-shoulders.woff2` | [Big Shoulders](https://github.com/xotypeco/big_shoulders) | Patric King, The Big Shoulders Project Authors | The Brief's display face, redesign direction C (license text in `app/public/fonts/big-shoulders-OFL.txt`) |
+| `azeret-mono.woff2` | [Azeret Mono](https://github.com/displaay/azeret) | Displaay, The Azeret Project Authors | The Brief's readouts, redesign direction C (license text in `app/public/fonts/azeret-mono-OFL.txt`) |
 | `docs/brand/fonts/Cinzel*.ttf` | [Cinzel](https://github.com/NDISCOVER/Cinzel) | Natanael Gama, The Cinzel Project Authors | The letterforms of the 3D wordmark and the P of the app mark (license text in `docs/brand/fonts/OFL-Cinzel.txt`) |
 
 ## Brand and media

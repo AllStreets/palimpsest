@@ -1,0 +1,1454 @@
+/*
+ * Targeting (redesign direction C, a throwaway prototype): the Brief as a HUD over the live city. Corner brackets,
+ * a range rail, a scan on open, a stream of the brief's own figures behind the list, reticle keys, readouts pinned
+ * to each item's district, and a lock-on round the active item's tower. Warm amber with a hot red for the lock and
+ * the grant, one cold ice for looking and for time. No backdrop-filter anywhere: the city redraws every frame.
+ */
+@font-face {
+  font-family: 'Big Shoulders';
+  src: url('/fonts/big-shoulders.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Azeret Mono';
+  src: url('/fonts/azeret-mono.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --tg-black: 9, 6, 4;
+  --tg-ink: #f5e9d9;
+  --tg-ink-2: #c9b49c;
+  --tg-dim: #a48f78;
+  --tg-amber: #ffb547;
+  --tg-amber-hi: #ffd391;
+  --tg-amber-rgb: 255, 181, 71;
+  --tg-red: #ff5532;
+  --tg-red-rgb: 255, 85, 50;
+  --tg-ice: #9fe3fb;
+  --tg-ice-rgb: 159, 227, 251;
+  --tg-ok: #9ee6b4;
+  --tg-fail: #ff7a5e;
+  --tg-display: 'Big Shoulders', 'Avenir Next Condensed', system-ui, sans-serif;
+  --tg-mono: 'Azeret Mono', ui-monospace, Menlo, monospace;
+  --tg-ease: cubic-bezier(0.2, 0.75, 0.15, 1);
+}
+
+/* A corner's ticks, drawn in its colour: an L at each corner of the box, `--arm` long and `--th` thick. */
+.tg-ret,
+.sheet.brief.tg .tg-des {
+  --arm: 6px;
+  --th: 1.5px;
+  --tick: currentColor;
+  background:
+    linear-gradient(var(--tick), var(--tick)) top left / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top left / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top right / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top right / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom left / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom left / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom right / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom right / var(--th) var(--arm) no-repeat;
+}
+
+/* ---------------------------------------------------------------- the city behind */
+
+/* The HUD replaces the scrim: a shade only where the panel stands, the city clear in its pane. */
+.scrim:has(+ .sheet.brief.tg) {
+  z-index: 3;
+  background: linear-gradient(to right, rgba(6, 4, 3, 0.5) 0, rgba(6, 4, 3, 0.3) calc(var(--sheet-w) + 40px), rgba(6, 4, 3, 0.04) 70%);
+}
+
+/* ---------------------------------------------------------------- the panel */
+
+.sheet.brief.tg {
+  top: 64px;
+  left: 16px;
+  bottom: 16px;
+  background: none;
+  border: none;
+  color: var(--tg-ink);
+  font-family: var(--tg-display);
+  isolation: isolate;
+}
+/* The panel itself: warm black, deepest under the words, a low amber light at its head; no edge but its marks. */
+.sheet.brief.tg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(90% 34% at 0% 0%, rgba(var(--tg-amber-rgb), 0.085), transparent 70%),
+    radial-gradient(70% 40% at 100% 100%, rgba(var(--tg-red-rgb), 0.05), transparent 70%),
+    linear-gradient(to bottom, rgba(255, 210, 150, 0.03), transparent 18%, transparent 70%, rgba(0, 0, 0, 0.3)),
+    linear-gradient(to right, rgba(var(--tg-black), 0.94), rgba(var(--tg-black), 0.9) 70%, rgba(var(--tg-black), 0.8));
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+}
+.tg-marks {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.tg-marks::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border: 1px solid rgba(var(--tg-amber-rgb), 0.07);
+}
+.tg-marks .tg-corner,
+.tg-frame .tg-corner {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border: 0 solid rgba(var(--tg-amber-rgb), 0.9);
+  filter: drop-shadow(0 0 4px rgba(var(--tg-amber-rgb), 0.45));
+}
+.tg-corner.tl {
+  top: -1px;
+  left: -1px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+.tg-corner.tr {
+  top: -1px;
+  right: -1px;
+  border-top-width: 2px;
+  border-right-width: 2px;
+}
+.tg-corner.bl {
+  bottom: -1px;
+  left: -1px;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+}
+.tg-corner.br {
+  bottom: -1px;
+  right: -1px;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+}
+/* The range rail down the panel's right edge: fine ticks every 8 px, a long one every 40; the leader leaves from it. */
+.tg-rail {
+  position: absolute;
+  top: 40px;
+  bottom: 40px;
+  right: 0;
+  width: 10px;
+  background:
+    linear-gradient(rgba(var(--tg-amber-rgb), 0.38), rgba(var(--tg-amber-rgb), 0.38)) right / 1px 100% no-repeat,
+    repeating-linear-gradient(to bottom, rgba(var(--tg-amber-rgb), 0.55) 0 1px, transparent 1px 40px) right / 10px 100% no-repeat,
+    repeating-linear-gradient(to bottom, rgba(var(--tg-amber-rgb), 0.3) 0 1px, transparent 1px 8px) right / 5px 100% no-repeat;
+  mask-image: linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+}
+/* The scan on open: one bright line down the panel, then gone. */
+.tg-scan {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: linear-gradient(to bottom, transparent 0, rgba(var(--tg-amber-rgb), 0.07) 85%, rgba(255, 211, 145, 0.85) 99.4%, transparent 100%) top / 100% 120px no-repeat;
+  will-change: transform, opacity;
+}
+.sheet.brief.tg.open .tg-scan {
+  animation: tg-scan 1.15s var(--tg-ease) 0.05s both;
+}
+@keyframes tg-scan {
+  0% {
+    opacity: 1;
+    transform: translateY(-120px);
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(calc(100vh - 80px));
+  }
+}
+.sheet.brief.tg.open .sheet-head,
+.sheet.brief.tg.open .sheet-body {
+  animation: tg-reveal 0.7s var(--tg-ease) both;
+}
+.sheet.brief.tg.open .sheet-body {
+  animation-delay: 0.12s;
+}
+@keyframes tg-reveal {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* ---------------------------------------------------------------- the stream behind the list */
+
+.tg-stream {
+  position: absolute;
+  top: var(--tg-head, 230px);
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  /* Strongest at the panel's right, under the keys' empty side; almost gone under the headlines. */
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.25), #000 75%);
+}
+.tg-stream-col {
+  position: absolute;
+  top: 0;
+  left: var(--x);
+  width: 14px;
+  white-space: pre;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  line-height: 15px;
+  text-align: center;
+  color: rgb(var(--tg-ice-rgb));
+  opacity: calc(var(--o) * 0.17);
+  mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.5) 30%, #000 49%, transparent 50%, transparent 50%, rgba(0, 0, 0, 0.5) 80%, #000 99%, transparent 100%);
+  will-change: transform;
+  animation: tg-fall var(--t) linear var(--d) infinite;
+}
+@keyframes tg-fall {
+  from {
+    transform: translateY(-50%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* ---------------------------------------------------------------- the head */
+
+.sheet.brief.tg .sheet-head {
+  position: relative;
+  z-index: 1;
+  margin: 7px 7px 0;
+  padding: 19px 33px 18px 27px;
+  /* The head is its own plate: darker, lit along its top, a graticule behind the rangefinders, a shadow cast on the list. */
+  background:
+    linear-gradient(to right, rgba(5, 3, 2, 0.9) 50%, rgba(5, 3, 2, 0) 75%),
+    radial-gradient(circle, rgba(var(--tg-amber-rgb), 0.16) 0.75px, transparent 1.2px) right top / 14px 14px,
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.28));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 210, 150, 0.08),
+    inset 0 -1px 0 rgba(var(--tg-amber-rgb), 0.22),
+    0 14px 24px -12px rgba(0, 0, 0, 0.8);
+  border-bottom: none;
+}
+
+.tg-kicker {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.tg-kicker-k {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--tg-ice);
+}
+.tg-kicker-k::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--tg-amber);
+  box-shadow: 0 0 8px rgba(var(--tg-amber-rgb), 0.8);
+}
+.tg-kicker-v {
+  color: var(--tg-ice);
+  opacity: 0.85;
+}
+.sheet.brief.tg .sheet-title {
+  margin-top: 0;
+  font-family: var(--tg-display);
+  font-weight: 380;
+  font-size: 54px;
+  line-height: 0.95;
+  letter-spacing: 0.015em;
+  color: var(--tg-ink);
+  text-shadow: 0 0 22px rgba(var(--tg-amber-rgb), 0.18);
+}
+.tg-readouts {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 16px;
+}
+.tg-figures {
+  display: flex;
+  gap: 30px;
+}
+.tg-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tg-figure-value {
+  font-family: var(--tg-display);
+  font-weight: 650;
+  font-size: 40px;
+  line-height: 0.9;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--tg-ink);
+}
+.tg-figure.hot .tg-figure-value {
+  color: var(--tg-amber);
+  text-shadow: 0 0 18px rgba(var(--tg-amber-rgb), 0.45);
+}
+.tg-figure.hot .tg-label::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: var(--tg-red);
+  animation: tg-blink 1.6s steps(2, jump-none) infinite;
+}
+@keyframes tg-blink {
+  50% {
+    opacity: 0.15;
+  }
+}
+.tg-label {
+  font-family: var(--tg-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--tg-dim);
+}
+.tg-unit {
+  margin-left: 1px;
+  font-size: 0.55em;
+  color: var(--tg-dim);
+}
+.tg-ranges {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 190px;
+  padding: 2px 0;
+  text-decoration: none;
+  color: inherit;
+}
+.tg-ranges:focus-visible {
+  outline: 1px solid var(--tg-amber);
+  outline-offset: 6px;
+}
+.tg-range-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.tg-range-fig {
+  font-family: var(--tg-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--tg-ink);
+}
+.tg-range-scale {
+  position: relative;
+  height: 9px;
+  margin-top: 3px;
+  background:
+    repeating-linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.45) 0 1px, transparent 1px 10%) bottom / 100% 9px no-repeat,
+    repeating-linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.22) 0 1px, transparent 1px 2.5%) bottom / 100% 4px no-repeat,
+    linear-gradient(rgba(var(--tg-amber-rgb), 0.3), rgba(var(--tg-amber-rgb), 0.3)) bottom / 100% 1px no-repeat;
+}
+.tg-range-run {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  background: linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.35), var(--tg-amber));
+  box-shadow: 0 0 10px rgba(var(--tg-amber-rgb), 0.5);
+}
+.tg-range-head {
+  position: absolute;
+  bottom: 5px;
+  width: 0;
+  height: 0;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-top: 5px solid var(--tg-amber-hi);
+}
+.tg-range-cap {
+  position: absolute;
+  bottom: -3px;
+  width: 5px;
+  height: 15px;
+  margin-left: -1px;
+  border: 1.5px solid var(--tg-red);
+  border-left: none;
+  box-shadow: 0 0 8px rgba(var(--tg-red-rgb), 0.5);
+}
+
+/* ---------------------------------------------------------------- the list */
+
+.sheet.brief.tg .sheet-body {
+  position: relative;
+  z-index: 1;
+  margin-top: 0;
+  padding: 0 40px 64px 34px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 12px);
+  scrollbar-color: rgba(var(--tg-amber-rgb), 0.3) transparent;
+}
+.tg-sr {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.sheet.brief.tg .brief-empty {
+  font-family: var(--tg-display);
+  font-style: normal;
+  font-size: 22px;
+  color: var(--tg-ink-2);
+}
+.sheet.brief.tg .repos-sec {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 0 6px;
+  border-bottom: none;
+}
+.sheet.brief.tg .repos-sec-name {
+  font-family: var(--tg-mono);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--tg-amber);
+}
+.sheet.brief.tg .repos-sec::after {
+  content: '';
+  order: 1;
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.4), rgba(var(--tg-amber-rgb), 0.06));
+}
+.sheet.brief.tg .repos-sec-count {
+  order: 2;
+  font-family: var(--tg-display);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  color: var(--tg-ink-2);
+}
+.sheet.brief.tg .brief-sec:not([data-sec='waiting']) .repos-sec-name {
+  color: var(--tg-ink-2);
+}
+.sheet.brief.tg .brief-key {
+  max-width: none;
+  text-wrap: balance;
+  margin: 2px 0 4px 44px;
+  font-family: var(--tg-mono);
+  font-size: 11px;
+  color: var(--tg-dim);
+}
+
+.sheet.brief.tg .brief-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  column-gap: 0;
+  padding: 13px 14px 13px 0;
+  border-bottom: 1px solid rgba(var(--tg-amber-rgb), 0.09);
+  transition: background 0.25s ease;
+}
+.sheet.brief.tg .brief-item > * {
+  grid-column: 2;
+}
+.sheet.brief.tg .brief-item > .tg-des {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+}
+/* The designator: the target's number in a small reticle, in its state's colour. */
+.sheet.brief.tg .tg-des {
+  --arm: 5px;
+  --th: 1px;
+  align-self: start;
+  justify-self: start;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 20px;
+  margin-top: 1px;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--tg-amber);
+}
+.sheet.brief.tg .tg-des:empty {
+  width: 12px;
+  height: 1px;
+  margin: 10px 0 0 8px;
+  background: rgba(var(--tg-amber-rgb), 0.4);
+}
+.sheet.brief.tg .brief-item[data-tone='fail'] .tg-des {
+  color: var(--tg-fail);
+}
+.sheet.brief.tg .brief-item[data-tone='warn'] .tg-des {
+  color: var(--tg-amber-hi);
+}
+.sheet.brief.tg .brief-item[data-tone='ok'] .tg-des {
+  color: var(--tg-ok);
+}
+/* The active target: its designator filled, a lit bar at its edge, a warm wash to the rail where the leader leaves. */
+.sheet.brief.tg .brief-item.tg-active {
+  background: linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.075), rgba(var(--tg-amber-rgb), 0.02) 80%, rgba(var(--tg-amber-rgb), 0.08));
+  box-shadow: 0 12px 28px -14px rgba(0, 0, 0, 0.9);
+}
+.sheet.brief.tg .brief-item.tg-active .tg-des {
+  --tick: var(--tg-amber-hi);
+  color: #160b02;
+  background-color: var(--tg-amber);
+  box-shadow: 0 0 14px rgba(var(--tg-amber-rgb), 0.55);
+}
+.sheet.brief.tg .brief-item.tg-active::after {
+  content: '';
+  position: absolute;
+  right: -40px;
+  top: 0;
+  bottom: 0;
+  width: 26px;
+  background: linear-gradient(to right, transparent, rgba(var(--tg-amber-rgb), 0.12));
+  border-right: 2px solid var(--tg-amber);
+  pointer-events: none;
+}
+.sheet.brief.tg .brief-item[aria-busy='true'] {
+  opacity: 0.6;
+}
+.tg-meta {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 3px;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.tg-where {
+  color: var(--tg-amber);
+}
+.tg-when {
+  color: var(--tg-ice);
+  opacity: 0.8;
+}
+.sheet.brief.tg .brief-head {
+  max-width: none;
+  font-family: var(--tg-display);
+  font-weight: 560;
+  font-size: 21px;
+  line-height: 1.12;
+  letter-spacing: 0.012em;
+  color: var(--tg-ink);
+}
+.sheet.brief.tg .brief-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 7px;
+  max-width: none;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.tg-outs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  min-width: 0;
+}
+.tg-out {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-family: var(--tg-mono);
+  font-size: 11.5px;
+}
+.tg-out-v {
+  color: var(--tg-ink);
+  font-weight: 500;
+}
+.tg-out-k {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--tg-dim);
+}
+.tg-out.bare .tg-out-v {
+  font-family: var(--tg-display);
+  font-size: 14px;
+  font-weight: 450;
+  letter-spacing: 0.02em;
+  color: var(--tg-ink-2);
+}
+.tg-out.quiet .tg-out-v {
+  color: var(--tg-ink-2);
+  font-weight: 400;
+}
+.tg-out.ok .tg-out-v,
+.tg-out.warn .tg-out-v,
+.tg-out.fail .tg-out-v {
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+}
+.tg-out.ok .tg-out-v {
+  color: var(--tg-ok);
+}
+.tg-out.warn .tg-out-v {
+  color: var(--tg-amber-hi);
+}
+.tg-out.fail .tg-out-v {
+  color: var(--tg-fail);
+}
+
+/* ---------------------------------------------------------------- the reticle keys */
+
+.sheet.brief.tg .brief-acts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0 0 0 auto;
+}
+.sheet.brief.tg .brief-act {
+  all: unset;
+  position: relative;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 11px;
+  margin: 0;
+  font-family: var(--tg-display);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.2s ease;
+}
+.sheet.brief.tg .brief-act .tg-ret {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: inset 0.18s var(--tg-ease);
+}
+/* Hovered or focused, a reticle closes in on its key. */
+.sheet.brief.tg .brief-act:hover .tg-ret,
+.sheet.brief.tg .brief-act:focus-visible .tg-ret {
+  inset: -3px;
+}
+.sheet.brief.tg .brief-act:focus-visible {
+  outline: 1px dashed var(--tg-amber);
+  outline-offset: 5px;
+}
+.sheet.brief.tg .brief-act:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Looking: a cold word in faint ticks. */
+.sheet.brief.tg .brief-act[data-weight='look'] {
+  color: var(--tg-ice);
+  padding: 0 7px;
+  font-weight: 500;
+}
+.sheet.brief.tg .brief-act[data-weight='look'] .tg-ret {
+  --tick: rgba(var(--tg-ice-rgb), 0.9);
+  --arm: 4px;
+  --th: 1px;
+  opacity: 0;
+  inset: 3px -2px;
+  transition: opacity 0.15s ease, inset 0.18s var(--tg-ease);
+}
+.sheet.brief.tg .brief-act[data-weight='look']:hover .tg-ret,
+.sheet.brief.tg .brief-act[data-weight='look']:focus-visible .tg-ret {
+  opacity: 1;
+  inset: -2px -4px;
+}
+.sheet.brief.tg .brief-act[data-weight='look']:hover {
+  color: #e2f7ff;
+}
+
+/* Deciding: warm, the ticks plain, a faint fill. */
+.sheet.brief.tg .brief-act[data-weight='decide'] {
+  color: var(--tg-ink-2);
+  background-color: rgba(var(--tg-amber-rgb), 0.045);
+}
+.sheet.brief.tg .brief-act[data-weight='decide'] .tg-ret {
+  --tick: rgba(var(--tg-amber-rgb), 0.55);
+}
+.sheet.brief.tg .brief-act[data-weight='decide']:hover {
+  color: var(--tg-ink);
+  background-color: rgba(var(--tg-amber-rgb), 0.1);
+}
+/* Spending: a lit amber key in a full reticle, its sum in its own window. */
+.sheet.brief.tg .brief-act[data-weight='spend'] {
+  height: 28px;
+  padding: 0 0 0 13px;
+  color: var(--tg-amber-hi);
+  background: linear-gradient(to bottom, rgba(var(--tg-amber-rgb), 0.22), rgba(var(--tg-amber-rgb), 0.1));
+  box-shadow: inset 0 0 0 1px rgba(var(--tg-amber-rgb), 0.5), inset 0 1px 0 rgba(255, 220, 160, 0.35), 0 0 16px rgba(var(--tg-amber-rgb), 0.16);
+  text-shadow: 0 0 8px rgba(var(--tg-amber-rgb), 0.5);
+}
+.sheet.brief.tg .brief-act[data-weight='spend']:not(:has(.tg-cost)) {
+  padding-right: 13px;
+}
+.sheet.brief.tg .brief-act[data-weight='spend'] .tg-ret {
+  --tick: var(--tg-amber);
+  --arm: 7px;
+  --th: 2px;
+  inset: -4px;
+}
+.sheet.brief.tg .brief-act[data-weight='spend']:hover .tg-ret,
+.sheet.brief.tg .brief-act[data-weight='spend']:focus-visible .tg-ret {
+  inset: -7px;
+}
+.sheet.brief.tg .brief-act[data-weight='spend']:hover {
+  color: #fff1da;
+  background: linear-gradient(to bottom, rgba(var(--tg-amber-rgb), 0.34), rgba(var(--tg-amber-rgb), 0.16));
+}
+.tg-cost {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 9px;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  text-shadow: none;
+  color: var(--tg-amber);
+  background: rgba(0, 0, 0, 0.42);
+  box-shadow: inset 1px 0 0 rgba(var(--tg-amber-rgb), 0.5);
+}
+
+/* Granting: the one hot key, a red lock in a breathing reticle, its seal turning. */
+.sheet.brief.tg .brief-act[data-weight='grant'] {
+  height: 38px;
+  padding: 0 18px 0 8px;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #1a0603;
+  background: linear-gradient(to bottom, #ff7a4a, #ef4320 55%, #d9361a);
+  box-shadow: inset 0 1px 0 rgba(255, 220, 190, 0.7), inset 0 -2px 0 rgba(90, 10, 0, 0.35), 0 0 0 1px rgba(255, 120, 80, 0.9), 0 0 26px rgba(var(--tg-red-rgb), 0.55), 0 0 70px rgba(var(--tg-red-rgb), 0.22);
+}
+.sheet.brief.tg .brief-act[data-weight='grant'] .tg-ret {
+  --tick: var(--tg-red);
+  --arm: 10px;
+  --th: 2px;
+  inset: -7px;
+  filter: drop-shadow(0 0 4px rgba(var(--tg-red-rgb), 0.8));
+  animation: tg-breathe 2.4s ease-in-out infinite;
+}
+@keyframes tg-breathe {
+  50% {
+    inset: -11px;
+  }
+}
+.sheet.brief.tg .brief-act[data-weight='grant']:hover {
+  background: linear-gradient(to bottom, #ff8d60, #f6512c 55%, #e2401f);
+}
+.tg-seal {
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+}
+.tg-seal circle,
+.tg-seal path {
+  fill: none;
+  stroke: #1a0603;
+  stroke-width: 2.4;
+}
+.tg-seal .spin {
+  stroke-width: 2;
+  stroke-dasharray: 9 6.2;
+  transform-origin: 20px 20px;
+  animation: tg-spin 6s linear infinite;
+}
+.tg-seal .dot {
+  fill: #1a0603;
+  stroke: none;
+}
+@keyframes tg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------------------------------------------------------- the autonomy ask: a lock-on */
+
+.sheet.brief.tg .brief-item.k-autonomy {
+  margin: 16px 0 14px;
+  padding: 18px 20px 18px 0;
+  border: none;
+  background:
+    linear-gradient(to right, rgba(var(--tg-red-rgb), 0.13), rgba(var(--tg-red-rgb), 0.04) 70%, rgba(var(--tg-red-rgb), 0.09)),
+    repeating-linear-gradient(-45deg, rgba(var(--tg-red-rgb), 0.05) 0 1px, transparent 1px 9px),
+    linear-gradient(rgba(14, 6, 4, 0.82), rgba(14, 6, 4, 0.82));
+  box-shadow: inset 0 0 0 1px rgba(var(--tg-red-rgb), 0.35), inset 0 1px 0 rgba(255, 150, 120, 0.25), 0 22px 44px -18px rgba(0, 0, 0, 0.95), 0 0 46px rgba(var(--tg-red-rgb), 0.1);
+}
+/* The lock's brackets: big red corners standing off the ask, closed in once it opens. */
+.sheet.brief.tg .brief-item.k-autonomy::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  pointer-events: none;
+  --arm: 22px;
+  --th: 2px;
+  --tick: var(--tg-red);
+  background:
+    linear-gradient(var(--tick), var(--tick)) top left / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top left / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top right / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top right / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom left / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom left / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom right / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom right / var(--th) var(--arm) no-repeat;
+  filter: drop-shadow(0 0 5px rgba(var(--tg-red-rgb), 0.7));
+}
+.sheet.brief.tg.open .brief-item.k-autonomy::before {
+  animation: tg-acquire 0.9s var(--tg-ease) 0.35s both;
+}
+@keyframes tg-acquire {
+  0% {
+    inset: -40px;
+    opacity: 0;
+  }
+  45% {
+    opacity: 1;
+  }
+  70% {
+    inset: -4px;
+  }
+  100% {
+    inset: -7px;
+  }
+}
+.sheet.brief.tg .brief-item.k-autonomy::after {
+  display: none;
+}
+.sheet.brief.tg .brief-item.k-autonomy .tg-des {
+  margin-left: 10px;
+  color: var(--tg-red);
+}
+.sheet.brief.tg .brief-item.k-autonomy.tg-active .tg-des {
+  --tick: #ffb19c;
+  color: #1a0603;
+  background-color: var(--tg-red);
+  box-shadow: 0 0 16px rgba(var(--tg-red-rgb), 0.7);
+}
+.sheet.brief.tg .brief-item.k-autonomy .tg-meta::after {
+  content: 'Grant';
+  margin-left: auto;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--tg-red);
+  box-shadow: inset 0 0 0 1px rgba(var(--tg-red-rgb), 0.6);
+}
+.sheet.brief.tg .brief-item.k-autonomy .brief-head {
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.08;
+}
+.sheet.brief.tg .brief-item.k-autonomy .brief-line {
+  margin-top: 14px;
+}
+.tg-agree {
+  display: flex;
+  align-items: flex-end;
+  gap: 22px;
+  margin-top: 14px;
+}
+.tg-agree-fig {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tg-agree-v {
+  font-family: var(--tg-display);
+  font-weight: 700;
+  font-size: 46px;
+  line-height: 0.85;
+  color: var(--tg-amber);
+  text-shadow: 0 0 20px rgba(var(--tg-amber-rgb), 0.45);
+  font-variant-numeric: tabular-nums;
+}
+.tg-agree-of {
+  font-size: 0.5em;
+  font-weight: 500;
+  color: var(--tg-ink-2);
+  text-shadow: none;
+}
+.tg-agree-scale {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-bottom: 1px;
+}
+.tg-agree-scale.here {
+  flex: 0 0 76px;
+}
+.tg-ticks {
+  width: 100%;
+  height: 20px;
+}
+.tg-ticks rect.on {
+  fill: var(--tg-amber);
+}
+.tg-ticks.here rect.on {
+  fill: var(--tg-amber-hi);
+}
+.tg-agree-scale .tg-label {
+  white-space: nowrap;
+}
+.tg-ticks rect.off {
+  fill: var(--tg-red);
+}
+
+/* ---------------------------------------------------------------- an audit's claims */
+
+.tg-claims {
+  margin-top: 8px;
+}
+.tg-claims-bar {
+  display: flex;
+  gap: 2px;
+  height: 5px;
+}
+.tg-claims-bar .seg {
+  min-width: 3px;
+}
+.tg-claims-bar .real {
+  background: var(--tg-ok);
+}
+.tg-claims-bar .partial {
+  background: var(--tg-amber);
+}
+.tg-claims-bar .missing {
+  background: rgba(var(--tg-red-rgb), 0.55);
+}
+.tg-claims-bar .broken {
+  background: var(--tg-red);
+}
+.tg-claims-key {
+  display: flex;
+  gap: 14px;
+  margin-top: 5px;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  color: var(--tg-dim);
+}
+.tg-claims-key b {
+  font-weight: 500;
+  color: var(--tg-ink);
+}
+
+/* ---------------------------------------------------------------- handled, the other ledgers, and what unfolds */
+
+.sheet.brief.tg .brief-handled-head {
+  margin: 18px 0 2px 44px;
+  font-family: var(--tg-mono);
+  font-style: normal;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--tg-dim);
+}
+.sheet.brief.tg .brief-handled .brief-item,
+.sheet.brief.tg .brief-sec:not([data-sec='waiting']) .brief-item {
+  padding: 10px 14px 10px 0;
+}
+.sheet.brief.tg .brief-handled .brief-head,
+.sheet.brief.tg .brief-sec:not([data-sec='waiting']) .brief-head {
+  font-size: 17.5px;
+  font-weight: 500;
+  color: var(--tg-ink-2);
+}
+.sheet.brief.tg .brief-handled .tg-outs {
+  display: none;
+}
+.sheet.brief.tg .brief-acted {
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--tg-ok);
+}
+.sheet.brief.tg .brief-item[data-acted='dismiss'] .brief-head {
+  color: var(--tg-dim);
+  text-decoration: line-through;
+  text-decoration-color: rgba(var(--tg-amber-rgb), 0.4);
+}
+.sheet.brief.tg .brief-why {
+  margin-top: 10px;
+  padding: 10px 0 2px 14px;
+  border-left: 1px solid rgba(var(--tg-ice-rgb), 0.4);
+}
+.sheet.brief.tg .brief-why-text {
+  font-family: var(--tg-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--tg-ink-2);
+}
+.sheet.brief.tg .tg-said {
+  color: var(--tg-ink);
+}
+.sheet.brief.tg .brief-why-link {
+  color: var(--tg-ice);
+}
+.sheet.brief.tg .brief-quiet {
+  margin-top: 6px;
+  font-family: var(--tg-mono);
+  font-size: 11px;
+  color: var(--tg-dim);
+}
+.sheet.brief.tg .brief-error {
+  margin-top: 6px;
+  font-family: var(--tg-mono);
+  font-size: 11.5px;
+  color: var(--tg-fail);
+}
+.sheet.brief.tg .brief-tier,
+.sheet.brief.tg .brief-cap {
+  font-family: var(--tg-mono);
+}
+.sheet.brief.tg .brief-cap-input {
+  font-family: var(--tg-mono);
+  color: var(--tg-amber-hi);
+}
+
+/* ---------------------------------------------------------------- the HUD over the city */
+
+.tg-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease 0.2s;
+}
+.tg-hud[hidden] {
+  display: none;
+}
+.tg-hud.open {
+  opacity: 1;
+}
+.tg-frame {
+  position: absolute;
+  top: 70px;
+  bottom: 22px;
+  left: calc(var(--pane-left, 50vw) + 22px);
+  right: 22px;
+}
+.tg-frame .tg-corner {
+  width: 34px;
+  height: 34px;
+  border-color: rgba(var(--tg-amber-rgb), 0.65);
+  filter: none;
+}
+.tg-tape {
+  position: absolute;
+  top: 0;
+  left: 60px;
+  right: 60px;
+  height: 7px;
+  background:
+    repeating-linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.45) 0 1px, transparent 1px 60px) top / 100% 7px no-repeat,
+    repeating-linear-gradient(to right, rgba(var(--tg-amber-rgb), 0.25) 0 1px, transparent 1px 12px) top / 100% 3px no-repeat;
+  mask-image: linear-gradient(to right, transparent, #000 20%, #000 80%, transparent);
+}
+.tg-sweep {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 70px;
+  background:
+    linear-gradient(rgba(var(--tg-ice-rgb), 0.95), rgba(var(--tg-ice-rgb), 0.95)) right top / 1.5px 10px no-repeat,
+    linear-gradient(rgba(var(--tg-ice-rgb), 0.95), rgba(var(--tg-ice-rgb), 0.95)) right bottom / 1.5px 10px no-repeat,
+    linear-gradient(to bottom, transparent 10px, rgba(var(--tg-ice-rgb), 0.16) 12%, rgba(var(--tg-ice-rgb), 0.16) 88%, transparent calc(100% - 10px)) right / 1px 100% no-repeat,
+    linear-gradient(to right, transparent, rgba(var(--tg-ice-rgb), 0.04));
+  opacity: 0;
+  will-change: transform;
+  animation: tg-sweep 11s linear 1.2s infinite;
+}
+@keyframes tg-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(-70px);
+  }
+  4% {
+    opacity: 1;
+  }
+  52% {
+    opacity: 1;
+  }
+  58%,
+  100% {
+    opacity: 0;
+    transform: translateX(calc(100vw - var(--pane-left, 50vw) - 44px));
+  }
+}
+.tg-tele {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  font-family: var(--tg-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(var(--tg-amber-rgb), 0.85);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* A pin: a small reticle on the tower's head, a tick up, and the item's number, district and figure. */
+.tg-pins {
+  position: absolute;
+  inset: 0;
+}
+.tg-pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  will-change: transform;
+}
+.tg-pin.on {
+  opacity: 1;
+}
+.tg-pin.on.locked {
+  opacity: 0;
+}
+.tg-pin-mark {
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--tg-amber);
+  transform: rotate(45deg);
+  box-shadow: 0 0 8px rgba(var(--tg-amber-rgb), 0.6);
+}
+.tg-pin-tag {
+  position: absolute;
+  left: 10px;
+  bottom: calc(12px + var(--lift, 0px));
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 7px;
+  row-gap: 1px;
+  padding: 3px 8px 3px 7px;
+  white-space: nowrap;
+  background: rgba(var(--tg-black), 0.9);
+  box-shadow: inset 2px 0 0 var(--tg-amber);
+}
+.tg-pin-tag::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  bottom: calc(-12px - var(--lift, 0px));
+  width: 10px;
+  height: calc(12px + var(--lift, 0px));
+  border-left: 1px solid rgba(var(--tg-amber-rgb), 0.7);
+  border-top: 1px solid rgba(var(--tg-amber-rgb), 0.7);
+}
+.tg-pin-n {
+  font-family: var(--tg-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--tg-amber);
+}
+.tg-pin-name {
+  font-family: var(--tg-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--tg-ink);
+}
+.tg-pin-fig {
+  grid-column: 2;
+  font-family: var(--tg-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--tg-amber-hi);
+}
+.tg-pin[data-tone='fail'] .tg-pin-mark {
+  border-color: var(--tg-fail);
+}
+.tg-pin.grant .tg-pin-mark {
+  border-color: var(--tg-red);
+}
+
+/* The leader from the active row to its tower. */
+.tg-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.tg-lines.on {
+  opacity: 1;
+}
+.tg-leader {
+  fill: none;
+  stroke: rgba(var(--tg-amber-rgb), 0.95);
+  stroke-width: 1.25;
+}
+.tg-leader-glow {
+  fill: none;
+  stroke: rgba(var(--tg-amber-rgb), 0.16);
+  stroke-width: 5;
+}
+.tg-lines.grant .tg-leader-glow {
+  stroke: rgba(var(--tg-red-rgb), 0.2);
+}
+.tg-leader-dot {
+  fill: var(--tg-amber);
+}
+.tg-lines.grant .tg-leader {
+  stroke: rgba(255, 110, 80, 0.95);
+}
+.tg-lines.grant .tg-leader-dot {
+  fill: var(--tg-red);
+}
+
+/* The lock: brackets closed on the tower, a ring turning at its head, and the target's tag. */
+.tg-lock {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  color: var(--tg-amber);
+  transition: opacity 0.25s ease;
+  will-change: transform;
+}
+.tg-lock.on {
+  opacity: 1;
+}
+.tg-lock.grant {
+  color: var(--tg-red);
+}
+.tg-lock-c {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 0 solid currentColor;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+.tg-lock-c.tl {
+  top: 0;
+  left: 0;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+.tg-lock-c.tr {
+  top: 0;
+  right: 0;
+  border-top-width: 2px;
+  border-right-width: 2px;
+}
+.tg-lock-c.bl {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+}
+.tg-lock-c.br {
+  bottom: 0;
+  right: 0;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+}
+.tg-lock.acquire .tg-lock-c {
+  animation: tg-close 0.6s var(--tg-ease) both;
+}
+.tg-lock.acquire .tg-lock-c.tl {
+  --dx: -26px;
+  --dy: -26px;
+}
+.tg-lock.acquire .tg-lock-c.tr {
+  --dx: 26px;
+  --dy: -26px;
+}
+.tg-lock.acquire .tg-lock-c.bl {
+  --dx: -26px;
+  --dy: 26px;
+}
+.tg-lock.acquire .tg-lock-c.br {
+  --dx: 26px;
+  --dy: 26px;
+}
+@keyframes tg-close {
+  from {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.tg-lock-ring {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  width: 36px;
+  height: 36px;
+  margin-left: -18px;
+  border-radius: 50%;
+  border: 1.5px dashed currentColor;
+  opacity: 0.85;
+  animation: tg-spin 8s linear infinite;
+}
+.tg-lock-ring::after {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+.tg-lock-tag {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: -2px;
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 6px 10px 7px 9px;
+  white-space: nowrap;
+  background: rgba(var(--tg-black), 0.84);
+  box-shadow: inset 2px 0 0 currentColor, 0 0 0 1px rgba(var(--tg-amber-rgb), 0.18);
+}
+.tg-lock-n {
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: currentColor;
+}
+.tg-lock-name {
+  font-family: var(--tg-display);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--tg-ink);
+}
+.tg-lock-fig {
+  grid-column: 2;
+  font-family: var(--tg-mono);
+  font-size: 10.5px;
+  color: currentColor;
+}
+.tg-lock.flip .tg-lock-tag {
+  /* Flipped, the tag stands up and to the left of the ring, clear of the leader climbing in from below. */
+  left: auto;
+  top: -78px;
+  right: calc(50% + 14px);
+  box-shadow: inset -2px 0 0 currentColor, 0 0 0 1px rgba(var(--tg-amber-rgb), 0.18);
+}
+.tg-lock-tag::after {
+  content: 'Locked';
+  grid-column: 1 / span 2;
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(var(--tg-amber-rgb), 0.2);
+  font-family: var(--tg-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--tg-dim);
+}
+
+/* ---------------------------------------------------------------- a narrow window */
+
+@media (max-width: 1360px) {
+  .sheet.brief.tg .sheet-head {
+    padding: 20px 32px 14px 26px;
+  }
+  .sheet.brief.tg .sheet-body {
+    padding: 0 32px 56px 26px;
+  }
+  .sheet.brief.tg .sheet-title {
+    font-size: 44px;
+  }
+  .tg-figure-value {
+    font-size: 34px;
+  }
+  .tg-figures {
+    gap: 22px;
+  }
+  .tg-ranges {
+    width: 160px;
+  }
+  .sheet.brief.tg .brief-item.tg-active::after {
+    right: -32px;
+  }
+}
+
+/* ---------------------------------------------------------------- reduced motion: every mark at rest */
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-stream-col,
+  .tg-sweep,
+  .tg-seal .spin,
+  .tg-lock-ring,
+  .sheet.brief.tg .brief-act[data-weight='grant'] .tg-ret,
+  .tg-figure.hot .tg-label::before {
+    animation: none;
+  }
+  .tg-stream-col {
+    transform: translateY(-25%);
+  }
+  .tg-sweep,
+  .tg-scan {
+    display: none;
+  }
+  .sheet.brief.tg.open .sheet-head,
+  .sheet.brief.tg.open .sheet-body,
+  .sheet.brief.tg.open .brief-item.k-autonomy::before,
+  .tg-lock.acquire .tg-lock-c {
+    animation: none;
+  }
+  .tg-hud,
+  .tg-pin,
+  .tg-lock,
+  .tg-lines {
+    transition: none;
+  }
+}

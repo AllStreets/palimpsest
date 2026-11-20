@@ -20,7 +20,9 @@ import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, HANDLED_HEAD, itemSentence, kindWords, sinceLine, usageLine, waitingGroups } from './brief-words';
+import { actedLine, actionLabel, agreementOf, auditCounts, briefMeta, briefTitle, capBounds, emptyMorning, grantState, HANDLED_HEAD, itemReadouts, itemSentence, kindWords, leadFigures, sinceLine, usageLine, waitingGroups } from './brief-words';
+import { TIER_VALUE, windowNowPct } from '../../../shared/market-rules';
+import { createHud, createStream, type HudCity, type Target } from './targeting';
 import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
 import { createSheet, el, textButton } from './controls';
@@ -28,6 +30,7 @@ import { awardRounds, type Names } from './detail';
 import { handoffs } from './handoffs';
 import { coalesce, namesOf, refusal, secHead } from './pages';
 import './market.css';
+import './targeting.css';
 import { externalLink } from './external';
 import { summaryBlocks, summaryNodes } from './summary-md';
 
@@ -47,6 +50,8 @@ export interface BriefOptions {
   openDiff(runId: string): void;
   /** Starts the week's tour in the city (Task 17): true once it walks, false when the week has none to walk. */
   startTour(week: string): Promise<boolean>;
+  /** The city under the HUD (redesign C): readouts pin to its towers and the active item locks on to one. */
+  city?: HudCity;
 }
 
 const SECTIONS: Array<[keyof Brief['sections'], string]> = [
@@ -57,6 +62,134 @@ const SECTIONS: Array<[keyof Brief['sections'], string]> = [
 ];
 /** The engine events after which the brief is read again: anything that moves an item or adds one. */
 const READ_ON = /^(brief\.action|job\.(changed|proposed|posted)|audit\.(ended|started)|milestone\.reached|repo\.(halted|resumed|connected|disconnected)|run\.ended|merge\.(detected|reverted)|report\.written|autonomy\.(asked|granted|declined|suspended|revoked|acted))$/;
+/**
+ * Targeting (redesign direction C): each action's weight, by its consequence. Granting the city authority is the
+ * heaviest, then spending money, then deciding, and looking is the lightest.
+ */
+const WEIGHT: Partial<Record<BriefAction, 'grant' | 'spend' | 'decide'>> = {
+  grant: 'grant',
+  accept: 'spend',
+  retry: 'spend',
+  resume: 'spend',
+  cap: 'spend',
+  audit: 'spend',
+  tier: 'decide',
+  dismiss: 'decide',
+  decline: 'decide',
+  revoke: 'decide',
+};
+const weightOf = (a: BriefAction): string => WEIGHT[a] ?? 'look';
+const RANK = ['look', 'decide', 'spend', 'grant'];
+/** Each kind's state: the colour of its designator and its pin. */
+const TONE: Partial<Record<BriefItem['kind'], string>> = {
+  merged: 'ok',
+  failed: 'fail',
+  halt: 'fail',
+  revert: 'fail',
+  pr: 'warn',
+  proposal: 'ask',
+  'audit-due': 'warn',
+  usage: 'warn',
+  stale: 'warn',
+  autonomy: 'grant',
+};
+const SVG = 'http://www.w3.org/2000/svg';
+function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
+  const n = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+  return n;
+}
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** A rangefinder: a window's use as a lit run along a ruled scale, the cap as a bracket standing on it. */
+function rangefinder(label: string, pct: number | null, cap: number | null): HTMLElement {
+  const box = el('div', 'tg-range');
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `${label} window ${pct === null ? 'not read' : `${Math.round(pct)}%`}${cap === null ? '' : `, limit ${cap}%`}`);
+  const top = el('div', 'tg-range-top');
+  const fig = el('span', 'tg-range-fig', pct === null ? '?' : String(Math.round(pct)));
+  fig.append(el('span', 'tg-unit', '%'));
+  top.append(el('span', 'tg-label', label), fig);
+  const scale = el('div', 'tg-range-scale');
+  const v = pct === null ? 0 : Math.min(100, Math.max(0, pct));
+  const run = el('span', 'tg-range-run');
+  run.style.width = `${v}%`;
+  scale.append(run);
+  if (pct !== null) {
+    const head = el('span', 'tg-range-head');
+    head.style.left = `${v}%`;
+    scale.append(head);
+  }
+  if (cap !== null) {
+    const c = el('span', 'tg-range-cap');
+    c.style.left = `${Math.min(100, cap)}%`;
+    scale.append(c);
+    if (pct !== null && pct >= cap) box.classList.add('over');
+  }
+  box.append(top, scale);
+  return box;
+}
+
+/** A head figure: a large numeral over its short label. */
+function figure(value: string, label: string, tone = ''): HTMLElement {
+  const box = el('div', `tg-figure${tone ? ` ${tone}` : ''}`);
+  box.append(el('span', 'tg-figure-value', value), el('span', 'tg-label', label));
+  return box;
+}
+
+/** Ticks for a run of decisions: one a decision, the agreed lit and the misses red, at the end, the newest. */
+function ticks(agreed: number, of: number, cls: string): SVGSVGElement {
+  const strip = svg('svg', { viewBox: `0 0 ${of * 6} 20`, preserveAspectRatio: 'none', 'aria-hidden': 'true', class: `tg-ticks ${cls}` });
+  for (let i = 0; i < of; i++) strip.append(svg('rect', { class: i < agreed ? 'on' : 'off', x: i * 6 + 1, y: 0, width: 3, height: 20 }));
+  return strip;
+}
+
+/** The autonomy ask's evidence as two range strips: the master's run over every repo, and its run here. */
+function agreementStrip(text: string): HTMLElement | null {
+  const a = agreementOf(text);
+  if (!a) return null;
+  const box = el('div', 'tg-agree');
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `The master agreed with you on ${a.agreed} of the last ${a.of}${a.here !== null ? `, and on its last ${a.here} here` : ''}`);
+  const big = el('div', 'tg-agree-fig');
+  const v = el('span', 'tg-agree-v', String(a.agreed));
+  v.append(el('span', 'tg-agree-of', `/${a.of}`));
+  big.append(v, el('span', 'tg-label', 'agreed'));
+  const all = el('div', 'tg-agree-scale');
+  all.append(ticks(a.agreed, a.of, 'all'), el('span', 'tg-label', `last ${a.of}, every repo`));
+  box.append(big, all);
+  if (a.here !== null) {
+    const here = el('div', 'tg-agree-scale here');
+    here.append(ticks(a.here, a.here, 'here'), el('span', 'tg-label', `here ${a.here}/${a.here}`));
+    box.append(here);
+  }
+  return box;
+}
+
+/** An audit's claims as one segmented bar: real, partial, missing, broken. */
+function claimsBar(text: string): HTMLElement | null {
+  const c = auditCounts(text);
+  if (!c) return null;
+  const all = c.real + c.partial + c.missing + c.broken;
+  if (!all) return null;
+  const box = el('div', 'tg-claims');
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `${c.real} real, ${c.partial} partial, ${c.missing} missing, ${c.broken} broken`);
+  const bar = el('div', 'tg-claims-bar');
+  const key = el('div', 'tg-claims-key');
+  for (const [k, n] of [['real', c.real], ['partial', c.partial], ['missing', c.missing], ['broken', c.broken]] as const) {
+    if (!n) continue;
+    const seg = el('span', `seg ${k}`);
+    seg.style.flexGrow = String(n);
+    bar.append(seg);
+    const kk = el('span', `tg-claims-k ${k}`);
+    kk.append(el('b', '', String(n)), ` ${k}`);
+    key.append(kk);
+  }
+  box.append(bar, key);
+  return box;
+}
+
 /** The words for a week with fewer than two things to walk through. */
 export const NO_TOUR = 'Not enough happened this week for a walk through it.';
 
@@ -74,7 +207,51 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   handoffs.listen = opts.listen;
   handoffs.flyToTower = (repo) => opts.flyToFloor({ repo, floorId: null, agentId: null });
   const sheet = createSheet(parent, 'brief', '', opts.onDismiss);
+  sheet.root.classList.add('tg');
   const head = sheet.root.querySelector<HTMLElement>('.sheet-head')!;
+  // The HUD's own marks on the panel: its corner brackets, the range rail down its right edge, and the sweep on open.
+  const marks = el('div', 'tg-marks');
+  marks.setAttribute('aria-hidden', 'true');
+  for (const c of ['tl', 'tr', 'bl', 'br']) marks.append(el('span', `tg-corner ${c}`));
+  marks.append(el('span', 'tg-rail'), el('span', 'tg-scan'));
+  sheet.root.append(marks);
+  const stream = createStream(sheet.root);
+  const hud = createHud(parent, sheet.root, sheet.body, opts.city);
+  // The window the brief covers, as a readout under the day (the day is the heading; nothing stands over it).
+  const kicker = el('p', 'tg-kicker');
+  head.querySelector('.sheet-title')!.after(kicker);
+  const readouts = el('div', 'tg-readouts');
+  head.append(readouts);
+  /** The item the HUD locks on to: the one under the pointer or focus, or else the first that waits. */
+  let pointed: string | null = null;
+  let firstTarget: string | null = null;
+  const lockOn = (): void => {
+    const id = pointed ?? firstTarget;
+    const row = id ? rows.get(id)?.el ?? null : null;
+    for (const r of rows.values()) r.el.classList.toggle('tg-active', r.el === row);
+    hud.setActive(id, row);
+  };
+  const itemAt = (t: EventTarget | null): string | null => (t instanceof Element ? t.closest<HTMLElement>('.brief-item')?.dataset.item ?? null : null);
+  sheet.body.addEventListener('pointerover', (e) => {
+    const id = itemAt(e.target);
+    if (id && id !== pointed) {
+      pointed = id;
+      lockOn();
+    }
+  });
+  sheet.body.addEventListener('pointerleave', () => {
+    if (pointed && !sheet.body.contains(document.activeElement)) {
+      pointed = null;
+      lockOn();
+    }
+  });
+  sheet.body.addEventListener('focusin', (e) => {
+    const id = itemAt(e.target);
+    if (id !== pointed) {
+      pointed = id;
+      lockOn();
+    }
+  });
   // Scrolled, the head is ruled off from the rows passing under it.
   sheet.body.addEventListener('scroll', () => {
     const on = sheet.body.scrollTop > 4;
@@ -92,9 +269,13 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   const usageText = document.createTextNode('');
   const toTreasury = el('a', 'brief-why-link brief-report-link', 'The treasury');
   toTreasury.href = routeHref('treasury');
+  // The rangefinders in the head are the way to the treasury now; this one stays for a screen reader's reading only.
+  toTreasury.tabIndex = -1;
   usage.append(usageText, ' ', toTreasury, ' keeps the daily report.');
   const trouble = el('p', 'detail-trouble');
   trouble.hidden = true;
+  // The figures in the head carry the lead, the window and the usage; the sentences stay for a screen reader.
+  for (const p of [lead, since, usage]) p.classList.add('tg-sr');
   sheet.body.append(trouble, lead, empty, since, usage);
   const secs = new Map<keyof Brief['sections'], { box: HTMLElement; list: HTMLElement; key: HTMLElement }>();
   for (const [k, name] of SECTIONS) {
@@ -103,7 +284,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const list = el('ol', 'brief-list');
     const key = el('p', 'jobs-key brief-key');
     key.hidden = true;
-    box.append(secHead(name), key, list);
+    box.append(secHead(name, ''), key, list);
     box.hidden = true;
     sheet.body.append(box);
     secs.set(k, { box, list, key });
@@ -134,9 +315,12 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   /** Ask why's answer per item, read once: the node to show, or the words while it reads. */
   const whyOf = new Map<string, HTMLElement | 'reading'>();
   const rows = new Map<string, { key: string; el: HTMLElement }>();
+  /** Each open waiting item's target number, 1 up, in the order the list shows them. */
+  const targetNo = new Map<string, number>();
   /** Where focus goes after the next render: a row and a selector inside it. */
   let focusNext: { id: string; sel: string } | null = null;
   let whyIds = 0;
+  let targetsKey = '';
 
   const read = coalesce(async () => {
     try {
@@ -364,6 +548,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       // The open is asked for before look() records it, so a re-render the record starts cannot lose the click.
       const link = externalLink(el('a', 'textbtn brief-act', label), item.refs.prUrl, () => look(item, 'open-pr'));
       link.dataset.action = a;
+      link.dataset.weight = weightOf(a);
       link.setAttribute('aria-label', `${label}: ${head}, on GitHub`);
       return link;
     }
@@ -395,7 +580,21 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       }
     });
     b.dataset.action = a;
+    b.dataset.weight = weightOf(a);
     b.setAttribute('aria-label', `${label}: ${head}`);
+    // Every key is a reticle: four corner ticks, and for a key that spends, its sum in its own window.
+    b.prepend(el('span', 'tg-ret'));
+    if (a === 'accept' && item.kind === 'proposal') b.append(el('span', 'tg-cost', `${TIER_VALUE[item.tier ?? 'normal']} cr`));
+    if (a === 'grant') {
+      const seal = svg('svg', { viewBox: '0 0 40 40', class: 'tg-seal', 'aria-hidden': 'true' });
+      seal.append(
+        svg('circle', { class: 'ring', cx: 20, cy: 20, r: 15 }),
+        svg('circle', { class: 'spin', cx: 20, cy: 20, r: 18.5 }),
+        svg('path', { class: 'cross', d: 'M20 1v8M20 31v8M1 20h8M31 20h8' }),
+        svg('circle', { class: 'dot', cx: 20, cy: 20, r: 3 }),
+      );
+      b.prepend(seal);
+    }
     if (a === 'why') {
       const id = `brief-why-${(whyIds += 1)}`;
       b.setAttribute('aria-expanded', String(whyOpen.has(item.id)));
@@ -463,15 +662,44 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     li.dataset.kind = item.kind;
     if (item.acted) li.dataset.acted = item.acted.action;
     if (busy.has(item.id)) li.setAttribute('aria-busy', 'true');
+    li.dataset.tone = TONE[item.kind] ?? '';
+    // The designator: the target's number in what waits, in its own reticle.
+    const n = targetNo.get(item.id);
+    const des = el('span', 'tg-des', n ? pad2(n) : '');
+    des.setAttribute('aria-hidden', 'true');
+    li.append(des);
+    const m = briefMeta(item, now);
+    if (m.where || m.when) {
+      const meta = el('p', 'tg-meta');
+      if (m.where) meta.append(el('span', 'tg-where', m.where));
+      if (m.when) meta.append(el('span', 'tg-when', m.when));
+      li.append(meta);
+    }
     li.append(el('h3', 'brief-head', headOf(item)));
-    const line = el('p', 'brief-line');
-    const dl = dateline(item, now);
-    if (dl) line.append(el('span', 'brief-dateline', dl));
-    line.append(el('span', 'brief-sentence', itemSentence(item, names)));
+    if (item.kind === 'autonomy') {
+      const strip = agreementStrip(item.text);
+      if (strip) li.append(strip);
+    }
+    if (item.kind === 'audit') {
+      const bar = claimsBar(item.text);
+      if (bar) li.append(bar);
+    }
+    const line = el('div', 'brief-line');
+    const outs = el('p', 'tg-outs');
+    // The autonomy ask's strip carries its figures; the row repeats none of them.
+    for (const r of item.kind === 'autonomy' && li.querySelector('.tg-agree') ? [] : itemReadouts(item, names)) {
+      const o = el('span', `tg-out${r.tone ? ` ${r.tone}` : ''}${r.k ? '' : ' bare'}`);
+      o.append(el('span', 'tg-out-v', r.v));
+      if (r.k) o.append(el('span', 'tg-out-k', r.k));
+      outs.append(o);
+    }
+    line.append(outs);
     const acts = item.actions.map((a) => actionNode(item, a)).filter((x): x is HTMLElement => x !== null);
     if (acts.length) {
       const span = el('span', 'brief-acts');
-      span.append(...acts);
+      // The heaviest key ends the row, where the eye ends.
+      const rank = (x: HTMLElement): number => RANK.indexOf(x.dataset.weight ?? 'look');
+      span.append(...acts.sort((x, y) => rank(x) - rank(y)));
       line.append(span);
     }
     const did = actedLine(item, item.kind === 'usage' ? brief?.usage.todayCapPct : null);
@@ -497,6 +725,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       box.setAttribute('role', 'region');
       box.setAttribute('aria-label', `Why: ${headOf(item)}`);
       const got = whyOf.get(item.id);
+      // The whole sentence, one tap away: the row itself carries only its readouts.
+      box.append(el('p', 'brief-why-text tg-said', itemSentence(item, names)));
       box.append(got && got !== 'reading' ? got : el('p', 'brief-why-text reading', 'Reading the reason'));
       li.append(box);
     }
@@ -524,7 +754,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const want: HTMLElement[] = [];
     for (const item of items) {
       seen.add(item.id);
-      const key = JSON.stringify([item, busy.has(item.id), errors.get(item.id), quiet.get(item.id), whyOpen.has(item.id), whyOf.get(item.id) === 'reading', tierOpen.has(item.id), item.kind === 'usage' && capOpen, b.usage.todayCapPct, settings, names.firm(item.refs.firmId ?? '')]);
+      const key = JSON.stringify([item, targetNo.get(item.id), busy.has(item.id), errors.get(item.id), quiet.get(item.id), whyOpen.has(item.id), whyOf.get(item.id) === 'reading', tierOpen.has(item.id), item.kind === 'usage' && capOpen, b.usage.todayCapPct, settings, names.firm(item.refs.firmId ?? '')]);
       const had = rows.get(item.id);
       if (had && had.key === key) {
         want.push(had.el);
@@ -545,6 +775,58 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) into.replaceChildren(...want);
   }
 
+  /** The pins over the city: each open waiting item with a district, numbered as the list numbers it. */
+  function drawTargets(ordered: BriefItem[]): void {
+    const ts: Target[] = [];
+    for (const i of ordered) {
+      if (!i.repo) continue;
+      const r = itemReadouts(i, names);
+      const cost = i.kind === 'proposal' ? `${TIER_VALUE[i.tier ?? 'normal']} cr` : '';
+      const agree = i.kind === 'autonomy' ? agreementOf(cleanText(i.text, 600)) : null;
+      ts.push({
+        id: i.id,
+        n: targetNo.get(i.id) ?? 0,
+        repo: i.repo,
+        name: cleanText(i.repo.split('/').pop() ?? i.repo, 60),
+        figure: agree ? `grant? ${agree.agreed}/${agree.of}` : cost || r.map((x) => `${x.v}${x.k ? ` ${x.k}` : ''}`)[0] || i.kind,
+        tone: TONE[i.kind] ?? '',
+        grant: i.kind === 'autonomy',
+      });
+    }
+    firstTarget = ts[0]?.id ?? null;
+    const key = JSON.stringify(ts);
+    if (key !== targetsKey) {
+      targetsKey = key;
+      hud.setTargets(ts);
+    }
+  }
+
+  function drawReadouts(b: Brief, first: boolean): void {
+    const f = leadFigures(b.lead);
+    const waiting = waitingGroups(b.sections.waiting).open.length;
+    const five = windowNowPct(b.usage.fiveHour);
+    const seven = windowNowPct(b.usage.sevenDay);
+    const cap = Math.round(b.usage.todayCapPct ?? b.usage.fiveHour.capPct ?? settings.dayCapPct);
+    const sinceWords = sinceLine(b.since, b.day, first).replace(/^Since /, '');
+    const key = JSON.stringify([waiting, f, five, seven, cap, sinceWords]);
+    if (readouts.dataset.key === key) return;
+    readouts.dataset.key = key;
+    kicker.replaceChildren(el('span', 'tg-kicker-k', `Since ${sinceWords}`));
+    const figs = el('div', 'tg-figures');
+    figs.append(
+      figure(pad2(waiting), 'waiting', waiting ? 'hot' : ''),
+      figure(pad2(f.merged), 'merged'),
+      figure(f.spent ?? '0', 'credits spent'),
+    );
+    const ranges = el('a', 'tg-ranges');
+    ranges.href = routeHref('treasury');
+    ranges.setAttribute('aria-label', `${usageLine(b.usage, settings.dayCapPct)} The treasury keeps the daily report.`);
+    ranges.append(rangefinder('5 hour', five, cap), rangefinder('7 day', seven, null));
+    readouts.replaceChildren(figs, ranges);
+    // The stream runs under the list, from the head's foot down.
+    requestAnimationFrame(() => sheet.root.style.setProperty('--tg-head', `${head.offsetHeight}px`));
+  }
+
   function render(): void {
     if (!sheet.shown || !brief) return;
     const b = brief;
@@ -555,6 +837,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const first = firstHere ?? b.firstOpen;
     sheet.root.dataset.first = String(first);
     since.textContent = sinceLine(b.since, b.day, first);
+    drawReadouts(b, first);
     usageText.textContent = usageLine(b.usage, settings.dayCapPct);
     const items = allItems(b);
     // An empty morning: the one line takes the lead's place, and the lead's own second sentence follows it quietly.
@@ -569,18 +852,29 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       // What an audit does is said once, under the section that offers it.
       const due = list.some((i) => i.kind === 'audit-due');
       s.key.hidden = !due;
-      if (due) s.key.textContent = 'An audit reads a fresh clone of the repo in a sandbox and proposes jobs for what its README promises and its code does not do. Nothing runs until you post one.';
+      if (due) s.key.textContent = 'Audits check the README against the code. Nothing runs until you post.';
       // Waiting on you: the rows that need a click, then what he settled today in a quieter list of its own.
       if (k === 'waiting') {
         const { open, handled } = waitingGroups(list);
         s.list.hidden = open.length === 0;
         handledHead.hidden = handled.length === 0;
         handledList.hidden = handled.length === 0;
-        fill(s.list, open, now, seen);
+        // The heaviest ask stands first: an offer of authority leads what waits on him (the order of the rest is the engine's).
+        const ordered = [...open.filter((i) => i.kind === 'autonomy'), ...open.filter((i) => i.kind !== 'autonomy')];
+        targetNo.clear();
+        ordered.forEach((i, at) => targetNo.set(i.id, at + 1));
+        fill(s.list, ordered, now, seen);
         fill(handledList, handled, now, seen);
+        drawTargets(ordered);
       } else fill(s.list, list, now, seen);
+      const count = s.box.querySelector<HTMLElement>('.repos-sec-count');
+      const n = k === 'waiting' ? waitingGroups(list).open.length : list.length;
+      if (count) count.textContent = pad2(n);
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
+    if (pointed && !rows.has(pointed)) pointed = null;
+    lockOn();
+    stream.fill(items.flatMap((i) => [i.repo?.split('/').pop() ?? '', ...itemReadouts(i, names).map((r) => r.v)]).filter((x) => /\w/.test(x)).slice(0, 24));
     if (focusNext) {
       const f = focusNext;
       focusNext = null;
@@ -594,6 +888,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     show() {
       if (!sheet.shown) {
         sheet.show();
+        hud.show();
+        targetsKey = '';
         unlisten = opts.listen(onEvent);
       }
       render();
@@ -601,6 +897,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     },
     hide() {
       sheet.hide();
+      hud.hide();
+      pointed = null;
       unlisten?.();
       unlisten = null;
       whyOpen.clear();

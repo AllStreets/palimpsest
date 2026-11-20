@@ -181,6 +181,8 @@ export interface City {
   dispose(): void;
   /** Resolves once the first texture sets (materials.ts FIRST_SETS) have loaded and the first frames are on screen. */
   ready: Promise<void>;
+  /** Runs `fn` every frame after the plates are placed, until the returned function is called (the Brief's pinned readouts, redesign C). */
+  onFrame(fn: () => void): () => void;
   /** Jumps the camera to an eye and target (tests and debugging). */
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Draw calls and triangles in the last whole frame, every pass included. */
@@ -1721,6 +1723,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...allPickables(),
     ...(camera.position.y < STREET_EYE ? grid.blockers : []),
   ]);
+  /** What else follows the camera each frame, after the plates (onFrame). */
+  const frameHooks = new Set<() => void>();
   // The personas' plates stand over their figures, hidden behind the same towers.
   const peoplePlates = createPlates(canvasHost, camera, () => [
     ...allPickables(),
@@ -2185,6 +2189,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     fitMark();
     plates.update();
     peoplePlates.update();
+    for (const fn of frameHooks) fn();
     sky.dome.position.copy(camera.position);
     followShadow(dt);
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
@@ -2294,6 +2299,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     ready,
     view: (eye, target) => rig.view(eye, target),
+    onFrame(fn) {
+      frameHooks.add(fn);
+      return () => frameHooks.delete(fn);
+    },
     stats: () => ({ ...lastFrame }),
     trace(on) {
       const out = traced ?? [];
