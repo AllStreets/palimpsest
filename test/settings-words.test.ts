@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { API_DAILY_NOTE, API_NEEDS_KEY, apiControlsOff, HOOK_NOTE, KEYCHAIN_NOTE, qualityNote, settingsWindow, windowSentence } from '../app/src/ui/settings-words.js';
@@ -56,4 +57,28 @@ test('the API switch and daily limit stay off until a key is stored, and say so 
   assert.equal(apiControlsOff(true), false);
   assert.equal(API_NEEDS_KEY, 'These stay off until you store a key above.');
   assert.ok(!/\u2014|--/.test(API_NEEDS_KEY));
+});
+
+test('with no key stored the toggle and the dollar field look disabled, and the reason sits right beside them', () => {
+  const root = new URL('../app/src/ui/', import.meta.url);
+  const ts = readFileSync(new URL('settings.ts', root), 'utf8');
+  const css = readFileSync(new URL('screens.css', root), 'utf8');
+  // The reason follows the dollar field directly, before the limit's own note.
+  assert.match(ts, /apiControls\.append\(enableWrap, dailyLine, needsKey, dailyNote\)/);
+  // The field is read only as well as disabled while no key is stored.
+  assert.match(ts, /daily\.readOnly = off/);
+  // Greyed out, with a not-allowed cursor over the switch, the field and its label.
+  // Every declaration of the rules whose selector list names `sel`.
+  const rule = (sel: string): string =>
+    [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+      .filter((m) => m[1].split(',').some((x) => x.trim() === sel))
+      .map((m) => m[2])
+      .join('\n');
+  for (const sel of ['.apikey-controls.needs-key .apikey-enable-wrap', '.apikey-controls.needs-key .apikey-daily-line']) {
+    assert.match(rule(sel), /cursor: not-allowed/, sel);
+    assert.match(rule(sel), /grayscale/, sel);
+    assert.match(rule(sel), /opacity/, sel);
+  }
+  assert.match(rule('.apikey-controls.needs-key .apikey-daily'), /cursor: not-allowed/);
+  assert.match(rule('.apikey-controls.needs-key .apikey-daily'), /dashed/);
 });

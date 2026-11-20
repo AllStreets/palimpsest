@@ -253,7 +253,7 @@ export function createSettings(
   dailyLine.append(dailyWrap, el('span', 'cap-of', 'a day at most'));
   const dailyNote = el('p', 'set-note apikey-daily-note', API_DAILY_NOTE);
   const needsKey = el('p', 'set-note apikey-needs-key', API_NEEDS_KEY);
-  apiControls.append(enableWrap, dailyLine, dailyNote, needsKey);
+  apiControls.append(enableWrap, dailyLine, needsKey, dailyNote);
   apiP.main.append(apiLine, keyRow, keyForm, keyNote, keyError, apiControls, apiP.agents);
   let savedDaily = 0;
   const apiSync = latestWins<Partial<Settings['anthropicApi']>>(
@@ -302,6 +302,9 @@ export function createSettings(
     apiControls.classList.toggle('needs-key', off);
     enable.setDisabled(off);
     daily.disabled = off;
+    daily.readOnly = off;
+    daily.title = off ? API_NEEDS_KEY : '';
+    enableWrap.title = off ? API_NEEDS_KEY : '';
     needsKey.hidden = !off;
     keySave.textContent = set ? 'Replace' : 'Store in keychain';
   }

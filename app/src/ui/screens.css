@@ -1113,13 +1113,21 @@ a.repo-name:focus-visible {
 .apikey-controls[hidden] {
   display: none;
 }
-.apikey-controls.needs-key .apikey-enable-text,
+.apikey-controls.needs-key .apikey-enable-wrap,
 .apikey-controls.needs-key .apikey-daily-line,
 .apikey-controls.needs-key .apikey-daily-note {
-  opacity: 0.5;
+  opacity: 0.42;
+  filter: grayscale(1);
+  cursor: not-allowed;
 }
-.apikey-controls.needs-key .apikey-enable-text {
-  cursor: default;
+.apikey-controls.needs-key .apikey-enable-wrap *,
+.apikey-controls.needs-key .apikey-daily-line *,
+.apikey-controls.needs-key .apikey-daily {
+  cursor: not-allowed;
+}
+.apikey-controls.needs-key .apikey-daily {
+  border-bottom-style: dashed;
+  caret-color: transparent;
 }
 .apikey-needs-key {
   flex-basis: 100%;
