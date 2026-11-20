@@ -1,7 +1,8 @@
 /**
  * The os layer's lints, over every .css and .ts under app/src/ui/os/: no
- * backdrop-filter, motion on transform and opacity only, no HTML parsing, and
- * a reduced-motion answer for every animated rule.
+ * backdrop-filter, motion on transform and opacity only (in sheets, inline
+ * styles and element.animate), no HTML parsing, and
+ * animation none under prefers-reduced-motion for every animated class.
  */
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -68,6 +69,55 @@ function cheap(entry: string): boolean {
   return prop === 'visibility' && (rest.length === 0 || /^0m?s$/.test(rest[0]));
 }
 
+/** What a Web Animations keyframe may name besides the two cheap properties. */
+const KEYFRAME_META = new Set(['offset', 'easing', 'composite']);
+const KEYFRAME_CHEAP = new Set(['transform', 'opacity', 'strokeDashoffset']);
+
+/** The argument text of a call opening at `open` (the index of its '('), up to the matching ')'. */
+function callArgs(src: string, open: number): string {
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '(' || src[i] === '[' || src[i] === '{') depth++;
+    if ((src[i] === ')' || src[i] === ']' || src[i] === '}') && --depth === 0) return src.slice(open + 1, i);
+  }
+  return src.slice(open + 1);
+}
+
+/**
+ * Motion a .ts file sets up that the CSS lint cannot see: transitions set
+ * inline, animations set inline (they belong in a sheet, where both lints
+ * reach them), and element.animate() keyframes on anything but transform and
+ * opacity. Setting style.transform is allowed: it is how panes move.
+ */
+function tsMotionFaults(raw: string): string[] {
+  const src = uncomment(raw).replace(/^\s*\/\/.*$/gm, '');
+  const out: string[] = [];
+  const set = [...src.matchAll(/\.style\.transition(?:Property)?\s*=\s*(['"`])([^'"`]*)\1/g)].map((m) => m[2]);
+  const prop = [...src.matchAll(/setProperty\(\s*(['"`])transition(?:-property)?\1\s*,\s*(['"`])([^'"`]*)\2/g)].map((m) => m[3]);
+  const inline = [...src.matchAll(/transition(?:-property)?\s*:\s*([^;'"`]+)/g)].map((m) => m[1]);
+  for (const list of [...set, ...prop, ...inline]) {
+    for (const entry of topLevel(list)) if (!cheap(entry)) out.push(`transition "${entry}"`);
+  }
+  for (const m of src.matchAll(/\.style\.(animation\w*)\s*=\s*(['"`]?)([^'"`;\n]*)\2/g)) {
+    if (m[2] && /^(none)?$/.test(m[3].trim())) continue;
+    out.push(`sets style.${m[1]}; animate in a sheet`);
+  }
+  for (const m of src.matchAll(/setProperty\(\s*(['"`])(animation[\w-]*)\1/g)) out.push(`sets ${m[2]}; animate in a sheet`);
+  for (const m of src.matchAll(/\.animate\s*\(/g)) {
+    const args = callArgs(src, m.index! + m[0].length - 1).trim();
+    if (!/^[[{]/.test(args)) {
+      out.push(`animate() with keyframes the lint cannot read: ${args.slice(0, 30)}`);
+      continue;
+    }
+    const frames = args[0] === '[' ? callArgs(args, 0) : `{${callArgs(args, 0)}}`;
+    for (const k of frames.matchAll(/([A-Za-z_$][\w$]*|['"][\w-]+['"])\s*:/g)) {
+      const key = k[1].replace(/['"]/g, '');
+      if (!KEYFRAME_CHEAP.has(key) && !KEYFRAME_META.has(key)) out.push(`animate() keyframes move ${key}`);
+    }
+  }
+  return out;
+}
+
 test('there are os files to lint', () => {
   assert.ok(css.some((f) => f.endsWith('tokens.css')), 'tokens.css is linted');
   assert.ok(ts.some((f) => f.endsWith('tokens.ts')), 'tokens.ts is linted');
@@ -98,13 +148,31 @@ test('transitions and animations move transform or opacity only', () => {
     }
   }
   for (const f of ts) {
-    const src = uncomment(read(f));
-    const set = [...src.matchAll(/\.style\.transition(?:Property)?\s*=\s*(['"`])([^'"`]*)\1/g)].map((m) => m[2]);
-    const inline = [...src.matchAll(/transition(?:-property)?\s*:\s*([^;'"`]+)/g)].map((m) => m[1]);
-    for (const list of [...set, ...inline]) {
-      for (const entry of topLevel(list)) assert.ok(cheap(entry), `${name(f)}: transition "${entry}"`);
-    }
+    for (const fault of tsMotionFaults(read(f))) assert.fail(`${name(f)}: ${fault}`);
   }
+});
+
+test('the .ts motion lint catches what it should and passes what it should', () => {
+  const bad = [
+    `el.style.transition = 'left 200ms';`,
+    `el.style.setProperty('transition', 'width 1s');`,
+    `el.style.animation = 'os-scan 1s';`,
+    `el.style.animationName = 'spin';`,
+    `el.style.setProperty('animation', 'spin 1s');`,
+    `el.animate([{ left: '0px' }, { left: '10px' }], 300);`,
+    `el.animate({ transform: ['none', 'scale(2)'], width: ['0', '1px'] }, { duration: 300 });`,
+    `el.animate(frames, 300);`,
+  ];
+  for (const src of bad) assert.ok(tsMotionFaults(src).length > 0, `missed: ${src}`);
+  const good = [
+    `el.style.transform = 'translate(4px, 2px)';`,
+    `el.style.transition = 'transform 240ms, opacity 140ms';`,
+    `el.style.animation = 'none';`,
+    `el.animate([{ transform: 'none', opacity: 0 }, { transform: 'translateX(4px)', opacity: 1, offset: 1, easing: 'ease' }], 300);`,
+    `el.animate({ opacity: [0, 1] }, { duration: 300 });`,
+    `node.textContent = text.slice(0, n);`,
+  ];
+  for (const src of good) assert.deepEqual(tsMotionFaults(src), [], `flagged: ${src}`);
 });
 
 test('no HTML parsing in the os layer or the Brief', () => {
@@ -118,13 +186,36 @@ test('every animated rule has a reduced-motion answer', () => {
   const reduced = blocks(sheets, /@media[^{]*prefers-reduced-motion:\s*reduce[^{]*\{/)
     .map((b) => b.body)
     .join('\n');
-  for (const f of css) {
-    for (const [sel, raw] of rules(uncomment(read(f)))) {
-      const anim = /(?:^|;|\s)animation(?:-name)?\s*:\s*([^;]+)/.exec(raw);
+  const missing = unansweredClasses(css.map((f) => ({ file: name(f), sheet: uncomment(read(f)) })), reduced);
+  assert.deepEqual(missing, [], `animated with no animation: none under prefers-reduced-motion: ${missing.join(', ')}`);
+});
+
+const ANIMATION = /(?:^|;|\s)animation(?:-name)?\s*:\s*([^;]+)/;
+
+/** The animated classes that no rule in the reduced-motion blocks stops with animation(-name): none. */
+function unansweredClasses(sheets: Array<{ file: string; sheet: string }>, reduced: string): string[] {
+  const stopped = new Set<string>();
+  for (const [sel, body] of rules(reduced)) {
+    const anim = ANIMATION.exec(body);
+    if (!anim || !/^none\b/.test(anim[1].trim())) continue;
+    for (const m of sel.matchAll(/\.([\w-]+)/g)) stopped.add(m[1]);
+  }
+  const out: string[] = [];
+  for (const { file, sheet } of sheets) {
+    const outside = sheet.replace(/@media[^{]*prefers-reduced-motion:\s*reduce[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '');
+    for (const [sel, raw] of rules(outside)) {
+      if (/^\s*(from|to|\d+%)/.test(sel)) continue;
+      const anim = ANIMATION.exec(raw);
       if (!anim || /^none\b/.test(anim[1].trim())) continue;
-      for (const cls of new Set([...sel.matchAll(/\.([\w-]+)/g)].map((m) => m[1]))) {
-        assert.ok(new RegExp(`\\.${cls}(?![\\w-])`).test(reduced), `${name(f)} animates .${cls} with no prefers-reduced-motion answer`);
-      }
+      for (const cls of new Set([...sel.matchAll(/\.([\w-]+)/g)].map((m) => m[1]))) if (!stopped.has(cls)) out.push(`${file} .${cls}`);
     }
   }
+  return out;
+}
+
+test('the reduced-motion lint wants animation none on the same class, not a mention', () => {
+  const sheet = `.a { animation: spin 1s; } .b { animation-name: spin; }`;
+  assert.deepEqual(unansweredClasses([{ file: 'x.css', sheet }], `.a { opacity: 1; } .b { display: none; }`), ['x.css .a', 'x.css .b']);
+  assert.deepEqual(unansweredClasses([{ file: 'x.css', sheet }], `.a { animation: none; } .b, .c { animation-name: none; }`), []);
+  assert.deepEqual(unansweredClasses([{ file: 'x.css', sheet }], `.c { animation: none; } .a { animation: none; }`), ['x.css .b']);
 });

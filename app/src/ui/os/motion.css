@@ -1,0 +1,83 @@
+/*
+ * The scan (motion.ts scanOnce): one amber hairline crosses its host once,
+ * left to right, with a tick at each end and a short trail behind it. Only a
+ * hairline: a full-height band read as a glitch in critique rounds 1 to 4.
+ *
+ * The cursor is a layer the host's size whose right edge is the hairline. It
+ * starts one width to the left and moves by transform alone, so nothing lays
+ * out, and it never spills past the host's right edge into a scroll area.
+ */
+.os-scan {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  z-index: 1;
+  pointer-events: none;
+  box-sizing: border-box;
+  border-right: 1px solid rgba(var(--os-amber-rgb), 0.85);
+  /* The trail: a faint wash over the last 56px behind the line. */
+  background: linear-gradient(to right, transparent calc(100% - 56px), rgba(var(--os-amber-rgb), 0.08) 100%);
+  opacity: 0;
+  transform: translateX(-100%);
+  will-change: transform, opacity;
+  animation: os-scan var(--os-scan) var(--os-ease) forwards;
+}
+
+/* The ticks: 7px arms reaching back from the hairline's two ends. */
+.os-scan::before,
+.os-scan::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  width: 7px;
+  height: 1px;
+  background: var(--os-amber);
+}
+.os-scan::before {
+  top: 0;
+}
+.os-scan::after {
+  bottom: 0;
+}
+
+@keyframes os-scan {
+  0% {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+  12% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+}
+
+/*
+ * A typed line's place, held: the whole text sits unseen in the same grid
+ * cell as the typed text, so the line is its full size from the first frame
+ * and nothing below it moves while it types.
+ */
+.os-type-hold {
+  display: grid;
+}
+.os-type-hold > * {
+  grid-area: 1 / 1;
+}
+.os-type-ghost {
+  visibility: hidden;
+}
+
+/* Still: no cursor runs. scanOnce adds none, and any left over is hidden. */
+@media (prefers-reduced-motion: reduce) {
+  .os-scan {
+    animation: none;
+    display: none;
+  }
+}

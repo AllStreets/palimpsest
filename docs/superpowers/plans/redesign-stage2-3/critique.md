@@ -36,3 +36,25 @@ Changes: below a 1400px window, the figures draw closer (22px, 18px values) and 
 - `red` is the lowest ink at 4.6:1. It is the lock's and the grant's alone and is always set at weight 600 or more; Task 6 should keep it off small text.
 - The ground swatch is drawn as an outline, because ink on itself has nothing to show.
 - The gallery panel is a plain field of ground with no brackets or depth. That is Task 5's panel, not this specimen's.
+
+## Task 4: type-in and scan
+
+Stills: `stills/task-4/type.webp`, `type-1280.webp`, `type-reduced-motion.webp`, from `tools/os-stills.ts type`, plus `type-mid-180.webp` and `type-mid-420.webp`: the top of the panel 180 ms and 420 ms after Replay, from a one-off scratch script on the same harness, to show the motion part way. In `type` the headline types in and the figures take one scan, on mount and on Replay.
+
+### Round 1
+
+1. **The typing moved the page.** The headline typed onto one line and then wrapped to two, so the figures, the Replay key and the swatches below jumped down 66px part way through. A type-in that reflows reads as broken. Anti-goal level: looks like it was done in simple code.
+2. The scan reads as intended: one amber hairline with a 7px tick at each end, and a faint 56px wash trailing behind it. No band, no glitch.
+
+Changes: `.os-type-hold` (motion.css) stacks the whole line, unseen, in the same grid cell as the typed text, so the line is its full size from the first frame.
+
+### Round 2
+
+1. The 180 ms frame shows "Eleven merged overnight" typed with the space for both lines held; the figures sit where they will stay. At 420 ms the second line is part typed and the hairline is past the last column, about to fade.
+2. **Reduced motion, at 0.7 s:** the headline is whole ("Eleven merged overnight. Six wait on you, and one asks for the city.") and there is no cursor. Checked in `type-reduced-motion.webp`.
+3. At 1280 and 1600 the finished state matches Task 3's specimen, with the Replay key added under the figures in dim.
+
+### Left, below the anti-goal level
+
+- The cursor layer starts one host-width to the left of its host at opacity 0. In a host without overflow clipping, the trail's first frames could show just left of the host while the opacity rises. Not visible in the gallery.
+- aria-label on a paragraph or a generic span is not reliably read by screen readers. typeIn sets it as the brief asks; T17 should put typed text on an element that can carry a name, or rely on the text itself once it is whole.

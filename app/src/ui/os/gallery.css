@@ -54,7 +54,10 @@
   align-items: baseline;
   column-gap: 8px;
   row-gap: 6px;
-  margin: 32px 0 0;
+  margin: 26px 0 0;
+  /* The scan's host (motion.css): it stands inside, and pads clear of the figures. */
+  position: relative;
+  padding: 6px 0;
 }
 .os-gallery-fig {
   display: contents;
@@ -122,6 +125,20 @@
   gap: 20px;
   margin: 40px 0 0;
 }
+.os-gallery-replay {
+  margin: 14px 0 0;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--os-dim);
+  font: 500 12px var(--os-mono);
+  letter-spacing: -0.02em;
+  cursor: pointer;
+}
+.os-gallery-replay:hover {
+  color: var(--os-ink2);
+}
+
 .os-gallery-key {
   padding: 8px 14px;
   border: 1px solid rgba(var(--os-ice-rgb), 0.55);

@@ -10,6 +10,7 @@ import './index.css';
 import './gallery.css';
 
 import { contrast, hex, over } from '../contrast.js';
+import { scanOnce, typeIn } from './motion.js';
 import { COLOUR, GROUND, type ColourToken } from './tokens.js';
 
 export type GalleryKind = 'type' | 'panel' | 'controls' | 'readouts' | 'pins' | 'terminal';
@@ -40,13 +41,25 @@ const ROLE: Record<ColourToken, string> = {
 /** The worst ground any text stands on: the panel at its thinnest over the city's brightest pixel. */
 const WORST = over([255, 255, 255], GROUND.rgb, GROUND.textMinAlpha);
 
-/** The type specimen: the date, a headline, two rows of figures, every colour, and the focus ring. */
-function typeSpecimen(host: HTMLElement): void {
+/**
+ * The type specimen: the date, a headline, two rows of figures, every colour,
+ * and the focus ring. The headline types in and the figures take one scan, on
+ * mount and on Replay; with reduced motion both are whole and still at once.
+ * Returns its cleanup.
+ */
+function typeSpecimen(host: HTMLElement): () => void {
   host.append(el('p', 'os-gallery-label', 'Type and colour'));
 
   const date = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
   host.append(el('h1', 'os-gallery-date', date));
-  host.append(el('p', 'os-gallery-head', 'Eleven merged overnight. Six wait on you, and one asks for the city.'));
+  const headline = 'Eleven merged overnight. Six wait on you, and one asks for the city.';
+  // The whole line holds its place unseen, so the typing never reflows what follows.
+  const hold = el('p', 'os-gallery-head os-type-hold');
+  const ghost = el('span', 'os-type-ghost', headline);
+  ghost.setAttribute('aria-hidden', 'true');
+  const head = el('span', '');
+  hold.append(ghost, head);
+  host.append(hold);
 
   const figs = el('div', 'os-gallery-figs os-figs');
   const rows: Array<Array<[string, string]>> = [
@@ -61,6 +74,17 @@ function typeSpecimen(host: HTMLElement): void {
     }
   }
   host.append(figs);
+
+  let cancel = typeIn(head, headline);
+  scanOnce(figs);
+  const replay = el('button', 'os-gallery-replay os-focus', 'Replay');
+  replay.type = 'button';
+  replay.addEventListener('click', () => {
+    cancel();
+    cancel = typeIn(head, headline);
+    scanOnce(figs);
+  });
+  host.append(replay);
 
   const swatches = el('ul', 'os-gallery-swatches');
   for (const [name, value] of Object.entries(COLOUR) as Array<[ColourToken, string]>) {
@@ -82,9 +106,10 @@ function typeSpecimen(host: HTMLElement): void {
   host.append(ring);
   // After layout, so the ring shows as keyboard focus does.
   requestAnimationFrame(() => key.focus({ preventScroll: true }));
+  return () => cancel();
 }
 
-const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void>> = { type: typeSpecimen };
+const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen };
 
 /** Shows one kind of the gallery over the city, and returns its unmount. */
 export function mountGallery(parent: HTMLElement, kind: GalleryKind): () => void {
@@ -92,8 +117,10 @@ export function mountGallery(parent: HTMLElement, kind: GalleryKind): () => void
   root.dataset.kind = kind;
   root.setAttribute('aria-label', `Gallery: ${kind}`);
   const build = BUILT[kind];
-  if (build) build(root);
-  else root.append(el('p', 'os-gallery-label', `${kind}: not built yet`));
+  const cleanup = build ? build(root) : root.append(el('p', 'os-gallery-label', `${kind}: not built yet`));
   parent.append(root);
-  return () => root.remove();
+  return () => {
+    cleanup?.();
+    root.remove();
+  };
 }
