@@ -161,7 +161,9 @@ export function scopeRefused(glob: string): string | null {
   if (!g) return 'an empty glob is not a path';
   if (/[{}[\]]/.test(g)) return `${g} is not a plain glob: braces and classes are not allowed`;
   if (/\s/.test(g) || /[\\]/.test(g) || g.startsWith('/') || g.split('/').includes('..') || !/[/*.]/.test(g)) return `${g} is not a path in the repo`;
-  const hit = denied(g) ?? deniedLiteral(g);
+  const norm = g.replace(/^(\.\/)+/, '').toLowerCase();
+  const envDir = norm.split('/').slice(0, -1).includes('.env') ? '.env' : null;
+  const hit = denied(norm) ?? deniedLiteral(norm) ?? envDir;
   return hit === null ? null : `${g} is denied by ${hit}`;
 }
 

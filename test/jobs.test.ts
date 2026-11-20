@@ -21,6 +21,7 @@ import {
   proposeHarnessJob,
   redact,
   repost,
+  scopeRefused,
   setScope,
   settleJobEffects,
   transition,
@@ -766,4 +767,20 @@ test('redact() pins: a 44 character mixed-case run, sk-ant, ghp_ and github_pat_
   assert.equal(redact('ghp_abcdefghijklmnopqrstuvwxyz0123456789'), '[redacted]');
   assert.equal(redact('github_pat_11ABCDEFG0abcdefghijklmnopqrstuv'), '[redacted]');
   assert.equal(redact(`at ${sha}`), `at ${sha}`);
+});
+
+test('scopeRefused: a leading ./ and letter case do not hide a denied path', () => {
+  assert.match(scopeRefused('./.github/workflows/a.yml') ?? '', /is denied by/);
+  assert.match(scopeRefused('src/.ENV') ?? '', /is denied by/);
+  assert.match(scopeRefused('.GitHub/Workflows/a.yml') ?? '', /is denied by/);
+});
+
+test('scopeRefused: a path under a folder named .env is refused', () => {
+  assert.match(scopeRefused('.env/x') ?? '', /is denied by/);
+});
+
+test('scopeRefused: plain scopes still stand', () => {
+  assert.equal(scopeRefused('src/**'), null);
+  assert.equal(scopeRefused('docs/*.md'), null);
+  assert.equal(scopeRefused('./src/**'), null);
 });
