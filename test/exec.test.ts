@@ -187,6 +187,10 @@ test('signalGroup refuses anything but an integer pgid above 1', () => {
   }
 });
 
+test("signalGroup refuses the engine's own pid", () => {
+  assert.equal(signalGroup(process.pid, 'SIGTERM'), false);
+});
+
 test('done resolves soon after the leader exits even when a grandchild holds stdout', async () => {
   const start = Date.now();
   const child = realSpawner('/bin/sh', ['-c', '(trap "" TERM; sleep 30) & echo $!; exit 3'], {});
