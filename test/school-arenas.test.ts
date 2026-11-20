@@ -24,7 +24,7 @@ import { paths } from '../engine/home.js';
 import { query, record } from '../engine/ledger.js';
 import { unattended } from '../engine/market/budget.js';
 import { getRepo } from '../engine/repos.js';
-import { arenaInfo as arenaInfoOf, arenaTasks, buildPast, buildPlanted, BUSY_REFUSAL, candidatesOf, listArenas, mutantCapMs, pastCandidatesOf, pauseStrandedBuilds, resumeArenas, sealedRefs, setArenaGatePoll, setMutantCap, type Candidate, type PastInput, type PastTruth, type PlantedTruth } from '../engine/school/arenas.js';
+import { arenaInfo as arenaInfoOf, arenaTasks, buildPast, buildPlanted, BUSY_REFUSAL, candidatesOf, failingTests, listArenas, mutantCapMs, pastCandidatesOf, pauseStrandedBuilds, resumeArenas, sealedRefs, setArenaGatePoll, setMutantCap, type Candidate, type PastInput, type PastTruth, type PlantedTruth } from '../engine/school/arenas.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { sailVoyage } from '../engine/school/voyages.js';
 import type { BeagleArena } from '../engine/school/beagle-api.js';
@@ -830,4 +830,141 @@ test('the arena row keeps up with the grading: its kept count matches the build 
   // the progress rows are not ledger events: the ledger still holds the whole arena at each step
   assert.deepEqual(query({ kind: 'arena.built' }).map((e) => (e.data as { arena: ArenaInfo }).arena.status), ['building', 'ready']);
   assert.deepEqual(verifyReplay().diffs.filter((d) => /^arena/.test(d)), []);
+});
+
+// ---------------------------------------------------------------- failingTests
+
+// Captured from node v22 `node --test` on: describe('suite A') with a failing
+// 'inner fails' and a passing 'inner ok', a failing test marked todo, a skipped
+// test and a failing 'top fail' (stack lines trimmed).
+const NODE_SPEC = [
+  '▶ suite A',
+  '  ✖ inner fails (0.203334ms)',
+  '  ✔ inner ok (0.038958ms)',
+  '✖ suite A (0.553417ms)',
+  '✖ todo one (0.063125ms) # TODO',
+  '﹣ skipped one (0.026875ms) # SKIP',
+  '✖ top fail (0.066458ms)',
+  'ℹ tests 5',
+  'ℹ suites 1',
+  'ℹ pass 1',
+  'ℹ fail 2',
+  'ℹ cancelled 0',
+  'ℹ skipped 1',
+  'ℹ todo 1',
+  'ℹ duration_ms 35.303125',
+  '',
+  '✖ failing tests:',
+  '',
+  'test at s.test.mjs:2:29',
+  '✖ inner fails (0.203334ms)',
+  '  Error: x',
+  '      at TestContext.<anonymous> (file:///tmp/s.test.mjs:2:63)',
+  '',
+  'test at s.test.mjs:3:1',
+  '✖ todo one (0.063125ms) # TODO',
+  '  Error: t',
+  '      at TestContext.<anonymous> (file:///tmp/s.test.mjs:3:48)',
+  '',
+  'test at s.test.mjs:5:1',
+  '✖ top fail (0.066458ms)',
+  '  Error: y',
+  '      at TestContext.<anonymous> (file:///tmp/s.test.mjs:5:32)',
+  '',
+].join('\n');
+
+const NODE_TAP = [
+  'TAP version 13',
+  '# Subtest: suite A',
+  '    # Subtest: inner fails',
+  '    not ok 1 - inner fails',
+  '      ---',
+  '      duration_ms: 0.199',
+  "      type: 'test'",
+  "      location: '/tmp/s.test.mjs:2:29'",
+  "      failureType: 'testCodeFailure'",
+  "      error: 'x'",
+  "      code: 'ERR_TEST_FAILURE'",
+  '      stack: |-',
+  '        TestContext.<anonymous> (file:///tmp/s.test.mjs:2:63)',
+  '      ...',
+  '    # Subtest: inner ok',
+  '    ok 2 - inner ok',
+  '      ---',
+  '      duration_ms: 0.03875',
+  "      type: 'test'",
+  '      ...',
+  '    1..2',
+  'not ok 1 - suite A',
+  '  ---',
+  '  duration_ms: 0.54675',
+  "  type: 'suite'",
+  "  location: '/tmp/s.test.mjs:2:1'",
+  "  failureType: 'subtestsFailed'",
+  "  error: '1 subtest failed'",
+  "  code: 'ERR_TEST_FAILURE'",
+  '  ...',
+  '# Subtest: todo one',
+  'not ok 2 - todo one # TODO',
+  '  ---',
+  '  duration_ms: 0.0625',
+  "  type: 'test'",
+  "  failureType: 'testCodeFailure'",
+  "  error: 't'",
+  '  ...',
+  '# Subtest: skipped one',
+  'ok 3 - skipped one # SKIP',
+  '  ---',
+  '  duration_ms: 0.02675',
+  "  type: 'test'",
+  '  ...',
+  '# Subtest: top fail',
+  'not ok 4 - top fail',
+  '  ---',
+  '  duration_ms: 0.065958',
+  "  type: 'test'",
+  "  failureType: 'testCodeFailure'",
+  "  error: 'y'",
+  '  ...',
+  '1..4',
+  '# tests 5',
+  '# suites 1',
+  '# pass 1',
+  '# fail 2',
+  '# skipped 1',
+  '# todo 1',
+  '',
+].join('\n');
+
+test('failingTests reads node spec from its failing tests summary: no suite, no TODO, no timings', () => {
+  assert.deepEqual(failingTests(NODE_SPEC), ['inner fails', 'top fail']);
+  assert.deepEqual(failingTests(`\x1b[31m${NODE_SPEC.replace(/✖/g, '\x1b[31m✖\x1b[39m')}`), ['inner fails', 'top fail'], 'colour codes change nothing');
+});
+
+test('failingTests reads node TAP leaving out suites and TODO and SKIP tests', () => {
+  assert.deepEqual(failingTests(NODE_TAP), ['inner fails', 'top fail']);
+});
+
+test('failingTests reads node spec without a summary, leaving out suites, TODO and SKIP', () => {
+  const body = NODE_SPEC.slice(0, NODE_SPEC.indexOf('ℹ tests'));
+  assert.deepEqual(failingTests(body), ['inner fails', 'top fail']);
+});
+
+test('failingTests still reads Jest, Vitest, pytest and Go', () => {
+  const jest = ['FAIL src/sum.test.js', '  sum', '    ✓ adds (2 ms)', '    ✕ subtracts (5 ms)', '    ✕ divides', '', 'Tests:       2 failed, 1 passed, 3 total'].join('\n');
+  assert.deepEqual(failingTests(jest), ['subtracts', 'divides']);
+  const vitest = [' ❯ src/sum.test.ts (3 tests | 1 failed) 4ms', '   × sum > subtracts 2ms', '   ✓ sum > adds', ' Tests  1 failed | 2 passed (3)'].join('\n');
+  assert.deepEqual(failingTests(vitest), ['sum > subtracts']);
+  const pytest = ['FAILED tests/test_sum.py::test_sub - assert 1 == 2', 'FAILED tests/test_sum.py::test_div', 'FAILED tests/test_sum.py::test_sub - again', '===== 2 failed, 3 passed in 0.31s ====='].join('\n');
+  assert.deepEqual(failingTests(pytest), ['tests/test_sum.py::test_sub', 'tests/test_sum.py::test_div']);
+  const go = ['=== RUN   TestAdd', '--- FAIL: TestAdd (0.00s)', '    --- FAIL: TestAdd/zero (0.00s)', '--- PASS: TestSub (0.00s)', '--- FAIL: TestDiv (0.01s)', 'FAIL'].join('\n');
+  assert.deepEqual(failingTests(go), ['TestAdd', 'TestDiv']);
+  assert.deepEqual(failingTests('all green\n# tests 3\n# pass 3\n'), []);
+});
+
+test('failingTests keeps at most 50 names, each once in first-seen order', () => {
+  const lines = Array.from({ length: 60 }, (_, i) => `--- FAIL: Test${i} (0.00s)`);
+  const names = failingTests([...lines, ...lines].join('\n'));
+  assert.equal(names.length, 50);
+  assert.deepEqual(names, Array.from({ length: 50 }, (_, i) => `Test${i}`));
 });
