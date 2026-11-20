@@ -5,7 +5,39 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { mutate } from '../engine/school/mutants.js';
+import { codeMask, mutate } from '../engine/school/mutants.js';
+
+const codeOf = (src: string): string[] =>
+  codeMask(src, 'js').map((row, n) => [...src.split('\n')[n]].filter((_, k) => row[k]).join(''));
+
+test('codeMask: a backtick regex is not code and the next line is', () => {
+  const [a, b] = codeOf('const a = /`/.test(s);\nconst b = 1;');
+  assert.equal(a, 'const a = .test(s);');
+  assert.equal(b, 'const b = 1;');
+});
+
+test('codeMask: a quote regex with flags is not code', () => {
+  const [a, b] = codeOf("const a = /'/gi.test(s);\nlet c = 2;");
+  assert.equal(a, 'const a = .test(s);');
+  assert.equal(b, 'let c = 2;');
+});
+
+test('codeMask: a class holding a slash stays inside the regex', () => {
+  const [a, b] = codeOf('const a = /[/`\'"]+/.test(s);\nx = 1;');
+  assert.equal(a, 'const a = .test(s);');
+  assert.equal(b, 'x = 1;');
+});
+
+test('codeMask: division is all code', () => {
+  assert.equal(codeOf('a / b / c')[0], 'a / b / c');
+  assert.equal(codeOf('f(x) / 2 / y')[0], 'f(x) / 2 / y');
+});
+
+test('codeMask: a regex after return is not code', () => {
+  const [a, b] = codeOf("  return /'/.test(s);\nz = 3;");
+  assert.equal(a, '  return .test(s);');
+  assert.equal(b, 'z = 3;');
+});
 
 const SRC = [
   'export function max(a, b) {',
