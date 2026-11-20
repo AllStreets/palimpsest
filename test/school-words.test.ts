@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import type { Agreement, GateState, Grant, Interval, NetCard, Prediction, TrainState, VoyageView } from '../shared/types.js';
 import {
   agreementLine,
+  kindScore,
   arenaWords,
   baseButton,
   bredLine,
@@ -338,4 +339,13 @@ test('a sailing voyage says when its last run finished and how fast it goes, and
   assert.doesNotMatch(voyageLine(v, { now: at('05:10'), gateOpen: false }), /stuck/);
   // no rate before there is time to measure one
   assert.equal(voyageLine(voyage({ runs: { done: 1, of: 480 }, lastRunAt: '2026-11-08T01:02:00.000Z' }), { now: at('01:02') + 30_000, gateOpen: true }), 'Sailing: generation 2 of 4, 1 of 480 runs. Last run just now. A voyage spans several nights.');
+});
+
+test('a kind with no score yet says it is not offerable yet, with its reason, instead of a lone dot', () => {
+  const none = agreement({ kind: 'propose:harness', rows: 0, agreed: 0, rate: null, eligible: false });
+  assert.deepEqual(kindScore(none), { text: 'not offerable yet', reason: 'no decision of this kind has had a prediction yet' });
+  const skewed = agreement({ kind: 'merge:low', skewed: true });
+  assert.deepEqual(kindScore(skewed), { text: 'not offerable', reason: 'you approve nearly all of these' });
+  assert.deepEqual(kindScore(agreement({})), { text: '48 of 50', reason: null });
+  for (const k of [none, skewed]) assert.doesNotMatch(JSON.stringify(kindScore(k)), /—|--|·|\p{Extended_Pictographic}/u);
 });

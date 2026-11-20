@@ -185,6 +185,13 @@ export function agreementLine(a: Agreement): string {
   return `Agreed with you on ${a.agreed} of the last ${a.rows} decisions: ${fixed(a.rate.value)}, 95% interval ${fixed(a.rate.lo)} to ${fixed(a.rate.hi)}. ${a.eligible ? 'Enough for autonomy.' : NEEDS_LINE}`;
 }
 
+/** What a kind's score cell says: its count, or in plain words why it has none and cannot be offered. */
+export function kindScore(a: Agreement): { text: string; reason: string | null } {
+  if (a.skewed) return { text: 'not offerable', reason: 'you approve nearly all of these' };
+  if (a.rows === 0) return { text: 'not offerable yet', reason: 'no decision of this kind has had a prediction yet' };
+  return { text: `${a.agreed} of ${a.rows}`, reason: null };
+}
+
 const times = (n: number): string => (n === 1 ? 'once' : `${n} times`);
 
 /** A grant's state in a sentence, the engine's own reason kept whole where it wrote one. */

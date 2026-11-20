@@ -25,7 +25,7 @@ import {
   gateLine,
   grantLine,
   intervalText,
-  kindLabel,
+  kindLabel, kindScore,
   loraLine,
   loraSetAside,
   NET_BIAS,
@@ -431,7 +431,13 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
     r.append(name);
     if (a.rate && !a.skewed) r.append(cell('c-plate', ciplate(a.rate, null, { min: 0, max: 1 }, { mark: 0.95, label: `${intervalText(a.rate, 'agreement')}; the mark at 0.95` })));
     else r.append(cell('c-plate'));
-    r.append(cell('c-n', a.rows ? `${a.agreed} of ${a.rows}` : '·'));
+    const score = kindScore(a);
+    const n = cell('c-n', el('span', 'kind-score', score.text));
+    if (score.reason) {
+      n.append(el('span', 'kind-score-why', score.reason));
+      n.title = score.reason;
+    }
+    r.append(n);
     return r;
   }
 
