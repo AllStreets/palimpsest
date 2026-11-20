@@ -8,7 +8,7 @@ import { openDb } from '../engine/db.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
 import { award, better, BID_COOL_OFF_MS, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
-import { acquire, noteSseClients, PLAN_ESTIMATE, resetBudget, treasury, type Lease } from '../engine/market/budget.js';
+import { acquire, LOCAL_PLAN_FLOOR, noteSseClients, PLAN_ESTIMATE, planFloor, resetBudget, treasury, type Lease } from '../engine/market/budget.js';
 import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fake-provider.js';
 import { job, postManualJob, settleJobEffects } from '../engine/market/jobs.js';
 import type { PlanInput, Provider, Usage } from '../engine/market/provider.js';
@@ -432,9 +432,9 @@ test('a vote firm makes n plan calls and bids the median', async () => {
   assert.equal(bid?.price, 20);
   assert.equal(bid?.confidence, 0.7);
   assert.equal(bid?.plan, 'middle plan');
-  // Three calls reporting one credit each, one charge for all of them, each call floored at the estimate.
-  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 3 * PLAN_ESTIMATE }]);
-  assert.equal(bid?.cost, 3 * PLAN_ESTIMATE);
+  // Three local calls reporting one credit each, one charge for all of them: a local model pays its real cost.
+  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 3 }]);
+  assert.equal(bid?.cost, 3);
 });
 
 test('bid cost is charged to the firm', async () => {
@@ -540,7 +540,37 @@ test('a vote firm whose third call fails is charged for three calls', async () =
   });
   const j = bidding();
   assert.equal(await collectBid(j, eligibleAgents(j)[0], NOW), null);
-  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 3 * PLAN_ESTIMATE }]);
+  // Two answers at their real credit each, and the call that threw at the local floor.
+  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 2 + LOCAL_PLAN_FLOOR }]);
+});
+
+test('a local plan call pays its real cost with a floor of a quarter credit; Claude keeps the estimate as its floor', async () => {
+  reading();
+  addAgent('olla', 'alpha', 'ollama:qwen');
+  addAgent('emel', 'beta', 'mlx:grad-1');
+  addAgent('claudia', 'gamma', 'claude:sonnet');
+  addAgent('dear', 'delta', 'ollama:big');
+  script({
+    olla: { price: 20, confidence: 0.7, usage: { credits: 0.034 } },
+    emel: { price: 20, confidence: 0.7, usage: { credits: 0.01 } },
+    claudia: { price: 20, confidence: 0.7, usage: { weightedTokens: 600 } },
+    dear: { price: 20, confidence: 0.7, usage: { credits: 1.4 } },
+  });
+  setProvider('mlx', fakeProvider({ plan: async (i) => ({ plan: 'A plan.', price: 20, confidence: 0.7, usage: usage({ credits: 0.01 }) }) }));
+  const j = bidding();
+  await collectBids(j, NOW);
+  const rows = creditRows().sort((a, b) => a.firm_id.localeCompare(b.firm_id));
+  assert.deepEqual(rows, [
+    { firm_id: 'alpha', kind: 'bid', amount: LOCAL_PLAN_FLOOR },
+    { firm_id: 'beta', kind: 'bid', amount: LOCAL_PLAN_FLOOR },
+    { firm_id: 'delta', kind: 'bid', amount: 1.4 },
+    { firm_id: 'gamma', kind: 'bid', amount: PLAN_ESTIMATE },
+  ]);
+  assert.equal(LOCAL_PLAN_FLOOR, 0.25);
+  assert.equal(planFloor('ollama:qwen3-coder:30b'), 0.25);
+  assert.equal(planFloor('mlx:grad-1'), 0.25);
+  assert.equal(planFloor('claude:haiku'), PLAN_ESTIMATE);
+  assert.equal(planFloor('anthropic:claude-sonnet-4-5'), PLAN_ESTIMATE);
 });
 
 test('a charge that throws sits that agent out and the others still bid', async () => {

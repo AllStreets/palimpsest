@@ -12,7 +12,8 @@
  * highest expected value above zero, ties to the lower price, then the
  * higher calibrated pass probability.
  *
- * Money: a bid costs the firm what its plan calls cost, written once as a
+ * Money: a bid costs the firm what its plan calls cost (each at least
+ * PLAN_ESTIMATE on Claude and the API, LOCAL_PLAN_FLOOR on a local model), written once as a
  * `credits` row of kind `bid` with the firm's id, through budget `charge()`
  * (the Anthropic API backend writes those rows itself, `chargesItself`).
  * `bid.placed` carries `charged: { kind: 'bid', credits, by }` so the
@@ -37,7 +38,7 @@ import { query, record } from '../ledger.js';
 import { appraise } from '../school/hooks.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
-import { acquire, charge, creditsFor, PLAN_ESTIMATE, unattended } from './budget.js';
+import { acquire, charge, creditsFor, PLAN_ESTIMATE, planFloor, unattended } from './budget.js';
 import { agent as agentById, firm, listAgents } from './firms.js';
 import { job as storedJob, transition } from './jobs.js';
 import { EXCHANGE, siteOf, startTrip, whereIs } from './trips.js';
@@ -316,7 +317,8 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
   let spent: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
   /** Plan calls started: every one is charged, so the budget guard never undercounts. */
   let calls = 0;
-  /** Credits owed: max(reported, PLAN_ESTIMATE) per call that answered, PLAN_ESTIMATE per call that threw or was aborted. */
+  /** Credits owed: max(reported, floor) per call that answered, the floor per call that threw or was aborted; the floor is planFloor (lower on a local model). */
+  const floor = planFloor(a.model);
   let owed = 0;
   let cost = 0;
   let failure: string | null = null;
@@ -339,12 +341,12 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
       try {
         out = await provider.plan(input, lease.signal);
       } catch (err) {
-        owed += PLAN_ESTIMATE;
+        owed += floor;
         throw err;
       }
       const u = cleanUsage((out as { usage?: unknown } | null)?.usage);
       spent = addUsage(spent, u);
-      owed += Math.max(creditsFor(a.model, u), PLAN_ESTIMATE);
+      owed += Math.max(creditsFor(a.model, u), floor);
       const ok = checked(out);
       if (ok) answers.push(ok);
     }

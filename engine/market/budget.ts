@@ -42,8 +42,15 @@ import {
 } from '../usage.js';
 import type { Usage } from './provider.js';
 
-/** Credits a bid-time plan call is assumed to cost before it runs. */
+/** Credits a bid-time plan call is assumed to cost before it runs, and the least a Claude or API plan call is charged. */
 export const PLAN_ESTIMATE = 3;
+/** The least a local plan call (Ollama or MLX) is charged: it pays its real cost, which is far below a Claude call's (economy change B). */
+export const LOCAL_PLAN_FLOOR = 0.25;
+
+/** The least one plan call on `model` is charged: LOCAL_PLAN_FLOOR on a local model, PLAN_ESTIMATE on Claude and the API. */
+export function planFloor(model: ModelRef): number {
+  return model.startsWith('ollama:') || model.startsWith('mlx:') ? LOCAL_PLAN_FLOOR : PLAN_ESTIMATE;
+}
 /** Credits a review call is assumed to cost. */
 export const REVIEW_ESTIMATE = 5;
 /** Credits a design judge call is assumed to cost. */

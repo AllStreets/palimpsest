@@ -134,6 +134,7 @@ A job comes from: a labelled GitHub issue, a README-versus-reality proposal, a d
 ### 7.3 Credits and the treasury
 
 - Credits measure real usage. For Claude, a job's cost is the run's token usage from `claude -p --output-format json`, converted to a share of plan usage by calibrating against the official percentages (7.4). For local models, credits reflect time and memory, much cheaper.
+- A bid's plan call costs its real usage. A Claude or API plan call is charged at least 3 credits; a local one (`ollama:`, `mlx:`) at least 0.25 (Nov 19).
 - City budget default: up to half of each five-hour window, backing off when his own interactive Claude use is active. Daily and weekly caps in Settings.
 - Concurrency default: two Claude jobs and one local job at a time.
 
