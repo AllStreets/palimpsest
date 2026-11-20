@@ -2016,6 +2016,39 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await openHash(page, '#/', 'body[data-route="city"]');
     },
 
+    async 'job-cooling'(page) {
+      // The job waiting out its cooling off after rounds no firm took: its page says when bids open again.
+      const jobs = (await page.evaluate(() => fetch('/api/jobs').then((r) => r.json()))) as Array<{ id: string; status: string }>;
+      let cooling: string | null = null;
+      for (const j of jobs.filter((x) => x.status === 'open')) {
+        const d = (await page.evaluate((id) => fetch(`/api/jobs/${id}`).then((r) => r.json()), j.id)) as { nextBids: { at: string } | null };
+        if (d.nextBids && Date.parse(d.nextBids.at) > Date.now()) cooling = j.id;
+      }
+      if (!cooling) throw new Error('no job cooling off in the economy');
+      await openHash(page, `#/jobs/${cooling}`, '.jobpage .job-award-after');
+      await lean(page, 'job-cooling', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'firm-benched'(page) {
+      // The benched firm's page, scrolled to its books: the refund and the stipend rows among the charges.
+      const firms = (await page.evaluate(() => fetch('/api/firms').then((r) => r.json()))) as Array<{ id: string; status: string; balance: number }>;
+      const benched = firms.find((f) => f.status === 'active' && f.balance <= -150);
+      if (!benched) throw new Error('no benched firm in the economy');
+      await openHash(page, `#/firms/${benched.id}`, '.sheet .firm-books');
+      await toSheetTop(page, '.sheet .firm-books');
+      await lean(page, 'firm-benched', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'school-voyage'(page) {
+      // The School's voyage row for the one sailing: how far it has sailed and when its last run finished.
+      await openHash(page, '#/school', '.sheet.school .voyage-row[data-status="sailing"]');
+      await toSheetTop(page, '.sheet.school .voyage-row[data-status="sailing"]', 120);
+      await lean(page, 'school-voyage', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
     async agent(page) {
       // Dagny Hollis, the specialist Quickset hired from the roster: her design, lineage and tower.
       await openHash(page, '#/agents/dagny-hollis', '.sheet.agentpage .agent-design');
@@ -2373,6 +2406,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 /** What a bare `tools/capture.ts` writes: the README's media. */
 // street and people-follow stay out unless the controller agrees (Phase 5 ruling 17); the audit clip runs on its own
 // clock, so its place in the order moves nothing the others show.
+/** Shots whose pages exist only on the sample economy: asked for alone, they seed it (CAPTURE_ECONOMY=1). */
+const ECONOMY_SHOTS = ['brief', 'brief-autonomy', 'jobs', 'firms', 'agent', 'job-cooling', 'firm-benched', 'school-voyage', 'school', 'school-net', 'autonomy-settings'];
 const README_SHOTS = ['hero', 'stills', 'overview', 'palette', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit-page', 'district-audit', 'job-scope', 'school-screens', 'campus', 'graduate-tower', 'voyage', 'observatory', 'spire', 'revival', 'ribbon', 'ride-dossier', 'ride', 'week', 'week-poster', 'flyover', 'rise', 'construction-clip', 'audit', 'commute', 'diagrams', 'school-empty'];
 
 /** The market overview's framing: the exchange's front from about 100 m, the board, the stair and the forecourt (MARKET_VIEW overrides). */
@@ -2426,6 +2461,9 @@ async function main(): Promise<void> {
     process.env.RIDE_ONLY ??= 'clip';
     process.env.CAMPUS_ONLY ??= 'home,quad,clock';
   }
+  // Shots that read the economy's seed (the brief's items and every scrolled still of it, the new rules' pages) take the
+  // sample economy even when no CAPTURE_ECONOMY was asked for: without it they would show the bare sample city.
+  if (!process.env.CAPTURE_ECONOMY && wanted.some((w) => ECONOMY_SHOTS.includes(w))) process.env.CAPTURE_ECONOMY = '1';
   // The eight diagram images are drawn by tools/diagrams.ts, into the same place as everything else.
   if (wanted.includes('diagrams')) {
     const env: NodeJS.ProcessEnv = { ...process.env };
