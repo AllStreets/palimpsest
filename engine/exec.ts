@@ -189,11 +189,12 @@ function childEnv(opts: SpawnOpts): Record<string, string> {
 
 /**
  * Sends a signal to a process group. Refuses anything but an integer pgid
- * above 1 (0 and 1 would mean our own group or init). Returns whether the
- * signal was sent.
+ * above 1 (0 and 1 would mean our own group or init), and refuses the
+ * engine's own pid (the engine is usually its own group leader, so the signal
+ * would hit the engine itself). Returns whether the signal was sent.
  */
 export function signalGroup(pgid: number, signal: 'SIGTERM' | 'SIGKILL'): boolean {
-  if (!Number.isInteger(pgid) || pgid <= 1) return false;
+  if (!Number.isInteger(pgid) || pgid <= 1 || pgid === process.pid) return false;
   try {
     process.kill(-pgid, signal);
     return true;
