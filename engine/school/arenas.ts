@@ -71,7 +71,7 @@ import { paths } from '../home.js';
 import { record } from '../ledger.js';
 import { mirrorDir, mirrorReadEnv, syncMirror } from '../mirror.js';
 import { charge, unattended } from '../market/budget.js';
-import { CHECK_MS } from '../guild/checks.js';
+import { CHECK_MS, parseFailingTests } from '../guild/checks.js';
 import { execFileTool, execTool, forgetRun, MAX_RETURN_BYTES, reapRun, type FileOp } from '../market/broker.js';
 import { listAgents, toGenome } from '../market/firms.js';
 import { startEgress, type Egress } from '../market/egress.js';
@@ -384,18 +384,33 @@ function controlFilesFor(runId: string): void {
   }
 }
 
-/** The names of the tests that failed, from TAP (`not ok`), node's spec reporter, Jest, Vitest, pytest and Go. */
+/**
+ * The names of the tests that failed, at most 50, each once in the order first seen.
+ * Node's TAP and spec output go through the guild's parseFailingTests, so the arena
+ * and the test check agree on a name: no suites, no TODO or SKIP tests, no timings.
+ * The lines of Jest (`✕`), Vitest (`×`), pytest (`FAILED path::name`) and Go
+ * (`--- FAIL: name`) are read here, and node spec `✖` lines only when the output has
+ * no `failing tests:` summary (older node), leaving out TODO, SKIP and suites (`▶`).
+ */
 export function failingTests(output: string): string[] {
-  const out = new Set<string>();
-  for (const raw of output.split('\n')) {
-    const line = raw.replace(/\x1b\[[0-9;]*m/g, '');
-    const m =
-      /^\s*not ok \d+ - (.+?)(?:\s+#.*)?$/.exec(line) ??
-      /^\s*[✖✕×]\s+(.+?)(?:\s+\(\d[\d.]*\s*m?s\))?$/.exec(line) ??
-      /^FAILED\s+(\S+)/.exec(line) ??
-      /^--- FAIL: (\S+)/.exec(line);
-    const name = m?.[1]?.trim();
-    if (name && !/^(failing tests:|tests? failed)/i.test(name)) out.add(name);
+  const text = output.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  const lines = text.split('\n');
+  const out = new Set(parseFailingTests(text));
+  const summary = lines.some((l) => /^✖ failing tests:\s*$/.test(l));
+  const suites = new Set(lines.map((l) => /^\s*▶ (.+?)\s*$/.exec(l)?.[1]).filter((s) => s !== undefined));
+  for (const line of lines) {
+    const mark = /^\s*([✖✕×])\s+(.+?)\s*$/.exec(line);
+    if (mark) {
+      if (mark[1] === '✖' && summary) continue;
+      if (/\s#\s*(?:TODO|SKIP)\b/i.test(mark[2])) continue;
+      const name = mark[2].replace(/\s+\(?\d[\d.]*\s*m?s\)?$/, '').trim();
+      if (!name || /^(failing tests:|tests? failed)/i.test(name)) continue;
+      if (mark[1] === '✖' && suites.has(name)) continue;
+      out.add(name);
+      continue;
+    }
+    const m = /^FAILED\s+(\S+)/.exec(line) ?? /^--- FAIL: (\S+)/.exec(line);
+    if (m) out.add(m[1]);
   }
   return [...out].slice(0, 50);
 }
