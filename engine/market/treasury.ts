@@ -27,6 +27,9 @@
  *   (tools/restate-economy.ts, once), from the city (credit). Its json names
  *   the runs whose charges it gave back (`refundedRuns`), so they are never
  *   refunded again.
+ * - `stipend`: STIPEND credits from the city to a benched firm (at or below
+ *   BENCH_AT), once per local day (economy change D). Its json names the
+ *   `day`, so a restart never pays the same day twice.
  * - `commission`: the fee a firm pays the school to sail a voyage first
  *   (Phase 4 ruling 22), to the city, once, at commissioning (debit). It is
  *   the firm's whole cost: the voyage's own model calls and local minutes
@@ -41,7 +44,8 @@ import { bidById } from './bids.js';
 import { job as storedJob, listJobs, transition } from './jobs.js';
 import { kill, liveRunIds, run as storedRun } from './runs.js';
 import { endTripsOf } from './trips.js';
-import { canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE } from '../../shared/market-rules.js';
+import { benched, canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE, STIPEND } from '../../shared/market-rules.js';
+import { localDay } from '../../shared/day.js';
 import type { Bid, Inspection, Job, Run } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { SPEND_KINDS } from './budget.js';
@@ -50,10 +54,10 @@ import { COMMISSION } from '../../shared/school-rules.js';
 import { commissionDue, schoolHired } from '../school/hooks.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
 
-export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission' | 'refund' | 'correction';
+export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission' | 'refund' | 'correction' | 'stipend';
 
 /** The direction of each kind for the firm named on the row. */
-export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1, refund: 1, correction: 1 };
+export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1, refund: 1, correction: 1, stipend: 1 };
 const MONEY_KINDS = Object.keys(FIRM_SIGN) as MoneyKind[];
 const COST_KINDS: MoneyKind[] = ['bid', 'run'];
 /** How often the engine runs dailyTick. */
@@ -214,13 +218,33 @@ export function settle(now: number = clock()): void {
   });
 }
 
-/** Writes each firm's balance and, while it is below zero, since when (ruling 6: 72 hours continuously). */
+/**
+ * Writes each firm's balance and, while it is below zero, since when (ruling
+ * 6: 72 hours continuously). An active firm at or below BENCH_AT is benched
+ * and its clock paused (economy change D): `firm.benched` records when.
+ * Off the bench, `firm.unbenched` records its clock moved on by the time
+ * benched, so it resumes where it stopped (cleared, if it is above zero).
+ */
 function updateBooks(now: number): void {
   const b = balances();
   for (const f of listFirms()) {
     const bal = b[f.id] ?? START_BALANCE;
-    const negativeSince = bal < 0 ? (f.negativeSince ?? iso(now)) : null;
-    setFirmBooks(f.id, bal, negativeSince);
+    let negativeSince = bal < 0 ? (f.negativeSince ?? iso(now)) : null;
+    let benchedSince = f.benchedSince ?? null;
+    const at = iso(now);
+    if (benched({ balance: bal, status: f.status })) {
+      if (!benchedSince) {
+        benchedSince = at;
+        record('firm.benched', { firmId: f.id, at, balance: bal, negativeSince });
+        later('firm.benched', { firmId: f.id, at });
+      }
+    } else if (benchedSince) {
+      if (negativeSince) negativeSince = iso(Date.parse(negativeSince) + Math.max(0, now - Date.parse(benchedSince)));
+      benchedSince = null;
+      record('firm.unbenched', { firmId: f.id, at, balance: bal, negativeSince });
+      later('firm.unbenched', { firmId: f.id, at });
+    }
+    setFirmBooks(f.id, bal, negativeSince, benchedSince);
   }
 }
 
@@ -370,10 +394,28 @@ export function bookCorrection(firmId: string, credits: number, note: Restatemen
   });
 }
 
-/** Starts a firm's 72 hours below zero again from `now`, while it is below zero. */
+/** Starts a firm's 72 hours below zero again from `now`, while it is below zero; a benched firm's pause starts again with it. */
 export function restartNegativeClock(firmId: string, now: number = clock()): void {
   const bal = balances()[firmId];
-  if (typeof bal === 'number' && bal < 0) setFirmBooks(firmId, bal, iso(now));
+  if (typeof bal === 'number' && bal < 0) setFirmBooks(firmId, bal, iso(now), firm(firmId)?.benchedSince ? iso(now) : null);
+}
+
+/** Whether a firm has had its stipend for a local day. */
+function stipendPaid(firmId: string, day: string): boolean {
+  return Boolean(openDb().prepare("SELECT 1 FROM credits WHERE kind = 'stipend' AND firm_id = ? AND json_extract(json, '$.day') = ? LIMIT 1").get(firmId, day));
+}
+
+/**
+ * Pays every benched firm its STIPEND for the local day of `now`, once
+ * (economy change D): a `stipend` row naming the day and its `credits.moved`.
+ * The hourly tick calls it, so a restart or a later tick that day pays nothing more.
+ */
+export function payStipends(now: number = clock()): void {
+  const day = localDay(now);
+  for (const f of listFirms()) {
+    if (!benched(f) || stipendPaid(f.id, day)) continue;
+    transfer({ kind: 'stipend', firmId: f.id, micro: toMicro(STIPEND), extra: { day } }, now);
+  }
 }
 
 /** How far back the start of the treasury looks for engine-ended runs it did not hear end (an engine restart fails its live runs before it listens). */
@@ -545,14 +587,16 @@ function declareBankrupt(firmId: string, now: number): void {
 }
 
 /**
- * The hourly pass: settles the cost rows and declares bankrupt every active
- * firm that has been below zero for 72 hours without a break (ruling 6).
+ * The hourly pass: settles the cost rows, pays the day's stipends to the
+ * benched, and declares bankrupt every active firm that has been below zero
+ * for 72 hours without a break (ruling 6), time on the bench not counted.
  */
 export function bankruptcyTick(now: number | Date = clock()): void {
   const t = msOf(now);
   settle(t);
+  payStipends(t);
   for (const f of listFirms()) {
-    if (f.status !== 'active' || !isBankrupt(f.negativeSince, t)) continue;
+    if (f.status !== 'active' || benched(f) || !isBankrupt(f.negativeSince, t, f.benchedSince ?? null)) continue;
     declareBankrupt(f.id, t);
   }
 }

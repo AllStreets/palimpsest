@@ -42,6 +42,9 @@ export const LEDGER_KINDS = [
   'floor.scarred',
   'credits.moved',
   'firm.bankrupt',
+  // Nov 19, economy change D: a firm at or below -150 benched (its clock paused), and off the bench again.
+  'firm.benched',
+  'firm.unbenched',
   'tower.sold',
   'repo.halted',
   'repo.resumed',

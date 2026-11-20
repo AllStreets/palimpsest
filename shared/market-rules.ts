@@ -79,10 +79,12 @@ export const CREDITS_PER_USD = 20;
 export const BANKRUPT_HOURS = 72;
 /**
  * The bench (economy change D): a firm at or below this many credits places
- * no bids until its balance is back above it. It still earns review pay, and
- * the 72-hour rule still runs.
+ * no bids until its balance is back above it. It still earns review pay, the
+ * city pays it STIPEND credits a local day, and its 72-hour clock is paused.
  */
 export const BENCH_AT = -150;
+/** What the city pays a benched firm, once per local day (economy change D). */
+export const STIPEND = 15;
 
 /** Whether an active firm is benched: at or below BENCH_AT. */
 export function benched(f: { balance: number; status: 'active' | 'bankrupt' }): boolean {
@@ -157,8 +159,9 @@ export function eraForScore(score: number, capability: Era): Era {
 }
 
 /** True once a firm has been negative continuously for BANKRUPT_HOURS. */
-export function isBankrupt(negativeSince: string | null, now: number | Date = Date.now()): boolean {
-  if (!negativeSince) return false;
+export function isBankrupt(negativeSince: string | null, now: number | Date = Date.now(), benchedSince: string | null = null): boolean {
+  // On the bench the clock is paused, so a benched firm is never bankrupt (economy change D).
+  if (!negativeSince || benchedSince) return false;
   const t = typeof now === 'number' ? now : now.getTime();
   return t - Date.parse(negativeSince) >= BANKRUPT_HOURS * 3600_000;
 }

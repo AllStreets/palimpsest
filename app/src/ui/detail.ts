@@ -658,6 +658,7 @@ function sentence(row: LedgerRow, names: Names): string {
       if (d.kind === 'pay') return `${names.firm(String(d.to))} was paid ${amount} credits.`;
       if (d.kind === 'review-pay') return `${names.firm(String(d.to))} was paid ${amount} credits for the review.`;
       if (d.kind === 'correction') return `${names.firm(String(d.to))} got back ${amount} credits when the city restated last week’s books under the new rules.`;
+      if (d.kind === 'stipend') return `${names.firm(String(d.to))} was paid its ${amount} credit stipend: it is benched, so the city pays it once a day.`;
       if (d.kind === 'refund') return `${names.firm(String(d.to))} got back the ${amount} credits the work cost: the city ended the run, not the firm.`;
       return `${amount} credits moved (${t(d.kind, 40)}).`;
     }

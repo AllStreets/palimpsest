@@ -364,14 +364,25 @@ export function firm(id: string): Firm | null {
 
 /**
  * Writes the treasury's view of a firm's books onto the stored firm: its
- * balance and when it last went below zero (null while it is not). The
+ * balance, when it last went below zero (null while it is not) and since
+ * when it has been benched (null while it is not; economy change D). The
  * credits rows stay the truth (treasury `balances()` rebuilds from them).
  */
-export function setFirmBooks(id: string, balance: number, negativeSince: string | null): Firm | null {
+export function setFirmBooks(id: string, balance: number, negativeSince: string | null, benchedSince: string | null = firm(id)?.benchedSince ?? null): Firm | null {
   const f = firm(id);
   if (!f) return null;
-  if (f.balance === balance && f.negativeSince === negativeSince) return f;
-  const next: Firm = { ...f, balance, negativeSince };
+  if (f.balance === balance && f.negativeSince === negativeSince && (f.benchedSince ?? null) === benchedSince) return f;
+  return saveBooks(f, balance, negativeSince, benchedSince);
+}
+
+/** A firm with these books: `benchedSince` is kept only while it is benched, so a firm never benched carries no such key (replay writes it the same way). */
+export function withBooks<T extends Firm>(f: T, balance: number, negativeSince: string | null, benchedSince: string | null): T {
+  const { benchedSince: _was, ...rest } = f;
+  return { ...rest, balance, negativeSince, ...(benchedSince ? { benchedSince } : {}) } as T;
+}
+
+function saveBooks(f: Firm, balance: number, negativeSince: string | null, benchedSince: string | null): Firm {
+  const next = withBooks(f, balance, negativeSince, benchedSince);
   saveFirm(next);
   return next;
 }

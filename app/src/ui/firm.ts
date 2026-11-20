@@ -135,8 +135,8 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     const temperament = d.agents.find((a) => a.lineage.origin === 'seeded')?.temperament ?? d.agents[0]?.temperament ?? '';
     const parts = [`${ROOT_NAMES[d.root]} root${temperament ? `, ${cleanText(temperament, 60)}` : ''}.`, `Founded ${longDate(d.createdAt)}.`];
     if (d.status === 'bankrupt') parts.push(`Bankrupt since ${d.bankruptAt ? longDate(d.bankruptAt) : 'it ran out'}: its agents retired and its towers went dark.`);
+    else if (benched(d)) parts.push(benchWords(d.balance, bankruptIn(d.negativeSince, Date.now(), d.benchedSince ?? new Date().toISOString())));
     else if (d.balance < 0) {
-      if (benched(d)) parts.push(benchWords(d.balance));
       const h = bankruptIn(d.negativeSince, Date.now());
       parts.push(`Below zero${h !== null ? `: bankrupt in ${h} h unless it earns its way back` : ''}.`);
     } else parts.push(`Builds in the ${ERA_NAMES[d.reputation.era]} era.`);

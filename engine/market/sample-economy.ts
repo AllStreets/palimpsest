@@ -208,6 +208,9 @@ const REPO = {
 type RepoKey = keyof typeof REPO;
 const MARKET_REPOS = Object.values(REPO);
 
+/** How much more Lodestar's failed runs cost: enough to sink it below zero, not to the bench at -150, so its 72 hours run out. */
+const LODESTAR_OVERSPEND = 1;
+
 /** The sixth firm: it priced every big job and promised everything; it ran out of money in three days. */
 const LODESTAR: Firm = {
   id: 'lodestar',
@@ -1402,7 +1405,8 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
   /** Other agents that would bid: Lodestar bids on almost everything while it can. */
   const rivalsOf = (j: Job, winner: Agent): { rivals: Agent[]; sitOut: Agent | null } => {
     const eligible = listAgents().filter((a) => !a.retired && a.id !== winner.id && a.bidsOn.includes(j.tier) && !j.excludedFirms.includes(a.firmId) && firm(a.firmId)?.status === 'active');
-    const lode = eligible.filter((a) => a.firmId === LODESTAR.id && r() < 0.85);
+    // Below zero it stops bidding (and a benched firm could not bid at all); r() is still drawn, so the story's stream stays the same.
+    const lode = eligible.filter((a) => a.firmId === LODESTAR.id && r() < 0.85 && (firm(a.firmId)?.balance ?? 0) >= 0);
     const others = eligible.filter((a) => a.firmId !== LODESTAR.id).sort(() => r() - 0.5);
     const rivals = [...lode, ...others.slice(0, 1 + Math.floor(r() * 2))];
     const local = others.slice(3).find((a) => a.model.startsWith('ollama:'));
@@ -1440,7 +1444,7 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
         const showcase = k === 0 && s.title === SEARCH_SCAR.title;
         if (showcase) files.splice(0, files.length, ...SEARCH_SCAR.files);
         const [clo, chi] = modelCost(winner.model).run;
-        const credits = round2(between(clo, chi) * (WORKFLOW_COST[winner.workflow.shape] ?? 1) * (fails && winner.firmId === LODESTAR.id ? 1.9 : 1));
+        const credits = round2(between(clo, chi) * (WORKFLOW_COST[winner.workflow.shape] ?? 1) * (fails && winner.firmId === LODESTAR.id ? LODESTAR_OVERSPEND : 1));
         let run: Run;
         q.push(startAt, () => {
           run = p.begin(storedJob(j.id)!, bid);

@@ -1,11 +1,11 @@
-import { BANKRUPT_HOURS, BENCH_AT, benched } from '../../../shared/market-rules';
+import { BANKRUPT_HOURS, benched } from '../../../shared/market-rules';
 import type { Firm, FirmView, Quarter, Reputation, Silhouette } from '../../../shared/types';
 import { api, type EngineEvent } from '../api';
 import { placeHref } from '../router';
 import { cleanText, money, pct } from './board';
 import { button, createSheet, el, plural } from './controls';
 import { coalesce, namesOf } from './pages';
-import { bankruptIn, figure, floorsBuilt, shortDate, soldTowers } from './story';
+import { bankruptIn, benchNote, benchWords, figure, floorsBuilt, shortDate, soldTowers } from './story';
 import './market.css';
 import { clock } from './time-words';
 
@@ -104,11 +104,11 @@ export function balanceCell(f: Firm, now = Date.now(), opts: { always?: boolean 
   else if (neg) {
     const h = bankruptIn(f.negativeSince, now);
     note = h === null ? 'below zero' : h === 0 ? 'bankrupt within the hour' : `bankrupt in ${h} h`;
-    // The bench (economy change D): no bids until it is back above the line.
-    if (benched(f)) note = `benched, ${note}`;
+    // The bench (economy change D): no bids until it is back above the line, its clock paused.
+    if (benched(f)) note = benchNote();
   }
   if (note) cell.append(el('span', 'firm-bal-note', note));
-  if (neg && f.status !== 'bankrupt') cell.title = `Below zero since ${f.negativeSince ? `${shortDate(f.negativeSince)} at ${clock(f.negativeSince)}` : 'now'}. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark and are sold.${benched(f) ? ` At or below ${money(BENCH_AT)} credits it is benched: it places no bids until its balance is back above that.` : ''}`;
+  if (neg && f.status !== 'bankrupt') cell.title = `Below zero since ${f.negativeSince ? `${shortDate(f.negativeSince)} at ${clock(f.negativeSince)}` : 'now'}. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark and are sold.${benched(f) ? ` ${benchWords(f.balance, bankruptIn(f.negativeSince, now, f.benchedSince ?? new Date(now).toISOString()))}` : ''}`;
   return cell;
 }
 

@@ -249,6 +249,12 @@ export interface Firm {
   balance: number;
   status: 'active' | 'bankrupt';
   negativeSince: string | null;
+  /**
+   * Since when it has been benched (at or below BENCH_AT), its 72-hour clock
+   * paused; absent while it is not. Off the bench, `negativeSince` moves on
+   * by the time benched, so the clock resumes where it stopped.
+   */
+  benchedSince?: string | null;
   bankruptAt: string | null;
   createdAt: string;
 }

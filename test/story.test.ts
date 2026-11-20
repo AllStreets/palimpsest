@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { bankruptIn, bookLines, figure, floorsBuilt, lineageWords, roundWords, soldTowers, stepPath, workflowWords } from '../app/src/ui/story.js';
+import { bankruptIn, benchNote, benchWords, bookLines, figure, floorsBuilt, lineageWords, roundWords, soldTowers, stepPath, stipendLine, workflowWords } from '../app/src/ui/story.js';
 import type { Agent, Bid, BookRow, Floor, FirmRound, Quarter, TowerSpec } from '../shared/types.js';
 
 const H = 3_600_000;
@@ -118,7 +118,25 @@ test('a restatement of the books reads in plain words', () => {
   assert.deepEqual(bookLines([row('correction', 873.5, -111)], names).map((l) => l.text), ['Restated: last week’s bids and work charged again under the new rules']);
 });
 
-test('a benched firm says so in plain words', async () => {
-  const { benchWords } = await import('../app/src/ui/story.js');
-  assert.equal(benchWords(-162.4), 'Benched at −162.40 credits: it places no bids until its balance is back above −150. It still earns review pay.');
+test('a benched firm says so in plain words', () => {
+  assert.equal(
+    benchWords(-189, 52),
+    'Benched at −189 credits: it places no bids until its balance is back above −150. The city pays it 15 credits a day meanwhile, and its bankruptcy clock is paused with 52 h left.',
+  );
+  assert.equal(benchWords(-162.4, null), 'Benched at −162.40 credits: it places no bids until its balance is back above −150. The city pays it 15 credits a day meanwhile, and its bankruptcy clock is paused.');
+  for (const s of [benchWords(-189, 52), benchNote(), stipendLine()]) assert.doesNotMatch(s, /—|--|\p{Extended_Pictographic}/u);
+});
+
+test('a benched firm\'s clock reads the hours left where the bench began', () => {
+  const now = Date.parse('2026-11-19T12:00:00.000Z');
+  const since = new Date(now - 100 * H).toISOString();
+  assert.equal(bankruptIn(since, now, new Date(now - 80 * H).toISOString()), 52, '20 hours counted before the bench');
+  assert.equal(bankruptIn(since, now, null), 0);
+});
+
+test('a stipend reads in plain words on the books', () => {
+  const names = { agent: (id: string) => id, firm: (id: string) => id, job: () => null };
+  assert.deepEqual(bookLines([row('stipend', 15, -174)], names).map((l) => l.text), [stipendLine()]);
+  assert.equal(stipendLine(), 'Stipend: the city pays a benched firm 15 credits a day');
+  assert.equal(benchNote(), 'benched, clock paused');
 });

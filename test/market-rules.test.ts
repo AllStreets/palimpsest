@@ -353,3 +353,14 @@ test('a firm at or below -150 credits is benched: it places no bids until it is 
   assert.equal(benched({ balance: 20, status: 'active' }), false);
   assert.equal(benched({ balance: -400, status: 'bankrupt' }), false, 'a bankrupt firm is past the bench');
 });
+
+test('a benched firm is never bankrupt, and its clock stands where the bench began', async () => {
+  const { isBankrupt, STIPEND } = await import('../shared/market-rules.js');
+  const H = 3_600_000;
+  const now = Date.parse('2026-11-19T12:00:00.000Z');
+  const since = new Date(now - 100 * H).toISOString();
+  assert.equal(STIPEND, 15);
+  assert.equal(isBankrupt(since, now), true);
+  assert.equal(isBankrupt(since, now, new Date(now - 50 * H).toISOString()), false, 'benched: the clock is paused');
+  assert.equal(isBankrupt(since, now, null), true);
+});

@@ -4,7 +4,9 @@
  * so a kind added later without a case here is a type error.
  *
  * What each kind carries, as the writers record it:
- * - firms: `firm.seeded { firm }`, `firm.bankrupt { firmId, at }`; a firm's
+ * - firms: `firm.seeded { firm }`, `firm.bankrupt { firmId, at }`,
+ *   `firm.benched { firmId, at }` (its clock paused), `firm.unbenched
+ *   { firmId, at, negativeSince }` (its clock moved on by the pause); a firm's
  *   balance and `negativeSince` follow its `credits.moved` deltas (the
  *   treasury writes them on the firm after every movement, Task 17).
  * - agents: `agent.seeded | agent.hired | agent.revived | agent.remodelled { agent }`,
@@ -214,6 +216,8 @@ function moveMoney(s: MarketState, d: Data): void {
   // As the treasury writes the books: below zero since the first movement that took it there.
   f.balance = bal;
   f.negativeSince = bal < 0 ? (d.restartClock === true ? str(d.at) : (f.negativeSince ?? str(d.at))) : null;
+  // A restatement that restarts a benched firm's clock restarts its pause with it (restartNegativeClock).
+  if (d.restartClock === true && bal < 0 && f.benchedSince) f.benchedSince = str(d.at);
 }
 
 function layFloor(s: MarketState, towerId: string, floor: Floor): void {
@@ -315,6 +319,22 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     case 'firm.bankrupt': {
       const f = s.firms[str(d.firmId) ?? ''];
       if (f && f.status !== 'bankrupt') Object.assign(f, { status: 'bankrupt', bankruptAt: str(d.at) });
+      return s;
+    }
+    case 'firm.benched': {
+      // The bench (economy change D): its clock paused from `at`.
+      const f = s.firms[str(d.firmId) ?? ''];
+      const at = str(d.at);
+      if (f && at) f.benchedSince = at;
+      return s;
+    }
+    case 'firm.unbenched': {
+      // Off the bench: its clock as the treasury moved it on (or cleared it, above zero).
+      const f = s.firms[str(d.firmId) ?? ''];
+      if (f) {
+        delete f.benchedSince;
+        f.negativeSince = str(d.negativeSince);
+      }
       return s;
     }
     case 'tower.sold': {

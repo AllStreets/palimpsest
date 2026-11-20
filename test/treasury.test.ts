@@ -13,8 +13,9 @@ import { charge } from '../engine/market/budget.js';
 import { agentTowerId, firm, listAgents, quarters, seedFirms, BANKRUPT_REASON } from '../engine/market/firms.js';
 import { balances, bankruptcyTick, cityLedger, dailyTick, installTreasury, negativeSinceOf, replayBalances } from '../engine/market/treasury.js';
 import { job as storedJob } from '../engine/market/jobs.js';
+import { replay } from '../engine/market/replay.js';
 import { layEarnedFloor } from '../engine/repos.js';
-import { HIRE_FEE, START_BALANCE } from '../shared/market-rules.js';
+import { HIRE_FEE, START_BALANCE, STIPEND } from '../shared/market-rules.js';
 import { COMMISSION } from '../shared/school-rules.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { installRoster } from '../engine/school/roster.js';
@@ -647,4 +648,111 @@ test('a run the engine ended while the treasury was not listening is refunded wh
   assert.equal(creditRows('refund').length, 1);
   assert.equal(balances().quickset, START_BALANCE);
   assert.equal(balances().kiln, START_BALANCE - 2);
+});
+
+// ---------------------------------------------------------------- the bench and its stipend (economy change D)
+
+const isoAt = (ms: number) => new Date(ms).toISOString();
+const firmEntries = (kind: string, firmId: string) => entries().filter((e) => e.kind === kind && (e.data as { firmId?: string }).firmId === firmId);
+
+test('a firm is benched at -150 exactly, not at -149.99, and the ledger says when', () => {
+  spend('sparrow', 'run', 449.99, 'run-a');
+  emit('run.ended', { runId: 'run-a', outcome: 'failed', reason: null });
+  assert.equal(firm('sparrow')?.balance, -149.99);
+  assert.equal(firm('sparrow')?.benchedSince ?? null, null, 'above the line: not benched');
+  clock = T0 + HOUR;
+  spend('sparrow', 'run', 0.01, 'run-b');
+  emit('run.ended', { runId: 'run-b', outcome: 'failed', reason: null });
+  assert.equal(firm('sparrow')?.balance, -150);
+  assert.equal(firm('sparrow')?.benchedSince, isoAt(T0 + HOUR));
+  assert.equal(firmEntries('firm.benched', 'sparrow').length, 1);
+  // A stipend of 15 lifts it to -135: off the bench, and the ledger says that too.
+  bankruptcyTick(T0 + 2 * HOUR);
+  assert.equal(firm('sparrow')?.balance, -135);
+  assert.equal(firm('sparrow')?.benchedSince ?? null, null);
+  assert.equal(firmEntries('firm.unbenched', 'sparrow').length, 1);
+});
+
+test('a benched firm is paid 15 credits once a local day, never twice across a restart', () => {
+  spend('sparrow', 'run', 500, 'run-a');
+  emit('run.ended', { runId: 'run-a', outcome: 'failed', reason: null });
+  assert.equal(STIPEND, 15);
+  bankruptcyTick(T0);
+  bankruptcyTick(T0 + HOUR);
+  dailyTick(T0 + HOUR);
+  assert.equal(creditRows('stipend').length, 1);
+  uninstall();
+  uninstall = installTreasury({ now: () => clock });
+  bankruptcyTick(T0 + 2 * HOUR);
+  const rows = creditRows('stipend');
+  assert.equal(rows.length, 1, 'the restart pays nothing more that day');
+  assert.equal(rows[0].firm_id, 'sparrow');
+  assert.equal(rows[0].amount, 15);
+  assert.equal(JSON.parse(rows[0].json).from, 'city');
+  const m = moved('stipend');
+  assert.equal(m.length, 1);
+  assert.equal(m[0].delta, 15);
+  assert.equal(m[0].to, 'sparrow');
+  assert.equal(balances().sparrow, -185);
+  bankruptcyTick(T0 + 24 * HOUR);
+  assert.equal(creditRows('stipend').length, 2, 'the next day pays again');
+  assert.equal(balances().sparrow, -170);
+  // Only the benched are paid.
+  assert.ok(creditRows('stipend').every((r) => r.firm_id === 'sparrow'));
+  assert.equal(replayBalances(entries()).sparrow, -170);
+});
+
+test('the bankruptcy clock pauses on the bench and resumes where it stopped; never bankrupt while benched', () => {
+  spend('sparrow', 'run', 400, 'run-a');
+  emit('run.ended', { runId: 'run-a', outcome: 'failed', reason: null });
+  assert.equal(firm('sparrow')?.negativeSince, isoAt(T0));
+  // Ten hours on the clock, then down to -700: benched.
+  clock = T0 + 10 * HOUR;
+  spend('sparrow', 'run', 600, 'run-b');
+  emit('run.ended', { runId: 'run-b', outcome: 'failed', reason: null });
+  assert.equal(firm('sparrow')?.benchedSince, isoAt(T0 + 10 * HOUR));
+  for (let h = 10; h <= 110; h++) bankruptcyTick(T0 + h * HOUR);
+  assert.equal(firm('sparrow')?.status, 'active', 'a hundred hours on the bench and not bankrupt');
+  assert.equal(firm('sparrow')?.negativeSince, isoAt(T0), 'the clock is held, not restarted');
+  // Paid back above -150 at hour 110: the clock resumes with its 10 hours used, not from zero.
+  const before = balances().sparrow;
+  const { job } = awardedJob('sparrow', 'wren-sparrow', -100 - before);
+  clock = T0 + 110 * HOUR;
+  merge(job);
+  assert.equal(balances().sparrow, -100);
+  assert.equal(firm('sparrow')?.benchedSince ?? null, null);
+  assert.equal(firm('sparrow')?.negativeSince, isoAt(T0 + 100 * HOUR), 'shifted by the hundred hours it was benched');
+  for (let h = 111; h < 172; h++) bankruptcyTick(T0 + h * HOUR);
+  assert.equal(firm('sparrow')?.status, 'active', '71 hours counted');
+  bankruptcyTick(T0 + 172 * HOUR);
+  assert.equal(firm('sparrow')?.status, 'bankrupt', 'the 72nd counted hour');
+
+  // The ledger alone gives the same firm: its balance, its clock and its bench.
+  const state = replay(entries());
+  assert.deepEqual(state.firms.sparrow, firm('sparrow'));
+  assert.equal(state.balances.sparrow, balances().sparrow);
+});
+
+test('a benched firm that climbs above zero clears its clock as before', () => {
+  spend('sparrow', 'run', 500, 'run-a');
+  emit('run.ended', { runId: 'run-a', outcome: 'failed', reason: null });
+  assert.ok(firm('sparrow')?.benchedSince);
+  const { job } = awardedJob('sparrow', 'wren-sparrow', 250);
+  clock = T0 + 5 * HOUR;
+  merge(job);
+  assert.equal(firm('sparrow')?.negativeSince, null);
+  assert.equal(firm('sparrow')?.benchedSince ?? null, null);
+  assert.deepEqual(replay(entries()).firms.sparrow, firm('sparrow'));
+});
+
+test('a firm already deep below -150 before the bench existed is benched, not bankrupted, on the next tick', () => {
+  spend('quickset', 'run', 489, 'run-q');
+  emit('run.ended', { runId: 'run-q', outcome: 'failed', reason: null });
+  // As the books stood before the bench: below zero 80 hours, no bench on record.
+  const cur = firm('quickset')!;
+  const { benchedSince: _drop, ...legacy } = cur;
+  openDb().prepare('UPDATE firms SET json = ? WHERE id = ?').run(JSON.stringify({ ...legacy, negativeSince: isoAt(T0 - 80 * HOUR) }), 'quickset');
+  bankruptcyTick(T0 + HOUR);
+  assert.equal(firm('quickset')?.status, 'active');
+  assert.equal(firm('quickset')?.benchedSince, isoAt(T0 + HOUR));
 });

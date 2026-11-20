@@ -6,7 +6,7 @@
  * drawn as, and an agent's workflow and lineage in words.
  */
 import { localDay as dayOf } from '../../../shared/day.js';
-import { BANKRUPT_HOURS, BENCH_AT, creditsFixed, creditsText } from '../../../shared/market-rules.js';
+import { BANKRUPT_HOURS, BENCH_AT, creditsFixed, creditsText, STIPEND } from '../../../shared/market-rules.js';
 import type { Agent, BookRow, FirmRound, Quarter, WorkflowShape } from '../../../shared/types.js';
 import { cleanText, money } from './board.js';
 
@@ -30,10 +30,15 @@ export function figure(n: number): string {
   return creditsFixed(n);
 }
 
-/** Whole hours (rounded up) before a firm below zero since `negativeSince` is bankrupt; null when it is not below zero. */
-export function bankruptIn(negativeSince: string | null, now = Date.now()): number | null {
+/**
+ * Whole hours (rounded up) before a firm below zero since `negativeSince` is
+ * bankrupt; null when it is not below zero. A benched firm's clock stands
+ * where the bench began (`benchedSince`), paused.
+ */
+export function bankruptIn(negativeSince: string | null, now = Date.now(), benchedSince: string | null = null): number | null {
   if (!negativeSince) return null;
-  const left = BANKRUPT_HOURS * HOUR - (now - Date.parse(negativeSince));
+  const until = benchedSince ? Math.min(now, Date.parse(benchedSince)) : now;
+  const left = BANKRUPT_HOURS * HOUR - (until - Date.parse(negativeSince));
   return Math.max(0, Math.ceil(left / HOUR));
 }
 
@@ -87,6 +92,8 @@ function bookText(r: BookRow, count: number, names: StoryNames): string {
       return 'Restated: last week’s bids and work charged again under the new rules';
     case 'refund':
       return title ? `Refund: the city ended the work on ${title}` : 'Refund: the city ended the work';
+    case 'stipend':
+      return stipendLine();
     default:
       return r.kind;
   }
@@ -208,7 +215,18 @@ export function lineageWords(a: Pick<Agent, 'lineage'>): string {
   }
 }
 
-/** A benched firm (economy change D), in plain words for its page. */
-export function benchWords(balance: number): string {
-  return `Benched at ${creditsFixed(balance)} credits: it places no bids until its balance is back above ${creditsText(BENCH_AT)}. It still earns review pay.`;
+/** A benched firm (economy change D), in plain words for its page, with the hours its paused clock has left when known. */
+export function benchWords(balance: number, hoursLeft: number | null): string {
+  const clock = hoursLeft === null ? 'its bankruptcy clock is paused' : `its bankruptcy clock is paused with ${hoursLeft} h left`;
+  return `Benched at ${creditsText(balance)} credits: it places no bids until its balance is back above ${creditsText(BENCH_AT)}. The city pays it ${STIPEND} credits a day meanwhile, and ${clock}.`;
+}
+
+/** A benched firm's note beside its balance on the firms list. */
+export function benchNote(): string {
+  return 'benched, clock paused';
+}
+
+/** A stipend on the books. */
+export function stipendLine(): string {
+  return `Stipend: the city pays a benched firm ${STIPEND} credits a day`;
 }
