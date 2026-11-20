@@ -302,6 +302,14 @@ test('credits are set one way on every screen: a thousands comma, whole bare, el
   assert.equal(creditsText(0.004), '0');
   assert.equal(creditsText(-0.001), '0', 'no minus on nothing');
   assert.equal(creditsText(59.999), '60');
+  assert.equal(creditsText(-0.004), '0', 'no minus on nothing');
+});
+
+test('a non-finite credit prints as zero, never NaN or Infinity', async () => {
+  const { creditsText } = await import('../shared/market-rules.js');
+  assert.equal(creditsText(NaN), '0');
+  assert.equal(creditsText(Infinity), '0');
+  assert.equal(creditsText(-Infinity), '0');
 });
 
 test('a plan window now is one figure: the larger of the reading and the estimate, whole', async () => {
@@ -319,6 +327,14 @@ test('a column of credits keeps two places, with the same comma and true minus',
   assert.equal(creditsFixed(-419.42), '−419.42');
   assert.equal(creditsFixed(-0.001), '0.00');
   assert.equal(creditsFixed(59.999), '60.00');
+  assert.equal(creditsFixed(-0.004), '0.00');
+});
+
+test('a non-finite column figure prints as 0.00, never NaN or Infinity', async () => {
+  const { creditsFixed } = await import('../shared/market-rules.js');
+  assert.equal(creditsFixed(NaN), '0.00');
+  assert.equal(creditsFixed(Infinity), '0.00');
+  assert.equal(creditsFixed(-Infinity), '0.00');
 });
 
 test('TIER_LABELS with custom base label', () => {

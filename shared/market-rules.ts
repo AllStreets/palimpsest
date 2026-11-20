@@ -11,6 +11,7 @@ import type { BudgetWindow, CheckResult, Era, Job, JobStatus, ModelRef, Repo, Re
  * true minus. Never three places, never a minus on nothing.
  */
 export function creditsText(n: number): string {
+  if (!Number.isFinite(n)) return '0';
   const cents = Math.round(n * 100);
   if (cents === 0) return '0';
   const abs = Math.abs(cents);
@@ -26,6 +27,7 @@ export function creditsText(n: number): string {
  * the points stand in one line down the column.
  */
 export function creditsFixed(n: number): string {
+  if (!Number.isFinite(n)) return '0.00';
   const cents = Math.round(n * 100);
   const abs = Math.abs(cents);
   const grouped = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
