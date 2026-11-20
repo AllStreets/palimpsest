@@ -18,6 +18,7 @@ import {
   listFirms,
   quarters,
   resolveModel,
+  remodelAgents,
   retireAgent,
   reviveAgents,
   retireFirm,
@@ -177,7 +178,7 @@ test('seeded firms carry the agents, models, shapes and silhouettes of the brief
     ['Ola Bergstrom', 'quickset', 'claude:sonnet', 'single', 'cantilever'],
     ['Hal Meridian', 'meridian', 'claude:opus', 'plan-then-answer', 'needle'],
     ['Oskar Kiln', 'kiln', 'ollama:qwen3-coder:30b-a3b-q4_K_M', 'plan-then-answer', 'plain'],
-    ['Bruno Kiln', 'kiln', 'ollama:gpt-oss:20b', 'plan-then-answer', 'plain'],
+    ['Bruno Kiln', 'kiln', 'ollama:qwen3-coder:30b-a3b-q4_K_M', 'plan-then-answer', 'plain'],
     ['Wren Sparrow', 'sparrow', 'ollama:qwen2.5-coder:7b', 'vote', 'plain'],
     ['Juno Pike', 'sparrow', 'ollama:qwen3:1.7b', 'vote', 'plain'],
   ];
@@ -568,4 +569,34 @@ test('hire prefers a school agent only where the router is trusted', () => {
   }
   const hired = entries().filter((e) => e.kind === 'agent.hired').map((e) => (e.data as { agent: Agent }).agent.id);
   assert.deepEqual(hired, [ROSTER[0].id, ROSTER[1].id, 'bred-g-sharp', ROSTER[2].id]);
+});
+
+test("Bruno Kiln moves off gpt-oss:20b to the installed qwen3-coder on the next start, once, keeping everything else", async () => {
+  seedFirms(INSTALLED);
+  // His database: Bruno seeded on gpt-oss:20b before the move.
+  const old = { ...(agent('bruno-kiln') as Agent), model: 'ollama:gpt-oss:20b' as const };
+  openDb().prepare('UPDATE agents SET json = ? WHERE id = ?').run(JSON.stringify(old), old.id);
+  const moved = remodelAgents(INSTALLED);
+  assert.deepEqual(moved.map((a) => [a.id, a.model]), [['bruno-kiln', 'ollama:qwen3-coder:30b-a3b-q4_K_M']]);
+  const now = agent('bruno-kiln') as Agent;
+  assert.deepEqual({ ...now, model: old.model }, old, 'only the model changed');
+  assert.equal(now.maxTurns, 40);
+  const row = entries().filter((e) => e.kind === 'agent.remodelled').at(-1);
+  assert.deepEqual(row?.data, { agent: now, from: 'ollama:gpt-oss:20b', to: 'ollama:qwen3-coder:30b-a3b-q4_K_M' });
+  // Once: the next start finds nothing to move.
+  assert.deepEqual(remodelAgents(INSTALLED), []);
+  // Replay reads the move from the ledger alone.
+  const { replay } = await import('../engine/market/replay.js');
+  assert.equal(replay(entries()).agents['bruno-kiln'].model, 'ollama:qwen3-coder:30b-a3b-q4_K_M');
+});
+
+test('the move waits while its model is not installed, and leaves a retired agent alone', () => {
+  seedFirms(INSTALLED);
+  const old = { ...(agent('bruno-kiln') as Agent), model: 'ollama:gpt-oss:20b' as const };
+  openDb().prepare('UPDATE agents SET json = ? WHERE id = ?').run(JSON.stringify(old), old.id);
+  assert.deepEqual(remodelAgents(INSTALLED.filter((m) => !m.startsWith('qwen3-coder'))), []);
+  assert.equal(agent('bruno-kiln')?.model, 'ollama:gpt-oss:20b');
+  retireFirm('kiln');
+  assert.deepEqual(remodelAgents(INSTALLED), []);
+  assert.equal(agent('bruno-kiln')?.model, 'ollama:gpt-oss:20b');
 });

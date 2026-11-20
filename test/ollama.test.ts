@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
-import { modelGBFromShow, ollamaProvider, resetOllamaCache, REVIEW_NUM_CTX } from '../engine/market/ollama.js';
+import { modelGBFromShow, numCtxFor, ollamaProvider, resetOllamaCache, REVIEW_NUM_CTX } from '../engine/market/ollama.js';
 import { spentOn, type AuditInput, type CompleteInput, type RunLogLine, type WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { patchSettings } from '../engine/settings.js';
@@ -187,6 +187,22 @@ describe('ollama', () => {
     assert.equal(last.role, 'user');
     assert.match(last.content, /more than 32 tool calls/);
     assert.throws(() => readFileSync(join(dir, 'f0.md')));
+  });
+
+  test('qwen3-coder works and plans with the 32k window the review uses, so Ollama never reloads it between calls', async () => {
+    fakeRunner();
+    const coder = { ...agent, model: 'ollama:qwen3-coder:30b-a3b-q4_K_M' } as Agent;
+    const { bodies } = await fakeOllama([
+      { stream: [msg('', { tool_calls: [toolCall('finish', { summary: 'ok' })] }), done(1)] },
+      { json: { message: { role: 'assistant', content: JSON.stringify({ plan: '1. Add it.', price: 30, confidence: 0.6 }) }, done: true, total_duration: 1e9, prompt_eval_count: 300 } },
+    ]);
+    const { input } = workInput('run-coder');
+    const r = await ollamaProvider().work({ ...input, agent: coder });
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    await ollamaProvider().plan({ job: makeJob(), agent: coder, persona: 'Bruno', repoSummary: '', examples: [] }, new AbortController().signal);
+    assert.equal((bodies[0].options as { num_ctx?: number } | undefined)?.num_ctx, REVIEW_NUM_CTX);
+    assert.equal((bodies[1].options as { num_ctx?: number } | undefined)?.num_ctx, REVIEW_NUM_CTX);
+    assert.equal(numCtxFor('qwen2.5-coder:7b'), undefined, 'a small model keeps its own default');
   });
 
   test('credits come from seconds and model size', async () => {

@@ -18,6 +18,8 @@ export const LEDGER_KINDS = [
   'agent.hired',
   'agent.retired',
   'agent.revived',
+  // Nov 19: a seeded agent moved to another model (remodelAgents).
+  'agent.remodelled',
   'job.proposed',
   'job.posted',
   'job.changed',

@@ -230,6 +230,18 @@ export function ollamaTransport(model: string, o: { numCtx?: number } = {}): Cha
 /** The context window review and judge calls ask for: the whole diff must fit, never Ollama's small default. */
 export const REVIEW_NUM_CTX = 32_768;
 
+/**
+ * The context window an agent's own calls (its work loop and its plan) ask
+ * for on `model`, or undefined for Ollama's default. qwen3-coder (Kiln's two
+ * agents since Nov 19) reads many files over up to 40 turns, and a window
+ * smaller than the conversation silently drops its front; it asks for the
+ * same window as a review, so Ollama never reloads it between a review, a
+ * plan and the work.
+ */
+export function numCtxFor(model: string): number | undefined {
+  return model.startsWith('qwen3-coder') ? REVIEW_NUM_CTX : undefined;
+}
+
 /** Tokens below num_ctx a prompt must stay under: at or past it, Ollama may have cut the front. */
 export const CONTEXT_MARGIN = 512;
 
@@ -470,7 +482,7 @@ export function ollamaProvider(): Provider {
         return { summary: '', usage: zero, ended: 'crashed', reason };
       }
       const gb = await modelGB(model);
-      return runToolLoop(ollamaTransport(model), i, {
+      return runToolLoop(ollamaTransport(model, { numCtx: numCtxFor(model) }), i, {
         maxTurns: i.caps.maxTurns,
         maxMs: i.caps.maxMinutes * 60_000,
         creditsFor: (u) => localCredits(u.seconds, gb),
@@ -480,7 +492,7 @@ export function ollamaProvider(): Provider {
     async plan(i: PlanInput, signal) {
       const model = modelName(i.agent.model);
       const gb = await modelGB(model);
-      const out = await jsonCall(model, [{ role: 'system', content: systemPrompt(i.persona, i.agent.instructions) }, { role: 'user', content: `${planPrompt(i)}\n${PLAN_JSON}\n` }], signal);
+      const out = await jsonCall(model, [{ role: 'system', content: systemPrompt(i.persona, i.agent.instructions) }, { role: 'user', content: `${planPrompt(i)}\n${PLAN_JSON}\n` }], signal, numCtxFor(model), 'plan');
       return { ...planAnswer(out.answer, 'ollama'), usage: usageOf(out.seconds, gb) };
     },
 

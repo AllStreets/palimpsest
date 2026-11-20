@@ -4,7 +4,7 @@ import { installProposals } from './audit/proposals.js';
 
 import { baseline } from './guild/baseline.js';
 import { paths } from './home.js';
-import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
+import { installedModels, remodelAgents, reviveAgents, seedFirms } from './market/firms.js';
 import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
 import { backfillMilestones, installMilestones } from './market/milestones.js';
@@ -54,6 +54,8 @@ async function main(): Promise<void> {
   seedFirms(installed);
   // An agent that seeded retired for a missing model comes back once that model is installed.
   reviveAgents(installed);
+  // A seeded agent whose model has changed since it was stored (MODEL_MOVES) takes its new model, once it is installed.
+  for (const a of remodelAgents(installed)) console.log(`palimpsest: ${a.name} now runs on ${a.model}`);
   // Phase 4 ruling 27: the university takes the next free plot the first time this engine starts, and keeps it.
   ensureCampus();
   // Task 17: the treasury books every payment and cost from the event bus. Every hour it checks

@@ -7,7 +7,7 @@
  * - firms: `firm.seeded { firm }`, `firm.bankrupt { firmId, at }`; a firm's
  *   balance and `negativeSince` follow its `credits.moved` deltas (the
  *   treasury writes them on the firm after every movement, Task 17).
- * - agents: `agent.seeded | agent.hired | agent.revived { agent }`,
+ * - agents: `agent.seeded | agent.hired | agent.revived | agent.remodelled { agent }`,
  *   `agent.retired { agentId, reason }`, `tower.sold { agentId, to }`
  *   (the stored agent keeps its plot's firm and gains `soldTo`).
  * - jobs: `job.posted | job.proposed { job }` and `job.changed { job }` hold
@@ -299,7 +299,8 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     }
     case 'agent.seeded':
     case 'agent.hired':
-    case 'agent.revived': {
+    case 'agent.revived':
+    case 'agent.remodelled': {
       const a = d.agent as Agent | undefined;
       if (!a?.id) return s;
       const soldTo = s.agents[a.id]?.soldTo;

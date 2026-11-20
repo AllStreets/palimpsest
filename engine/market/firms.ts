@@ -112,7 +112,8 @@ export const SEED_FIRMS: FirmSeed[] = [
     workflow: { shape: 'plan-then-answer' },
     agents: [
       { id: 'oskar-kiln', name: 'Oskar Kiln', model: 'ollama:qwen3-coder:30b-a3b*', capability: 'titanium', bidsOn: ['normal', 'high'], examples: 3, maxTurns: 40 },
-      { id: 'bruno-kiln', name: 'Bruno Kiln', model: 'ollama:gpt-oss:20b*', capability: 'titanium', bidsOn: ['normal', 'high'], examples: 3, maxTurns: 40 },
+      // Off gpt-oss:20b since Nov 19: it ran five times and changed nothing (remodelAgents moves a stored Bruno).
+      { id: 'bruno-kiln', name: 'Bruno Kiln', model: 'ollama:qwen3-coder:30b-a3b*', capability: 'titanium', bidsOn: ['normal', 'high'], examples: 3, maxTurns: 40 },
     ],
   },
   {
@@ -517,6 +518,41 @@ export function reviveAgents(installed: string[]): Agent[] {
     revived.push(pub);
   }
   return revived;
+}
+
+/**
+ * Seeded agents whose model has changed since they were stored: an agent on
+ * `from` exactly moves to the installed tag `to` names (a seed spec, `*`
+ * for the installed tag that starts with it).
+ */
+export const MODEL_MOVES: Array<{ agentId: string; from: ModelRef; to: string }> = [
+  // Nov 19: Bruno Kiln's gpt-oss:20b ran five times and changed nothing; the firm's one merge came from qwen3-coder.
+  { agentId: 'bruno-kiln', from: 'ollama:gpt-oss:20b', to: 'ollama:qwen3-coder:30b-a3b*' },
+];
+
+/**
+ * Moves every stored agent MODEL_MOVES names off its old model, once its new
+ * model is installed: only the model changes, everything else it holds (its
+ * plot, its floors, its history) stays. Recorded as `agent.remodelled`
+ * `{ agent, from, to }`. A retired agent is left alone; an agent already
+ * moved (or never on `from`) is left alone, so it runs once. Called from
+ * engine/main.ts on every start, after reviveAgents, so his database takes
+ * the move on the next start with nothing wiped.
+ */
+export function remodelAgents(installed: string[]): Agent[] {
+  const moved: Agent[] = [];
+  for (const m of MODEL_MOVES) {
+    const a = storedAgent(m.agentId);
+    if (!a || a.retired || a.model !== m.from) continue;
+    const { model, installed: ok } = seedModel(m.to, installed);
+    if (!ok || model === a.model) continue;
+    const next: StoredAgent = { ...a, model };
+    saveAgent(next);
+    const pub = publicAgent(next);
+    record('agent.remodelled', { agent: pub, from: m.from, to: model });
+    moved.push(pub);
+  }
+  return moved;
 }
 
 /** Retires an agent (it stops bidding and working) and records `agent.retired`. An agent already retired is left alone. */
