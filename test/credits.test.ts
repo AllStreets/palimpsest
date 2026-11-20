@@ -60,3 +60,30 @@ test('api credits are twenty per dollar', () => {
 test('calibrate blends by 0.3', () => {
   assert.equal(calibrate(60_000, 80_000), 66_000);
 });
+
+test('claudeCredits falls back to the default tokens-per-percent when it is not a finite number above 0', () => {
+  const expected = claudeCredits(60_000, DEFAULT_TOKENS_PER_PCT);
+  for (const bad of [0, -5, NaN, Infinity, -Infinity]) {
+    assert.equal(claudeCredits(60_000, bad), expected);
+  }
+});
+
+test('claudeCredits returns 0 for a negative or non-finite weighted input', () => {
+  for (const bad of [-1, NaN, Infinity, -Infinity]) {
+    assert.equal(claudeCredits(bad, 60_000), 0);
+  }
+});
+
+test('localCredits returns 0 for a negative or non-finite seconds or modelGB input', () => {
+  for (const bad of [-5, NaN, Infinity, -Infinity]) {
+    assert.equal(localCredits(bad, 4), 0);
+    assert.equal(localCredits(10, bad), 0);
+  }
+});
+
+test('valid credit inputs keep their values', () => {
+  assert.equal(claudeCredits(0, 60_000), 0);
+  assert.equal(claudeCredits(60_000, 30_000), 20);
+  assert.equal(localCredits(0, 4), 0);
+  assert.equal(localCredits(1000, 0), 1);
+});
