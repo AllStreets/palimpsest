@@ -161,3 +161,66 @@
     font-size: 18px;
   }
 }
+
+/*
+ * The panel kind: the gallery steps aside and the sample sheet stands where
+ * a screen's sheet stands, over the city, with its own scrim.
+ */
+.os-gallery.is-panel {
+  right: 0;
+  width: auto;
+  padding: 0;
+  overflow: visible;
+  background: none;
+}
+.os-sample-since {
+  margin: 10px 0 0;
+  color: var(--os-dim);
+  font: 500 12px var(--os-mono);
+  letter-spacing: -0.02em;
+}
+.os-sample-figs {
+  display: flex;
+  gap: 26px;
+  margin: 14px 0 0;
+}
+.os-sample-fig {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.os-sample-v {
+  color: var(--os-amber-hi);
+  font-size: 20px;
+  font-weight: 500;
+}
+.os-sample-k {
+  color: var(--os-dim);
+  font-size: 12px;
+  font-weight: 500;
+}
+.os-sample-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.os-sample-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 20px;
+  padding: 13px 0;
+  border-bottom: 1px solid rgba(var(--os-amber-rgb), 0.1);
+}
+.os-sample-line {
+  color: var(--os-ink);
+  font-family: var(--os-display);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.os-sample-row-figs {
+  white-space: pre;
+  color: var(--os-ink2);
+  font-size: 12px;
+}

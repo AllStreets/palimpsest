@@ -10,7 +10,9 @@ import './index.css';
 import './gallery.css';
 
 import { contrast, hex, over } from '../contrast.js';
+import { createSheet } from '../controls.js';
 import { scanOnce, typeIn } from './motion.js';
+import { dressPanel } from './panel.js';
 import { COLOUR, GROUND, type ColourToken } from './tokens.js';
 
 export type GalleryKind = 'type' | 'panel' | 'controls' | 'readouts' | 'pins' | 'terminal';
@@ -109,7 +111,52 @@ function typeSpecimen(host: HTMLElement): () => void {
   return () => cancel();
 }
 
-const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen };
+/** Ten rows of placeholder work, a headline and its figures each, for the panel to hold. */
+const SAMPLE_ROWS: Array<[string, string[]]> = [
+  ['harbor-ledger: the nightly export is merged', ['#312', '4.10', 'merged']],
+  ['kumo: retries halted after the third failure', ['#88', '1.92', 'halted']],
+  ['assay-kit: a dependency bump waits on review', ['#41', '0.66', 'waiting']],
+  ['quarry: the flaky clock test is fixed', ['#207', '2.38', 'merged']],
+  ['blank-slate: the first build asks for a tier', ['#3', '0.00', 'waiting']],
+  ['harbor-ledger: the audit found two stale keys', ['#315', '1.14', 'waiting']],
+  ['kumo: the cache warmer is benched for a week', ['#90', '0.40', 'benched']],
+  ['assay-kit: the parser handles empty rows', ['#44', '3.02', 'merged']],
+  ['quarry: the deploy script is rewritten', ['#210', '5.75', 'merged']],
+  ['harbor-ledger: the ledger view is 60% faster', ['#318', '2.91', 'merged']],
+];
+
+/**
+ * The panel: a sample sheet dressed as the screens' panel, its head the date
+ * and a line of figures, ten placeholder rows in its list, and the stream of
+ * the rows' own words behind them. The date is fixed, so stills compare.
+ */
+function panelSpecimen(host: HTMLElement): () => void {
+  host.classList.add('is-panel');
+  const sheet = createSheet(host, 'os-sample', 'Saturday 21 November', () => {});
+  const panel = dressPanel(sheet);
+  const head = panel.head;
+  head.append(el('p', 'os-sample-since', 'Since yesterday 19:52'));
+  const figs = el('p', 'os-sample-figs os-figs');
+  for (const [v, k] of [['11', 'merged'], ['6', 'wait on you'], ['963.24', 'credits']]) {
+    const f = el('span', 'os-sample-fig');
+    f.append(el('span', 'os-sample-v', v), el('span', 'os-sample-k', k));
+    figs.append(f);
+  }
+  head.append(figs);
+
+  const list = el('ol', 'os-sample-rows');
+  for (const [line, figures] of SAMPLE_ROWS) {
+    const row = el('li', 'os-sample-row');
+    row.append(el('span', 'os-sample-line', line), el('span', 'os-sample-row-figs os-figs', figures.join('  ')));
+    list.append(row);
+  }
+  panel.list.append(list);
+  panel.setStream(SAMPLE_ROWS.flatMap(([line, figures]) => [line.split(':')[0], ...figures]));
+  sheet.show();
+  return () => panel.dispose();
+}
+
+const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen, panel: panelSpecimen };
 
 /** Shows one kind of the gallery over the city, and returns its unmount. */
 export function mountGallery(parent: HTMLElement, kind: GalleryKind): () => void {

@@ -58,3 +58,32 @@ Changes: `.os-type-hold` (motion.css) stacks the whole line, unseen, in the same
 
 - The cursor layer starts one host-width to the left of its host at opacity 0. In a host without overflow clipping, the trail's first frames could show just left of the host while the opacity rises. Not visible in the gallery.
 - aria-label on a paragraph or a generic span is not reliably read by screen readers. typeIn sets it as the brief asks; T17 should put typed text on an element that can carry a name, or rely on the text itself once it is whole.
+
+## Task 5: the panel, its three panes, parallax and the stream
+
+Stills: `stills/task-5/panel.webp`, `panel-1280.webp`, `panel-reduced-motion.webp` (the final round, round 2), and `panel-round1.webp`. Shot with `tools/os-stills.ts panel`, the GPU lock held: a sample sheet dressed by `dressPanel`, its head the date, a since line and three figures, ten placeholder rows in its list, and the stream made from the rows' own repo names and figures. The pointer is parked outside the panel, so the panes are at rest; parallax never shows in a still.
+
+### Round 1
+
+What works:
+- The head reads as the nearest plate: proud of the panel at the left by 14 px with its own amber ticks, lit along its top and left, a hairline at its foot, and a shadow cast down and right onto the list.
+- The panel is dark enough over the city: headlines, figures and the dim labels all read cleanly, and the lit towers at the panel's right edge do not come through. The ground is 0.95 at the left and never thinner than 0.86 (GROUND.textMinAlpha) at the right.
+- The stream reads as words falling, not a font sample: "harbor-ledger", "benched", "#312" can be read down the columns, faint (the brightest column is at 0.138 opacity), strongest at the right under the figures.
+- The scrim is only a shade where the panel stands; the city to the right stays clear.
+
+Weaknesses:
+1. **The back pane reads as a stray strip** beside the rail: 26 px proud of the panel's right, its foot off the bottom of the window, its fill so thin it reads as a shadow, not a pane. This is round 7's weakness again.
+
+### Round 2 (final)
+
+Changes: the panel stands 36 px off the window's foot, so the back pane's lit foot shows; the back pane stands 44 px out at the right and 24 px below, with a denser fill (0.72 to 0.86), brighter lit edges on its right and foot, a faint glow just inside them, and its ticks set 6 px in from its lit edge so the two lines do not sit a pixel apart (round 8's stub-column note); the panel casts harder to the right onto it.
+
+What the stills show:
+- Three depths in a still at both sizes: the head plate nearest, the panel with its brackets and rail, and the back pane behind, a distinct dark pane with a lit right edge and foot, the panel's shadow falling on it.
+- panel-1280: the same composition, the back pane and its foot clear of the window edge.
+- panel-reduced-motion: the stream stands still part way down, no scan ran, the panes at rest. Everything reads whole.
+
+### Left, below the anti-goal level
+
+- Under reduced motion each stream column stops at a quarter of its fall, so the foot of the list has fewer streaks than its top. It is decoration under 20% opacity; not worth a different still layout.
+- The head's shadow onto the list is quiet over the panel's own dark ground. It shows clearly once rows scroll under the head (T6 onward will show it).
