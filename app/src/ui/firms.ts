@@ -1,4 +1,4 @@
-import { BANKRUPT_HOURS } from '../../../shared/market-rules';
+import { BANKRUPT_HOURS, BENCH_AT, benched } from '../../../shared/market-rules';
 import type { Firm, FirmView, Quarter, Reputation, Silhouette } from '../../../shared/types';
 import { api, type EngineEvent } from '../api';
 import { placeHref } from '../router';
@@ -104,9 +104,11 @@ export function balanceCell(f: Firm, now = Date.now(), opts: { always?: boolean 
   else if (neg) {
     const h = bankruptIn(f.negativeSince, now);
     note = h === null ? 'below zero' : h === 0 ? 'bankrupt within the hour' : `bankrupt in ${h} h`;
+    // The bench (economy change D): no bids until it is back above the line.
+    if (benched(f)) note = `benched, ${note}`;
   }
   if (note) cell.append(el('span', 'firm-bal-note', note));
-  if (neg && f.status !== 'bankrupt') cell.title = `Below zero since ${f.negativeSince ? `${shortDate(f.negativeSince)} at ${clock(f.negativeSince)}` : 'now'}. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark and are sold.`;
+  if (neg && f.status !== 'bankrupt') cell.title = `Below zero since ${f.negativeSince ? `${shortDate(f.negativeSince)} at ${clock(f.negativeSince)}` : 'now'}. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark and are sold.${benched(f) ? ` At or below ${money(BENCH_AT)} credits it is benched: it places no bids until its balance is back above that.` : ''}`;
   return cell;
 }
 

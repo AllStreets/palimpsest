@@ -757,3 +757,22 @@ test('an award, an edit or a retry starts the count again', async () => {
   assert.equal(award(job(k.id) as Job, t2 + 1)?.agentId, 'taker');
   assert.deepEqual(coolOff(k.id), { rounds: 0, until: null });
 });
+
+// ---------------------------------------------------------------- the bench (economy change D)
+
+test('a benched firm places no bids and is charged nothing, and bids again once above -150', async () => {
+  addFirm('deep', { balance: -150 });
+  addFirm('shallow', { balance: -149 });
+  addAgent('sunk', 'deep', 'ollama:qwen');
+  addAgent('afloat', 'shallow', 'ollama:qwen');
+  const seen = script({ sunk: { price: 5, confidence: 0.9 }, afloat: { price: 5, confidence: 0.9 } });
+  const j = bidding();
+  assert.deepEqual(eligibleAgents(j).map((a) => a.id), ['afloat']);
+  assert.equal(await collectBid(j, addAgent('sunk', 'deep', 'ollama:qwen'), NOW), null);
+  await collectBids(j, NOW);
+  assert.deepEqual(seen.map((i) => i.agent.id), ['afloat']);
+  assert.deepEqual(creditRows().map((r) => r.firm_id), ['shallow']);
+  // Back above the line, it bids again.
+  addFirm('deep', { balance: -149.5, slot: 900 });
+  assert.deepEqual(eligibleAgents(bidding()).map((a) => a.id).sort(), ['afloat', 'sunk']);
+});

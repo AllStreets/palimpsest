@@ -77,6 +77,17 @@ export const MAX_ATTEMPTS = 2;
 export const CREDITS_PER_USD = 20;
 /** Continuous hours below zero before a firm is bankrupt (ruling 6). */
 export const BANKRUPT_HOURS = 72;
+/**
+ * The bench (economy change D): a firm at or below this many credits places
+ * no bids until its balance is back above it. It still earns review pay, and
+ * the 72-hour rule still runs.
+ */
+export const BENCH_AT = -150;
+
+/** Whether an active firm is benched: at or below BENCH_AT. */
+export function benched(f: { balance: number; status: 'active' | 'bankrupt' }): boolean {
+  return f.status === 'active' && f.balance <= BENCH_AT;
+}
 
 /**
  * How long a job waits before its next round of bids after rounds in a row

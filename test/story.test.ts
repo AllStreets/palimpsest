@@ -117,3 +117,8 @@ test('a restatement of the books reads in plain words', () => {
   const names = { agent: (id: string) => id, firm: (id: string) => id, job: () => null };
   assert.deepEqual(bookLines([row('correction', 873.5, -111)], names).map((l) => l.text), ['Restated: last week’s bids and work charged again under the new rules']);
 });
+
+test('a benched firm says so in plain words', async () => {
+  const { benchWords } = await import('../app/src/ui/story.js');
+  assert.equal(benchWords(-162.4), 'Benched at −162.40 credits: it places no bids until its balance is back above −150. It still earns review pay.');
+});

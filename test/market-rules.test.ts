@@ -343,3 +343,13 @@ test('a job that awards nothing cools off longer each round in a row: 10 minutes
   assert.equal(coolOffMs(500), 24 * 60 * MIN);
   assert.equal(coolOffMs(0), 10 * MIN, 'a round always waits at least the first step');
 });
+
+test('a firm at or below -150 credits is benched: it places no bids until it is back above -150', async () => {
+  const { BENCH_AT, benched } = await import('../shared/market-rules.js');
+  assert.equal(BENCH_AT, -150);
+  assert.equal(benched({ balance: -150, status: 'active' }), true);
+  assert.equal(benched({ balance: -400, status: 'active' }), true);
+  assert.equal(benched({ balance: -149.99, status: 'active' }), false);
+  assert.equal(benched({ balance: 20, status: 'active' }), false);
+  assert.equal(benched({ balance: -400, status: 'bankrupt' }), false, 'a bankrupt firm is past the bench');
+});

@@ -6,7 +6,7 @@
  * drawn as, and an agent's workflow and lineage in words.
  */
 import { localDay as dayOf } from '../../../shared/day.js';
-import { BANKRUPT_HOURS, creditsFixed } from '../../../shared/market-rules.js';
+import { BANKRUPT_HOURS, BENCH_AT, creditsFixed, creditsText } from '../../../shared/market-rules.js';
 import type { Agent, BookRow, FirmRound, Quarter, WorkflowShape } from '../../../shared/types.js';
 import { cleanText, money } from './board.js';
 
@@ -206,4 +206,9 @@ export function lineageWords(a: Pick<Agent, 'lineage'>): string {
     default:
       return `Seeded with the city on ${when}.`;
   }
+}
+
+/** A benched firm (economy change D), in plain words for its page. */
+export function benchWords(balance: number): string {
+  return `Benched at ${creditsFixed(balance)} credits: it places no bids until its balance is back above ${creditsText(BENCH_AT)}. It still earns review pay.`;
 }

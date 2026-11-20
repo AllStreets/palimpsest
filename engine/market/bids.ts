@@ -30,7 +30,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { BID_COOL_OFF, calibrated as calibrate, coolOffMs, expectedValue, roundOpen } from '../../shared/market-rules.js';
+import { benched, BID_COOL_OFF, calibrated as calibrate, coolOffMs, expectedValue, roundOpen } from '../../shared/market-rules.js';
 import type { Agent, Bid, FloorSize, Job, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
@@ -163,12 +163,14 @@ export function openBidding(j: Job, now: number = Date.now()): Job {
   return transition(j, 'bidding', { bidsCloseAt: closeAt, awardedBid: null });
 }
 
-/** Agents that may bid: working, in an active firm the job has not excluded, bidding on its tier. */
+/** Agents that may bid: working, in an active firm that is not benched and the job has not excluded, bidding on its tier. */
 export function eligibleAgents(j: Job): Agent[] {
   const excluded = new Set(j.excludedFirms ?? []);
-  return listAgents().filter(
-    (a) => !a.retired && !excluded.has(a.firmId) && a.bidsOn.includes(j.tier) && firm(a.firmId)?.status === 'active',
-  );
+  return listAgents().filter((a) => {
+    if (a.retired || excluded.has(a.firmId) || !a.bidsOn.includes(j.tier)) return false;
+    const f = firm(a.firmId);
+    return f?.status === 'active' && !benched(f);
+  });
 }
 
 // ---------------------------------------------------------------- examples

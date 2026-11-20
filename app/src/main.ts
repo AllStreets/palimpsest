@@ -5,6 +5,7 @@ import './ui/screens.css';
 
 import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
 import { mondayMorning, tourWeekFor, weekOf } from '../../shared/tour';
+import { benched } from '../../shared/market-rules';
 import { setClusterCulling } from './city/batch';
 import { homeKey } from './city/camera';
 import { api } from './api';
@@ -1320,7 +1321,8 @@ async function main(): Promise<void> {
       // Its own agents at work: towers sold away are listed with their buyer, as bought, wherever they stand.
       const own = f ? f.agents.filter((a) => !a.retired).length : q.towers.filter((t) => (t.firmId ?? q.firmId) === q.firmId && !t.dark).length;
       const bought = occ.quarters.reduce((n, o) => n + (o.firmId === q.firmId ? 0 : o.towers.filter((t) => t.firmId === q.firmId).length), 0);
-      const books = f ? `, ${Math.round(f.balance)} credits` : '';
+      // A benched firm (at or below -150) places no bids until it is back above: its plate says so.
+      const books = f ? `, ${Math.round(f.balance)} credits${benched(f) ? ', benched, not bidding' : ''}` : '';
       plates.push({
         key: `firm:${q.firmId}`,
         origin: q.origin,
