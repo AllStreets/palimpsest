@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { bankruptIn, benchNote, benchWords, bookLines, figure, floorsBuilt, lineageWords, roundWords, soldTowers, stepPath, stipendLine, workflowWords } from '../app/src/ui/story.js';
+import { bankruptIn, benchMark, benchNote, benchWords, bookLines, figure, firmsFacts, firmsKey, floorsBuilt, lineageWords, roundWords, soldTowers, stepPath, stipendLine, workflowWords } from '../app/src/ui/story.js';
 import type { Agent, Bid, BookRow, Floor, FirmRound, Quarter, TowerSpec } from '../shared/types.js';
 
 const H = 3_600_000;
@@ -139,4 +139,20 @@ test('a stipend reads in plain words on the books', () => {
   assert.deepEqual(bookLines([row('stipend', 15, -174)], names).map((l) => l.text), [stipendLine()]);
   assert.equal(stipendLine(), 'Stipend: the city pays a benched firm 15 credits a day');
   assert.equal(benchNote(), 'benched, clock paused');
+});
+
+test('the firms list counts the benched among its firms and the footer explains the bench', () => {
+  const f = (status: 'active' | 'bankrupt', balance: number) => ({ status, balance });
+  const firms = [f('active', 240), f('active', 505.5), f('active', 285), f('active', 312), f('active', -190), f('bankrupt', -70)];
+  assert.equal(firmsFacts(firms), '6 firms: 4 trading, 1 benched, 1 bankrupt. 1,152.50 credits on the books of the firms still open.');
+  assert.equal(firmsFacts([f('active', 10), f('active', 20)]), '2 firms: 2 trading. 30 credits on the books of the firms still open.');
+  assert.equal(firmsFacts([]), '');
+  const key = firmsKey();
+  assert.match(key, /72 hours/);
+  assert.match(key, /at or below −150 credits/);
+  assert.match(key, /stops bidding/);
+  assert.match(key, /15 credits a day/);
+  assert.match(key, /clock pauses until it recovers/);
+  assert.doesNotMatch(key, /—|--|\p{Extended_Pictographic}/u);
+  assert.equal(benchMark(), 'benched');
 });

@@ -6,7 +6,7 @@
  * drawn as, and an agent's workflow and lineage in words.
  */
 import { localDay as dayOf } from '../../../shared/day.js';
-import { BANKRUPT_HOURS, BENCH_AT, creditsFixed, creditsText, STIPEND } from '../../../shared/market-rules.js';
+import { BANKRUPT_HOURS, BENCH_AT, benched, creditsFixed, creditsText, STIPEND } from '../../../shared/market-rules.js';
 import type { Agent, BookRow, FirmRound, Quarter, WorkflowShape } from '../../../shared/types.js';
 import { cleanText, money } from './board.js';
 
@@ -224,6 +224,29 @@ export function benchWords(balance: number, hoursLeft: number | null): string {
 /** A benched firm's note beside its balance on the firms list. */
 export function benchNote(): string {
   return 'benched, clock paused';
+}
+
+/** The mark beside a benched firm's name on the firms list. */
+export function benchMark(): string {
+  return 'benched';
+}
+
+/** The firms list's top line: every firm counted, the benched among them, and what the standing firms hold. */
+export function firmsFacts(firms: Array<{ status: 'active' | 'bankrupt'; balance: number }>): string {
+  if (firms.length === 0) return '';
+  const open = firms.filter((f) => f.status === 'active');
+  const bench = open.filter((f) => benched(f)).length;
+  const gone = firms.length - open.length;
+  const parts = [`${open.length - bench} trading`];
+  if (bench) parts.push(`${bench} benched`);
+  if (gone) parts.push(`${gone} bankrupt`);
+  const held = Math.round(open.reduce((s, f) => s + f.balance, 0) * 100) / 100;
+  return `${firms.length} ${firms.length === 1 ? 'firm' : 'firms'}: ${parts.join(', ')}. ${creditsText(held)} credits on the books of the firms still open.`;
+}
+
+/** The firms page's footer: how a firm fails, and how the bench holds it off. */
+export function firmsKey(): string {
+  return `Pass rate is the share of a firm’s awarded jobs whose work merged. Calibration is how well its stated confidence matched what happened (one less its Brier score). Durability is the share of its merges never reverted. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark, and the richest firm that can afford them buys them. A firm at or below ${creditsText(BENCH_AT)} credits is benched: it stops bidding, the city pays it ${STIPEND} credits a day, and its bankruptcy clock pauses until it recovers.`;
 }
 
 /** A stipend on the books. */

@@ -2140,6 +2140,21 @@ body[data-route='agent'] {
 .firm-row.bankrupt {
   background: repeating-linear-gradient(135deg, rgba(236, 230, 218, 0.03) 0 1px, transparent 1px 7px);
 }
+/* A benched firm: stopped bidding, still trading its books; a rust-edged tag and a stripe, not the bankrupt hatch. */
+.firm-bench {
+  margin-left: 10px;
+  padding: 1px 7px 2px;
+  border: 1px solid var(--rust, #b5603c);
+  border-radius: 2px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rust, #b5603c);
+  white-space: nowrap;
+}
+.firm-row.benched {
+  box-shadow: inset 3px 0 0 var(--rust, #b5603c);
+}
 .firm-towers {
   margin-top: 7px;
   max-width: 46ch;
@@ -6184,4 +6199,14 @@ a.brief-act {
 /* Its design rows hold long model names: the values take one measure, so the glosses start on one line down the page. */
 .agent-school .design-row {
   grid-template-columns: 150px 350px minmax(0, 1fr);
+}
+
+/* A kind with no score yet: plain words and the reason under them, not a dot. */
+.kind-score-why {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--ink-3);
+  text-align: right;
 }

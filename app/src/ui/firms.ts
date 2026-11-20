@@ -5,7 +5,7 @@ import { placeHref } from '../router';
 import { cleanText, money, pct } from './board';
 import { button, createSheet, el, plural } from './controls';
 import { coalesce, namesOf } from './pages';
-import { bankruptIn, benchNote, benchWords, figure, floorsBuilt, shortDate, soldTowers } from './story';
+import { bankruptIn, benchMark, benchNote, benchWords, figure, firmsKey, firmsFacts, floorsBuilt, shortDate, soldTowers } from './story';
 import './market.css';
 import { clock } from './time-words';
 
@@ -136,11 +136,7 @@ export function createFirms(parent: HTMLElement, opts: { listen(fn: (e: EngineEv
   const ledger = el('div', 'firm-ledger');
   ledger.setAttribute('role', 'table');
   ledger.setAttribute('aria-label', 'The firms');
-  const key = el(
-    'p',
-    'jobs-key firms-key',
-    `Pass rate is the share of a firm’s awarded jobs whose work merged. Calibration is how well its stated confidence matched what happened (one less its Brier score). Durability is the share of its merges never reverted. A firm below zero for ${BANKRUPT_HOURS} hours in a row is bankrupt: its towers go dark, and the richest firm that can afford them buys them.`,
-  );
+  const key = el('p', 'jobs-key firms-key', firmsKey());
   sheet.body.append(trouble, ledger, key);
 
   let firms: FirmView[] = [];
@@ -185,7 +181,8 @@ export function createFirms(parent: HTMLElement, opts: { listen(fn: (e: EngineEv
 
   function row(f: FirmView, names: ReturnType<typeof namesOf>, now: number): HTMLElement {
     const gone = f.status === 'bankrupt';
-    const r = el('div', `firm-row${gone ? ' bankrupt' : ''}${f.balance < 0 ? ' below' : ''}`);
+    const onBench = benched(f);
+    const r = el('div', `firm-row${gone ? ' bankrupt' : ''}${onBench ? ' benched' : ''}${f.balance < 0 ? ' below' : ''}`);
     r.setAttribute('role', 'row');
     r.dataset.firm = f.id;
 
@@ -202,6 +199,11 @@ export function createFirms(parent: HTMLElement, opts: { listen(fn: (e: EngineEv
     const a = el('a', 'firm-name', cleanText(f.name, 80));
     a.href = placeHref('firm', f.id);
     line.append(a);
+    if (onBench) {
+      const mark = el('span', 'firm-bench', benchMark());
+      mark.title = benchWords(f.balance, bankruptIn(f.negativeSince, Date.now(), f.benchedSince ?? new Date().toISOString()));
+      line.append(mark);
+    }
     name.append(line, el('p', 'firm-motto', cleanText(f.motto, 160)));
     const sold = soldTowers(quarters, f.id);
     if (gone) {
@@ -243,10 +245,7 @@ export function createFirms(parent: HTMLElement, opts: { listen(fn: (e: EngineEv
     if (k === lastKey) return;
     lastKey = k;
     const names = namesOf(firms);
-    const active = firms.filter((f) => f.status === 'active');
-    const gone = firms.length - active.length;
-    const held = active.reduce((s, f) => s + f.balance, 0);
-    facts.textContent = firms.length ? `${plural(firms.length, 'firm')}: ${active.length} trading${gone ? `, ${gone} bankrupt` : ''}. ${grouped(Math.round(held * 100) / 100)} credits on the trading firms’ books.` : '';
+    facts.textContent = firmsFacts(firms);
     ledger.replaceChildren(headRow(), ...firms.map((f) => row(f, names, now)));
   }
 
