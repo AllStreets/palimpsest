@@ -65,6 +65,7 @@ import { createRepos } from './ui/repos';
 import { createNotices } from './ui/notices';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
+import type { GalleryKind } from './ui/os/gallery';
 
 /** A vehicle as the debug handle reports it. */
 interface VehicleProbe {
@@ -291,6 +292,8 @@ interface DebugHandle {
   rideSeek(t: number): void;
   /** Hides or shows the sites' drawing, to measure what they cost (tests). */
   showSites(on: boolean): void;
+  /** Shows one kind of the screens layer's gallery over the city (tools/os-stills.ts), loading it on first use; null takes it down. */
+  osGallery(kind: GalleryKind | null): void;
 }
 
 declare global {
@@ -490,8 +493,20 @@ async function main(): Promise<void> {
     agentBoardDown?.();
     agentBoardDown = null;
   }
+  /** The gallery standing now, and which ask raised it (a later ask wins over a load still in flight). */
+  let galleryDown: (() => void) | null = null;
+  let galleryAsk = 0;
   const debug: DebugHandle = {
     ready: false,
+    osGallery: (kind) => {
+      galleryDown?.();
+      galleryDown = null;
+      const ask = ++galleryAsk;
+      if (!kind) return;
+      void import('./ui/os/gallery').then((m) => {
+        if (ask === galleryAsk) galleryDown = m.mountGallery(document.body, kind);
+      });
+    },
     quarters: 0,
     opened: '',
     agentFrame: (id) => {

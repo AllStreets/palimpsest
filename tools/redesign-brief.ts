@@ -27,47 +27,16 @@
  * (frames-uncapped.json): at 60 Hz both views sit at 16.7 ms, so only the
  * uncapped times show what the Brief's drawing costs.
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
-import { chromium } from 'playwright';
-import type { Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
 
-import { cityExtent, viewLimits } from '../app/src/city/view.js';
-import type { District } from '../shared/types.js';
-import { paneFraming } from './pane-framing.js';
-import { sampleGh, seedSample } from './sample.js';
+import { framings, launch, PERF_VIEW, pageUrl, ready, redesignHome, redesignPort, settle, STILL_VIEW, toCity, view } from './redesign-harness.js';
+import type { Frame } from './redesign-harness.js';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DIST = join(ROOT, 'dist');
-const PORT = Number(process.env.REDESIGN_PORT ?? 4789);
-if (PORT === 4770 || PORT === 4771) throw new Error(`REDESIGN_PORT ${PORT} is the real engine's or the dev server's`);
-const HOME_ROOT = process.env.REDESIGN_HOME;
-if (!HOME_ROOT) throw new Error('REDESIGN_HOME must name a scratch folder');
-const STILL_VIEW = { width: 1600, height: 1000 };
-const PERF_VIEW = { width: 1512, height: 890 };
-type V3 = [number, number, number];
-type Frame = { eye: V3; target: V3 };
-
-async function view(page: Page, f: Frame): Promise<void> {
-  await page.evaluate(([e, t]) => (window as unknown as { __palimpsest: { view(e: number[], t: number[]): void } }).__palimpsest.view(e, t), [f.eye, f.target]);
-}
-const settle = (page: Page): Promise<unknown> => page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
-
-async function ready(page: Page, url: string): Promise<void> {
-  await page.goto(url);
-  await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000 });
-  await page.waitForTimeout(2500);
-}
-
-async function framings(page: Page, w: number, h: number): Promise<{ screens: Frame; overview: Frame }> {
-  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
-  const aspect = w / h;
-  const lim = viewLimits(cityExtent(city), aspect);
-  const sheetW = Math.min(760, Math.max(600, 0.47 * w));
-  return { screens: paneFraming(lim.home, sheetW / w, 1, 36, aspect, 1.35) as Frame, overview: lim.home as Frame };
-}
+const PORT = redesignPort();
+const HOME_ROOT = redesignHome();
 
 async function openBrief(page: Page, f: Frame): Promise<void> {
   await view(page, f);
@@ -82,16 +51,8 @@ async function openBrief(page: Page, f: Frame): Promise<void> {
   await settle(page);
 }
 
-async function toCity(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    location.hash = '#/';
-  });
-  await page.waitForSelector('body[data-route="city"]', { timeout: 10_000 });
-  await page.waitForTimeout(900);
-}
-
-async function stills(out: string, browser: import('playwright').Browser): Promise<void> {
-  const url = `http://127.0.0.1:${PORT}/?fixed-quality&debug`;
+async function stills(out: string, browser: Browser): Promise<void> {
+  const url = pageUrl(PORT);
   const shot = async (page: Page, name: string): Promise<void> => {
     await settle(page);
     await page.screenshot({ path: join(out, `${name}.png`) });
@@ -153,7 +114,7 @@ const pct = (xs: number[], p: number): number => {
   return s.length ? s[Math.min(s.length - 1, Math.ceil(s.length * p) - 1)] : 0;
 };
 
-async function frames(out: string, browser: import('playwright').Browser): Promise<void> {
+async function frames(out: string, browser: Browser): Promise<void> {
   const runs = Number(process.env.REDESIGN_RUNS ?? 3);
   const result: Record<string, Record<string, { median: number; p95: number; frames: number; runs: Array<{ median: number; p95: number }> }>> = {};
   for (const tier of ['high', 'medium'] as const) {
@@ -163,7 +124,7 @@ async function frames(out: string, browser: import('playwright').Browser): Promi
       body: JSON.stringify({ quality: tier }),
     });
     const page = await browser.newPage({ viewport: PERF_VIEW, deviceScaleFactor: 2 });
-    await ready(page, `http://127.0.0.1:${PORT}/?fixed-quality&debug`);
+    await ready(page, pageUrl(PORT));
     const stands = await page.evaluate('window.__palimpsest.quality()');
     if (stands !== tier) throw new Error(`frames: the city opened at ${stands}, not ${tier}`);
     const f = await framings(page, PERF_VIEW.width, PERF_VIEW.height);
@@ -196,39 +157,16 @@ async function frames(out: string, browser: import('playwright').Browser): Promi
 async function main(): Promise<void> {
   const [mode, outArg] = process.argv.slice(2);
   if (mode !== 'stills' && mode !== 'frames') throw new Error('usage: redesign-brief.ts stills|frames <out dir>');
-  const out = resolve(outArg ?? join(HOME_ROOT!, mode));
+  const out = resolve(outArg ?? join(HOME_ROOT, mode));
   mkdirSync(out, { recursive: true });
-  const tmp = join(HOME_ROOT!, `run-${process.pid}`);
-  rmSync(tmp, { recursive: true, force: true });
-  mkdirSync(tmp, { recursive: true });
-  process.env.PALIMPSEST_HOME = join(tmp, 'home');
-  process.env.PALIMPSEST_DIST = DIST;
-  const claudeSettingsPath = join(tmp, 'claude-settings.json');
-  writeFileSync(claudeSettingsPath, '{}\n');
-  const at = Date.now();
-  await seedSample(at);
-  process.env.PALIMPSEST_TEST_PROJECTS = '1';
-  const { useSampleFolders } = await import('../engine/sample.js');
-  useSampleFolders();
-  const projects = process.env.PALIMPSEST_CLAUDE_PROJECTS ?? '';
-  if (!resolve(projects).startsWith(resolve(tmp))) throw new Error(`the transcripts folder ${projects} is not inside ${tmp}; refusing to run`);
-  const { seedEconomy } = await import('../engine/market/sample-economy.js');
-  await seedEconomy(at, {});
-  const { setRunner } = await import('../engine/exec.js');
-  setRunner(sampleGh());
-  const { startServer } = await import('../engine/server.js');
-  const server = await startServer({ port: PORT, claudeSettingsPath });
-  (await import('../engine/school/campus.js')).ensureCampus();
   // REDESIGN_UNCAPPED=1 lifts vsync and the frame-rate limit, so a frame's time is its cost and not the 60 Hz refresh.
-  const uncapped = process.env.REDESIGN_UNCAPPED === '1' ? ['--disable-gpu-vsync', '--disable-frame-rate-limit'] : [];
-  const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', ...uncapped] });
+  const run = await launch({ uncapped: process.env.REDESIGN_UNCAPPED === '1' });
+  const { browser } = run;
   try {
     if (mode === 'stills') await stills(out, browser);
     else await frames(out, browser);
   } finally {
-    await browser.close();
-    await server.close();
-    rmSync(tmp, { recursive: true, force: true });
+    await run.close();
   }
   console.log(`Wrote to ${out}`);
   process.exit(0);

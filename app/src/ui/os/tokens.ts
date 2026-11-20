@@ -13,7 +13,7 @@ export const COLOUR: Readonly<Record<ColourToken, string>> = Object.freeze({
   ground: '#090604',
   ink: '#f5e9d9',
   ink2: '#c9b49c',
-  dim: '#a48f78',
+  dim: '#b09b84',
   amber: '#ffb547',
   amberHi: '#ffd391',
   red: '#ff5532',

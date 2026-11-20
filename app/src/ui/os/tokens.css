@@ -7,7 +7,7 @@
   --os-ground: #090604;
   --os-ink: #f5e9d9;
   --os-ink2: #c9b49c;
-  --os-dim: #a48f78;
+  --os-dim: #b09b84;
   --os-amber: #ffb547;
   --os-amber-hi: #ffd391;
   --os-red: #ff5532;
@@ -90,4 +90,12 @@
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* Figures: the mono face with every digit one width, so columns of numbers line up. */
+.os-figs {
+  font-family: var(--os-mono);
+  font-variant-numeric: tabular-nums;
+  /* Azeret is set wide; drawn in a touch, so figures read as a figure, not as spaced letters. */
+  letter-spacing: -0.02em;
 }
