@@ -1,0 +1,20 @@
+/*
+ * The screens' two faces, self-hosted so the app works offline (SIL OFL 1.1,
+ * licences beside the files, rows in CREDITS.md). Both are variable, 100 to 900.
+ * Big Shoulders sets the display and the figures; Azeret Mono the readouts.
+ */
+@font-face {
+  font-family: 'Big Shoulders';
+  src: url('/fonts/big-shoulders.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Azeret Mono';
+  src: url('/fonts/azeret-mono.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
