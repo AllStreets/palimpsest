@@ -1,0 +1,987 @@
+/*
+ * Hologram (redesign direction B, a throwaway prototype): the Brief as cool light on smoked glass over the live city.
+ * Panes at several depths with parallax, a refined technical display face (Saira, its width axis) and a mono for
+ * readouts (Geist Mono), and keys lit from inside. No backdrop-filter on the panel: the city is redrawn every frame.
+ */
+@font-face {
+  font-family: 'Saira';
+  src: url('/fonts/saira.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 50% 125%;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/geist-mono.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --hg-px: 0;
+  --hg-py: 0;
+  --hg-ice: #ecfbff;
+  --hg-cyan: #7fe6ff;
+  --hg-cyan-deep: #22b4d6;
+  --hg-frost: #a8cad6;
+  --hg-dim: #86a7b3;
+  --hg-ok: #7af2c6;
+  --hg-warn: #ffcb78;
+  --hg-fail: #ff8a96;
+  --hg-glass: 6, 18, 26;
+  --hg-display: 'Saira', 'Avenir Next', system-ui, sans-serif;
+  --hg-mono: 'Geist Mono', ui-monospace, Menlo, monospace;
+  --hg-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* ---------------------------------------------------------------- the city behind */
+
+/* The glass replaces the scrim: a light shade at the panel's foot, the city clear beside it. */
+.scrim:has(+ .sheet.brief.holo) {
+  z-index: 3;
+  background: linear-gradient(to right, rgba(2, 8, 12, 0.42) 0, rgba(2, 8, 12, 0.22) calc(var(--sheet-w) + 80px), rgba(2, 8, 12, 0) 78%);
+}
+
+/* ---------------------------------------------------------------- the planes behind */
+
+.hg-planes {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s ease 0.1s;
+}
+.hg-planes[hidden] {
+  display: none;
+}
+.hg-planes.open {
+  opacity: 1;
+}
+.hg-plane {
+  position: absolute;
+  border-radius: 2px;
+  will-change: transform;
+}
+/* The mid pane: a second sheet of glass behind the Brief, set up and to the right, its own lit edge and chamfer showing. */
+.hg-plane.mid {
+  top: 52px;
+  left: 40px;
+  width: var(--sheet-w);
+  bottom: 44px;
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  background:
+    linear-gradient(to right, rgba(127, 230, 255, 0.5), rgba(127, 230, 255, 0.04) 70%) top / 100% 1px no-repeat,
+    linear-gradient(to bottom, rgba(127, 230, 255, 0.45), rgba(127, 230, 255, 0.05) 80%) right / 1px 100% no-repeat,
+    linear-gradient(to right, rgba(var(--hg-glass), 0.1), rgba(var(--hg-glass), 0.36));
+  transform: translate3d(calc(var(--hg-px) * -8px), calc(var(--hg-py) * -5px), 0);
+  transition: transform 0.5s var(--hg-ease);
+}
+.hg-plane.mid::after {
+  content: '';
+  position: absolute;
+  top: 12.5px;
+  right: -5px;
+  width: 37px;
+  height: 1px;
+  transform: rotate(45deg);
+  background: rgba(160, 238, 255, 0.6);
+}
+
+/* ---------------------------------------------------------------- the glass */
+
+.sheet.brief.holo {
+  top: 70px;
+  left: 18px;
+  bottom: 18px;
+  background: none;
+  border: none;
+  color: var(--hg-ice);
+  font-family: var(--hg-display);
+  isolation: isolate;
+}
+/* The glass itself: smoked, darkest under the words, a cool light pooled at its top left; chamfered at two corners. */
+.sheet.brief.holo::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  background:
+    radial-gradient(120% 60% at 0% 0%, rgba(127, 230, 255, 0.12), transparent 60%),
+    linear-gradient(to right, rgba(var(--hg-glass), 0.8), rgba(var(--hg-glass), 0.7) 70%, rgba(var(--hg-glass), 0.6));
+}
+.hg-light {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px));
+  background:
+    /* the lit top edge, brightest at the left, where the light enters */
+    linear-gradient(to right, rgba(220, 250, 255, 0.85), rgba(127, 230, 255, 0.4) 40%, rgba(127, 230, 255, 0.08)) top / 100% 1px no-repeat,
+    /* the left edge */
+    linear-gradient(to bottom, rgba(127, 230, 255, 0.55), rgba(127, 230, 255, 0.12) 50%, rgba(127, 230, 255, 0.4)) left / 1px 100% no-repeat,
+    /* the right edge, faint: the far side of the glass */
+    linear-gradient(to bottom, rgba(127, 230, 255, 0.05), rgba(127, 230, 255, 0.22)) right / 1px 100% no-repeat,
+    /* the emitter along the foot */
+    linear-gradient(to right, rgba(127, 230, 255, 0.05), rgba(220, 250, 255, 0.75) 30%, rgba(127, 230, 255, 0.2) 80%, transparent) bottom / 100% 1px no-repeat,
+    linear-gradient(to top, rgba(127, 230, 255, 0.1), transparent) bottom / 100% 70px no-repeat;
+}
+/* The chamfers' lit cuts. */
+.hg-light::before,
+.hg-light::after {
+  content: '';
+  position: absolute;
+  width: 37px;
+  height: 1px;
+  background: linear-gradient(to right, rgba(127, 230, 255, 0.1), rgba(220, 250, 255, 0.9));
+  box-shadow: 0 0 8px rgba(127, 230, 255, 0.8);
+}
+.hg-light::before {
+  top: 12.5px;
+  right: -5px;
+  transform: rotate(45deg);
+}
+.hg-light::after {
+  bottom: 12.5px;
+  left: -5px;
+  transform: rotate(45deg);
+  background: linear-gradient(to left, rgba(127, 230, 255, 0.1), rgba(220, 250, 255, 0.9));
+}
+/* One orchestrated moment: the glass projects up from its emitter on open. */
+@keyframes hg-project {
+  from {
+    clip-path: inset(100% -120px -120px -120px);
+  }
+  to {
+    clip-path: inset(-120px -120px -120px -120px);
+  }
+}
+.sheet.brief.holo.open {
+  animation: hg-project 0.62s var(--hg-ease) both;
+}
+.sheet.brief.holo .sheet-head {
+  position: relative;
+  z-index: 3;
+  margin: 16px 36px 0 -14px;
+  padding: 24px 30px 0 38px;
+  border-bottom: none;
+  /* The head is its own pane, nearer than the list: proud of the glass at the left, casting onto it. */
+  border-radius: 2px;
+  box-shadow: 0 22px 34px -16px rgba(0, 0, 0, 0.95), 18px 0 30px -20px rgba(0, 0, 0, 0.8), inset 0 0 0 1px rgba(127, 230, 255, 0.12), 0 0 30px -8px rgba(34, 180, 214, 0.25);
+  background:
+    linear-gradient(to right, rgba(220, 250, 255, 0.9), rgba(127, 230, 255, 0.35) 45%, rgba(127, 230, 255, 0.05)) top / 100% 1px no-repeat,
+    linear-gradient(to bottom, rgba(220, 250, 255, 0.8), rgba(127, 230, 255, 0.2)) left / 1px 100% no-repeat,
+    radial-gradient(90% 140% at 0% 0%, rgba(127, 230, 255, 0.16), transparent 65%),
+    linear-gradient(to bottom, rgba(10, 30, 40, 0.92), rgba(6, 20, 28, 0.9));
+  transform: translate3d(calc(var(--hg-px) * 4px), calc(var(--hg-py) * 3px), 0);
+  transition: transform 0.5s var(--hg-ease);
+}
+.sheet.brief.holo .sheet-title {
+  font-family: var(--hg-display);
+  font-stretch: 125%;
+  font-weight: 300;
+  font-size: 42px;
+  line-height: 1;
+  letter-spacing: 0.005em;
+  color: var(--hg-ice);
+  text-shadow: 0 0 22px rgba(127, 230, 255, 0.45), 0 0 2px rgba(127, 230, 255, 0.4);
+}
+
+/* ---------------------------------------------------------------- the head's readouts */
+
+.hg-readouts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: end;
+  column-gap: 20px;
+  margin-top: 20px;
+  padding-bottom: 18px;
+}
+.hg-figures {
+  display: flex;
+  gap: 30px;
+  align-items: flex-end;
+}
+.hg-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.hg-figure-value {
+  font-family: var(--hg-mono);
+  font-weight: 300;
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--hg-ice);
+  font-variant-numeric: tabular-nums;
+}
+.hg-figure.hot .hg-figure-value {
+  color: var(--hg-cyan);
+  text-shadow: 0 0 18px rgba(127, 230, 255, 0.7);
+}
+.hg-figure.hot .hg-label::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--hg-cyan);
+  box-shadow: 0 0 8px var(--hg-cyan);
+  vertical-align: 1px;
+  animation: hg-pulse 2.4s ease-in-out infinite;
+}
+@keyframes hg-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.hg-label {
+  font-family: var(--hg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--hg-frost);
+}
+.hg-gauges {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: flex;
+  gap: 14px;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 8px;
+  outline-offset: 4px;
+}
+.hg-gauges:focus-visible {
+  outline: 1px solid var(--hg-cyan);
+}
+.hg-gauge {
+  position: relative;
+  width: 70px;
+  display: grid;
+  justify-items: center;
+}
+.hg-gauge svg {
+  width: 70px;
+  height: 70px;
+  overflow: visible;
+}
+.hg-gauge circle {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: butt;
+}
+.hg-gauge-track {
+  stroke: rgba(127, 230, 255, 0.14);
+}
+.hg-gauge-value {
+  stroke: var(--hg-cyan);
+  filter: drop-shadow(0 0 3px rgba(127, 230, 255, 0.9));
+}
+.hg-gauge-cap {
+  stroke: var(--hg-warn);
+  stroke-width: 2;
+}
+.hg-gauge-fig {
+  position: absolute;
+  top: 24px;
+  font-family: var(--hg-mono);
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--hg-ice);
+}
+.hg-unit {
+  font-size: 0.6em;
+  color: var(--hg-frost);
+  margin-left: 1px;
+}
+.hg-gauge .hg-label {
+  margin-top: -10px;
+}
+.hg-since {
+  grid-column: 1;
+  margin-top: 14px;
+  font-family: var(--hg-mono);
+  font-size: 11px;
+  color: var(--hg-dim);
+}
+
+/* ---------------------------------------------------------------- the body */
+
+.sheet.brief.holo .sheet-body {
+  position: relative;
+  z-index: 1;
+  margin-top: 0;
+  padding: 4px 26px 60px 28px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 40px), transparent);
+  scrollbar-color: rgba(127, 230, 255, 0.3) transparent;
+}
+.hg-sr {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.sheet.brief.holo .brief-empty {
+  font-family: var(--hg-display);
+  font-size: 18px;
+  color: var(--hg-frost);
+}
+
+/* A section's head: its name in the display face, a lit rule, its count. */
+.sheet.brief.holo .repos-sec {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 8px 10px;
+  border: none;
+}
+.sheet.brief.holo .repos-sec-name {
+  font-family: var(--hg-display);
+  font-style: normal;
+  font-stretch: 112%;
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  color: var(--hg-cyan);
+}
+.sheet.brief.holo .repos-sec::after {
+  content: '';
+  order: 1;
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, rgba(127, 230, 255, 0.45), rgba(127, 230, 255, 0.04));
+}
+.sheet.brief.holo .repos-sec-count {
+  order: 2;
+  font-family: var(--hg-mono);
+  font-size: 11px;
+  color: var(--hg-frost);
+}
+.sheet.brief.holo .brief-sec[data-sec='waiting'] .repos-sec {
+  padding-top: 18px;
+}
+.sheet.brief.holo .brief-key {
+  margin: 0 8px 8px;
+  max-width: none;
+  font-family: var(--hg-mono);
+  font-size: 11px;
+  color: var(--hg-dim);
+}
+
+/* ---------------------------------------------------------------- a slip */
+
+.sheet.brief.holo .brief-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sheet.brief.holo .brief-item {
+  position: relative;
+  padding: 13px 16px 12px 20px;
+  border: none;
+  background: linear-gradient(to right, rgba(var(--hg-glass), 0.62), rgba(var(--hg-glass), 0.34));
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(160, 235, 255, 0.1);
+  transition: transform 0.28s var(--hg-ease), background-color 0.28s ease, box-shadow 0.28s ease;
+  --edge: rgba(127, 230, 255, 0.55);
+}
+/* Its light edge, coloured by what it is. */
+.sheet.brief.holo .brief-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--edge);
+  box-shadow: 0 0 10px var(--edge);
+}
+.sheet.brief.holo .brief-item[data-tone='ok'] {
+  --edge: rgba(122, 242, 198, 0.75);
+}
+.sheet.brief.holo .brief-item[data-tone='fail'] {
+  --edge: rgba(255, 138, 150, 0.85);
+}
+.sheet.brief.holo .brief-item[data-tone='warn'] {
+  --edge: rgba(255, 203, 120, 0.8);
+}
+.sheet.brief.holo .brief-item[data-tone='ask'] {
+  --edge: rgba(127, 230, 255, 0.95);
+}
+/* The farther sections stand back: no slip of their own, a hairline between, the city clear through the glass. */
+.sheet.brief.holo .brief-sec:not([data-sec='waiting']) .brief-item:not(.k-usage):not(.k-audit-due) {
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+.sheet.brief.holo .brief-sec:not([data-sec='waiting']) .brief-list {
+  gap: 0;
+}
+.sheet.brief.holo .brief-sec:not([data-sec='waiting']) .brief-item + .brief-item::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 16px;
+  height: 1px;
+  background: linear-gradient(to right, rgba(127, 230, 255, 0.2), rgba(127, 230, 255, 0.02));
+}
+.sheet.brief.holo .brief-sec:not([data-sec='waiting']) .brief-item::before {
+  top: 14px;
+  bottom: 14px;
+  width: 1px;
+  opacity: 0.7;
+}
+.sheet.brief.holo .brief-sec:not([data-sec='waiting']) .brief-head {
+  font-size: 15px;
+  font-weight: 450;
+}
+.sheet.brief.holo .brief-sec:not([data-sec='waiting']) .brief-item:hover {
+  background: linear-gradient(to right, rgba(var(--hg-glass), 0.6), rgba(var(--hg-glass), 0.2));
+}
+/* What waits on him floats nearest: a lifted slip that follows the pointer a little, its shadow the other way. */
+.sheet.brief.holo .brief-sec[data-sec='waiting'] > .brief-list:not(.brief-handled) > .brief-item {
+  background: linear-gradient(to right, rgba(14, 38, 50, 0.78), rgba(var(--hg-glass), 0.5));
+  box-shadow: inset 0 1px 0 rgba(180, 240, 255, 0.18), 0 10px 24px -14px rgba(0, 0, 0, 0.9);
+}
+.sheet.brief.holo .brief-item:hover {
+  transform: translate3d(calc(var(--hg-px) * 3px + 3px), calc(var(--hg-py) * 2px), 0);
+  box-shadow: inset 0 1px 0 rgba(200, 245, 255, 0.28), calc(var(--hg-px) * -10px - 4px) 16px 30px -12px rgba(0, 0, 0, 0.95), 0 0 0 1px rgba(127, 230, 255, 0.16);
+}
+.sheet.brief.holo .brief-item[aria-busy='true'] {
+  opacity: 0.6;
+}
+
+.hg-meta {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 4px;
+  font-family: var(--hg-mono);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.hg-where {
+  color: var(--hg-cyan);
+}
+.hg-when {
+  color: var(--hg-dim);
+}
+.sheet.brief.holo .brief-head {
+  font-family: var(--hg-display);
+  font-stretch: 100%;
+  font-weight: 500;
+  font-size: 16.5px;
+  line-height: 1.28;
+  letter-spacing: 0.002em;
+  color: var(--hg-ice);
+  text-wrap: pretty;
+  max-width: 58ch;
+}
+.sheet.brief.holo .brief-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin-top: 4px;
+  font-size: inherit;
+  line-height: 1.2;
+}
+.hg-outs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 0;
+  min-width: 0;
+  font-family: var(--hg-mono);
+}
+.hg-out {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 0 12px;
+  border-left: 1px solid rgba(127, 230, 255, 0.18);
+}
+.hg-out:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+.hg-out-v {
+  font-size: 12.5px;
+  color: var(--hg-ice);
+  font-variant-numeric: tabular-nums;
+}
+.hg-out-k {
+  font-size: 10.5px;
+  color: var(--hg-frost);
+}
+.hg-out.bare:not(.ok):not(.warn):not(.fail) .hg-out-v {
+  font-family: var(--hg-display);
+  font-size: 13.5px;
+  color: var(--hg-frost);
+}
+.sheet.brief.holo .brief-handled .hg-outs {
+  display: none;
+}
+.hg-out.quiet .hg-out-v {
+  color: var(--hg-frost);
+}
+.hg-out.ok .hg-out-v {
+  color: var(--hg-ok);
+}
+.hg-out.warn .hg-out-v {
+  color: var(--hg-warn);
+}
+.hg-out.fail .hg-out-v {
+  color: var(--hg-fail);
+}
+
+/* ---------------------------------------------------------------- the keys */
+
+.sheet.brief.holo .brief-acts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.sheet.brief.holo .brief-act {
+  all: unset;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 6px;
+  font-family: var(--hg-display);
+  font-stretch: 108%;
+  font-weight: 500;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+.sheet.brief.holo .brief-act:focus-visible {
+  outline: 1.5px solid var(--hg-ice);
+  outline-offset: 3px;
+}
+.sheet.brief.holo .brief-act:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* Looking: a bare word on a lit baseline. */
+.sheet.brief.holo .brief-act[data-weight='look'] {
+  padding: 0 7px;
+  color: var(--hg-cyan);
+}
+.sheet.brief.holo .brief-act[data-weight='look']::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 5px;
+  height: 1px;
+  background: linear-gradient(to right, rgba(127, 230, 255, 0.55), rgba(127, 230, 255, 0.1));
+  transition: background 0.18s ease;
+}
+.sheet.brief.holo .brief-act[data-weight='look']:hover {
+  color: var(--hg-ice);
+}
+.sheet.brief.holo .brief-act[data-weight='look']:hover::after {
+  background: var(--hg-ice);
+  box-shadow: 0 0 6px var(--hg-cyan);
+}
+/* Deciding: a frosted key, lit faintly from under its face. */
+.sheet.brief.holo .brief-act[data-weight='decide'] {
+  color: var(--hg-ice);
+  background: linear-gradient(to bottom, rgba(170, 235, 255, 0.06), rgba(170, 235, 255, 0));
+  box-shadow: inset 0 1px 0 rgba(200, 245, 255, 0.16), inset 0 -8px 12px -10px rgba(127, 230, 255, 0.5);
+}
+.sheet.brief.holo .brief-act[data-weight='decide']:hover {
+  background: linear-gradient(to bottom, rgba(170, 235, 255, 0.12), rgba(170, 235, 255, 0.03));
+  box-shadow: inset 0 0 0 1px rgba(170, 235, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.24), inset 0 -10px 14px -10px rgba(127, 230, 255, 0.7);
+}
+/* Spending: a key lit from inside, the light leaking at its foot, its sum in a recessed window. */
+.sheet.brief.holo .brief-act[data-weight='spend'] {
+  height: 30px;
+  padding: 0 12px 0 14px;
+  color: #ffffff;
+  background:
+    radial-gradient(90% 70% at 50% 120%, rgba(127, 230, 255, 0.75), rgba(127, 230, 255, 0) 70%),
+    linear-gradient(to bottom, #0f3442, #0a2733);
+  box-shadow:
+    inset 0 0 0 1px rgba(127, 230, 255, 0.6),
+    inset 0 1px 0 rgba(220, 250, 255, 0.45),
+    0 0 16px -2px rgba(34, 180, 214, 0.55),
+    0 4px 10px -4px rgba(0, 0, 0, 0.8);
+  text-shadow: 0 0 10px rgba(127, 230, 255, 0.8);
+}
+.sheet.brief.holo .brief-act[data-weight='spend']:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px rgba(180, 240, 255, 0.85),
+    inset 0 1px 0 rgba(240, 252, 255, 0.6),
+    0 0 24px 0 rgba(34, 180, 214, 0.7),
+    0 6px 14px -4px rgba(0, 0, 0, 0.8);
+}
+.sheet.brief.holo .brief-act[data-weight='spend']:active {
+  transform: translateY(1px);
+}
+.hg-cost {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  margin-right: -6px;
+  border-radius: 3px;
+  font-family: var(--hg-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--hg-cyan);
+  background: rgba(2, 10, 14, 0.75);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.9), inset 0 0 0 1px rgba(127, 230, 255, 0.22);
+  text-shadow: none;
+}
+.hg-cost::after {
+  content: 'cr';
+  margin-left: 3px;
+  font-size: 9.5px;
+  color: var(--hg-frost);
+}
+/* Granting authority: the one white-hot key, larger, in a halo, with a lit seal. */
+.sheet.brief.holo .brief-act[data-weight='grant'] {
+  height: 40px;
+  padding: 0 18px 0 12px;
+  border-radius: 8px;
+  gap: 11px;
+  font-stretch: 112%;
+  font-weight: 600;
+  font-size: 14px;
+  color: #032631;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #ffffff, rgba(255, 255, 255, 0) 70%),
+    linear-gradient(to bottom, #e6fbff, #9feaff);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.95),
+    inset 0 -3px 6px rgba(34, 180, 214, 0.55),
+    0 0 0 4px rgba(127, 230, 255, 0.14),
+    0 0 0 5px rgba(127, 230, 255, 0.45),
+    0 0 32px 4px rgba(127, 230, 255, 0.55),
+    0 8px 18px -6px rgba(0, 0, 0, 0.9);
+}
+.sheet.brief.holo .brief-act[data-weight='grant']:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px #ffffff,
+    inset 0 -3px 6px rgba(34, 180, 214, 0.6),
+    0 0 0 4px rgba(127, 230, 255, 0.22),
+    0 0 0 5px rgba(180, 240, 255, 0.7),
+    0 0 44px 8px rgba(127, 230, 255, 0.65),
+    0 10px 20px -6px rgba(0, 0, 0, 0.9);
+}
+.hg-seal {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0 3px, #22b4d6 3.5px 4.5px, #06303d 5px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 0 1.5px rgba(3, 38, 49, 0.5);
+}
+
+/* ---------------------------------------------------------------- the autonomy ask: the nearest pane */
+
+.sheet.brief.holo .brief-item.k-autonomy {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  column-gap: 20px;
+  margin: 10px -8px 10px -6px;
+  padding: 20px 22px 18px 22px;
+  background:
+    radial-gradient(80% 120% at 0% 0%, rgba(127, 230, 255, 0.2), transparent 60%),
+    linear-gradient(to right, rgba(14, 42, 56, 0.92), rgba(8, 26, 36, 0.86));
+  box-shadow:
+    inset 0 0 0 1px rgba(160, 238, 255, 0.4),
+    inset 0 1px 0 rgba(230, 252, 255, 0.55),
+    0 0 40px -6px rgba(34, 180, 214, 0.35),
+    0 22px 40px -18px rgba(0, 0, 0, 0.95);
+  --edge: #ecfbff;
+}
+.sheet.brief.holo .brief-item.k-autonomy > * {
+  grid-column: 2;
+}
+.sheet.brief.holo .brief-item.k-autonomy > .hg-agree {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+}
+.sheet.brief.holo .brief-item.k-autonomy > .brief-why,
+.sheet.brief.holo .brief-item.k-autonomy > .brief-quiet,
+.sheet.brief.holo .brief-item.k-autonomy > .brief-error {
+  grid-column: 1 / -1;
+}
+.sheet.brief.holo .brief-item.k-autonomy .brief-head {
+  font-stretch: 108%;
+  font-weight: 500;
+  font-size: 19px;
+  line-height: 1.25;
+}
+.sheet.brief.holo .brief-item.k-autonomy .brief-line {
+  margin-top: 14px;
+}
+.hg-agree {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.hg-agree-ring {
+  position: relative;
+  width: 112px;
+  height: 112px;
+}
+.hg-agree-ring svg {
+  width: 112px;
+  height: 112px;
+  overflow: visible;
+}
+.hg-agree-ring line {
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+.hg-agree-ring line.on {
+  stroke: var(--hg-cyan);
+  filter: drop-shadow(0 0 2px rgba(127, 230, 255, 0.9));
+}
+.hg-agree-ring line.off {
+  stroke: var(--hg-warn);
+}
+.hg-agree-ring circle.here {
+  fill: none;
+  stroke: rgba(236, 251, 255, 0.85);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.hg-agree-core {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.hg-agree-value {
+  font-family: var(--hg-mono);
+  font-weight: 300;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--hg-ice);
+  text-shadow: 0 0 14px rgba(127, 230, 255, 0.6);
+}
+.hg-agree-of {
+  font-size: 12px;
+  color: var(--hg-frost);
+}
+.hg-agree .hg-figure {
+  align-items: center;
+}
+.hg-agree .hg-figure-value {
+  font-size: 15px;
+}
+
+/* ---------------------------------------------------------------- an audit's claims */
+
+.hg-claims {
+  margin-top: 10px;
+  max-width: 380px;
+}
+.hg-claims-bar {
+  display: flex;
+  gap: 2px;
+  height: 5px;
+}
+.hg-claims-bar .seg {
+  border-radius: 1px;
+}
+.hg-claims-bar .real {
+  background: var(--hg-ok);
+  box-shadow: 0 0 6px rgba(122, 242, 198, 0.6);
+}
+.hg-claims-bar .partial {
+  background: var(--hg-cyan);
+}
+.hg-claims-bar .missing {
+  background: var(--hg-warn);
+}
+.hg-claims-bar .broken {
+  background: var(--hg-fail);
+}
+.hg-claims-key {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  font-family: var(--hg-mono);
+  font-size: 10.5px;
+  color: var(--hg-frost);
+}
+.hg-claims-key b {
+  font-weight: 400;
+  color: var(--hg-ice);
+}
+
+/* ---------------------------------------------------------------- handled, and the farther sections */
+
+.sheet.brief.holo .brief-handled-head {
+  margin: 18px 8px 6px;
+  font-family: var(--hg-mono);
+  font-size: 11px;
+  font-style: normal;
+  color: var(--hg-dim);
+  border: none;
+}
+.sheet.brief.holo .brief-handled .brief-item {
+  padding-top: 9px;
+  padding-bottom: 9px;
+  background: rgba(var(--hg-glass), 0.42);
+  --edge: rgba(127, 230, 255, 0.22);
+}
+.sheet.brief.holo .brief-handled .brief-head {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--hg-frost);
+}
+.sheet.brief.holo .brief-handled .brief-line {
+  margin-top: 5px;
+}
+.sheet.brief.holo .brief-acted {
+  font-family: var(--hg-mono);
+  font-style: normal;
+  font-size: 11px;
+  color: var(--hg-ok);
+}
+.sheet.brief.holo .brief-item[data-acted='dismiss'] .brief-head {
+  color: var(--hg-dim);
+}
+
+/* ---------------------------------------------------------------- what unfolds */
+
+.sheet.brief.holo .brief-why {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-left: 1px solid rgba(127, 230, 255, 0.4);
+  background: rgba(2, 10, 14, 0.5);
+  font-family: var(--hg-display);
+  font-size: 13.5px;
+  color: var(--hg-frost);
+}
+.sheet.brief.holo .brief-why-text {
+  font-family: var(--hg-display);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--hg-frost);
+}
+.sheet.brief.holo .hg-said {
+  color: var(--hg-ice);
+}
+.sheet.brief.holo .brief-why-link {
+  color: var(--hg-cyan);
+}
+.sheet.brief.holo .brief-quiet {
+  margin-top: 8px;
+  font-family: var(--hg-mono);
+  font-style: normal;
+  font-size: 11px;
+  color: var(--hg-dim);
+}
+.sheet.brief.holo .brief-error {
+  margin-top: 8px;
+  font-family: var(--hg-mono);
+  font-size: 11.5px;
+  color: var(--hg-fail);
+}
+.sheet.brief.holo .brief-tier {
+  font-family: var(--hg-mono);
+}
+.sheet.brief.holo .brief-cap {
+  margin-top: 10px;
+  font-family: var(--hg-mono);
+  color: var(--hg-frost);
+}
+.sheet.brief.holo .brief-cap-input {
+  font-family: var(--hg-mono);
+  color: var(--hg-ice);
+  background: rgba(2, 10, 14, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(127, 230, 255, 0.4);
+}
+
+/* ---------------------------------------------------------------- narrow, and still */
+
+@media (max-width: 1380px) {
+  .sheet.brief.holo .sheet-title {
+    font-size: 36px;
+  }
+  .sheet.brief.holo .sheet-head {
+    padding-top: 20px;
+  }
+  .hg-readouts {
+    margin-top: 14px;
+    padding-bottom: 14px;
+  }
+  .hg-since {
+    margin-top: 10px;
+  }
+  .hg-figures {
+    gap: 22px;
+  }
+  .hg-figure-value {
+    font-size: 25px;
+  }
+  .hg-gauge,
+  .hg-gauge svg {
+    width: 60px;
+  }
+  .hg-gauge svg {
+    height: 60px;
+  }
+  .hg-gauge-fig {
+    top: 20px;
+    font-size: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet.brief.holo.open,
+  .hg-figure.hot .hg-label::before {
+    animation: none;
+  }
+  .hg-planes,
+  .hg-plane,
+  .sheet.brief.holo .brief-item,
+  .sheet.brief.holo .brief-act {
+    transition: none;
+  }
+  .sheet.brief.holo .sheet-head {
+    transform: none;
+    transition: none;
+  }
+  .hg-plane.mid {
+    transform: none;
+  }
+  .sheet.brief.holo .brief-item:hover {
+    transform: none;
+  }
+}

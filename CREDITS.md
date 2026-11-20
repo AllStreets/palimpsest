@@ -52,6 +52,8 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 | `newsreader.woff2`, `newsreader-italic.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type | Repo names, era headings |
 | `plex-sans.woff2` | [IBM Plex Sans](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Interface text |
 | `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Commit and PR refs |
+| `saira.woff2` | [Saira](https://github.com/Omnibus-Type/Saira) | Omnibus-Type, The Saira Project Authors | The Brief's display face, redesign direction B (license text in `app/public/fonts/saira-OFL.txt`) |
+| `geist-mono.woff2` | [Geist Mono](https://github.com/vercel/geist-font) | The Geist Project Authors | The Brief's readouts, redesign direction B (license text in `app/public/fonts/geist-mono-OFL.txt`) |
 | `docs/brand/fonts/Cinzel*.ttf` | [Cinzel](https://github.com/NDISCOVER/Cinzel) | Natanael Gama, The Cinzel Project Authors | The letterforms of the 3D wordmark and the P of the app mark (license text in `docs/brand/fonts/OFL-Cinzel.txt`) |
 
 ## Brand and media

@@ -20,22 +20,22 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 const LABELS: Record<BriefAction, string> = {
-  accept: 'Post as a job',
-  tier: 'Change the tier',
+  accept: 'Post',
+  tier: 'Tier',
   dismiss: 'Dismiss',
-  why: 'Ask why',
-  diff: 'Open the diff',
-  fly: 'Fly to the floor',
+  why: 'Why',
+  diff: 'Diff',
+  fly: 'Fly there',
   retry: 'Retry',
   resume: 'Resume',
-  'open-pr': 'Open the PR',
-  cap: "Change today's limit",
-  audit: 'Audit it',
-  tour: 'Walk through the week',
+  'open-pr': 'Open PR',
+  cap: 'Set limit',
+  audit: 'Audit',
+  tour: 'Walk the week',
   // Phase 4: an ask for autonomy, and an act under a grant.
-  grant: 'Let the city do this on its own here',
+  grant: 'Let it act here',
   decline: 'Not yet',
-  revoke: 'Take it back',
+  revoke: 'Take back',
 };
 
 /** The label of an action's text button. */
@@ -84,18 +84,106 @@ function dayWords(ms: number, today: string): string {
 const shortRepo = (repo: string): string => cleanText(repo.split('/').pop() ?? repo, 80);
 
 /**
- * The row's dateline, as a paper sets the place and time before a story:
- * "kumo, 18:30", "harbor-ledger, yesterday 18:30". The usage, the reading
- * and the tour belong to no repo and are about now, so they carry none.
+ * Where and when, over the row's headline: { where: 'kumo', when: '18:30' },
+ * { where: 'harbor-ledger', when: 'yesterday 18:30' }. The usage, the
+ * reading and the tour belong to no repo and are about now, so they carry
+ * none; a recommendation to audit is about the repo, not when it connected.
  */
-export function dateline(item: BriefItem, now: number = Date.now()): string {
-  if (item.kind === 'usage' || item.kind === 'stale' || item.kind === 'tour') return '';
-  // A recommendation to audit is about the repo, not about when it connected.
-  if (item.kind === 'audit-due') return item.repo ? shortRepo(item.repo) : '';
+export function briefMeta(item: BriefItem, now: number = Date.now()): { where: string; when: string } {
+  if (item.kind === 'usage' || item.kind === 'stale' || item.kind === 'tour') return { where: '', when: '' };
+  if (item.kind === 'audit-due') return { where: item.repo ? shortRepo(item.repo) : '', when: '' };
   const at = Date.parse(item.at);
-  const when = Number.isFinite(at) ? `${dayWords(at, localDay(now))}${clock(at)}` : '';
-  const where = item.repo ? shortRepo(item.repo) : 'the city';
-  return when ? `${where}, ${when}` : where;
+  return { where: item.repo ? shortRepo(item.repo) : 'the city', when: Number.isFinite(at) ? `${dayWords(at, localDay(now))}${clock(at)}` : '' };
+}
+
+/** A readout under a headline: a figure, its short unit or label, and a state tone. */
+export interface Readout {
+  v: string;
+  k?: string;
+  tone?: 'ok' | 'warn' | 'fail' | 'quiet';
+}
+
+const NUMBER_WORDS: Record<string, string> = { one: '1', two: '2', three: '3', four: '4', five: '5' };
+
+/** The audit's claims as counts, for its bar: real, partial, missing, broken, and the jobs it proposed. */
+export function auditCounts(text: string): { real: number; partial: number; missing: number; broken: number; jobs: number } | null {
+  const m = /(\d+) real, (\d+) partial, (\d+) missing and (\d+) broken(?:; (\d+) jobs? proposed)?/.exec(text);
+  if (!m) return null;
+  return { real: +m[1], partial: +m[2], missing: +m[3], broken: +m[4], jobs: m[5] ? +m[5] : 0 };
+}
+
+/** The autonomy ask's evidence: agreed of the last n, and the run here. */
+export function agreementOf(text: string): { agreed: number; of: number; here: number | null } | null {
+  const all = /agreed with you on (\d+) of the last (\d+)/.exec(text);
+  if (!all) return null;
+  const here = /on its last (\d+) (?:here|on )/.exec(text);
+  return { agreed: +all[1], of: +all[2], here: here ? +here[1] : null };
+}
+
+/** The lead's two sentences as figures: what waits, what merged, what the city spent. */
+export function leadFigures(lead: string): { waiting: number; merged: number; spent: string | null } {
+  const waiting = /(\d+) things? waits? on you/.exec(lead);
+  const merged = /(\d+) merged/.exec(lead);
+  const spent = /spent ([\d,.]+) credits/.exec(lead);
+  return { waiting: waiting ? +waiting[1] : 0, merged: merged ? +merged[1] : 0, spent: spent ? spent[1] : null };
+}
+
+/** The first clause of a sentence, cut to a readout's length at a word. */
+function clause(text: string, max = 56): string {
+  const first = (text.split(/(?<=[.;:])\s/)[0] ?? text).replace(/[.;:]$/, '');
+  if (first.length <= max) return first;
+  return `${first.slice(0, max).replace(/\s+\S*$/, '')}...`;
+}
+
+/**
+ * The row's readouts, in place of a sentence: figures and short labels.
+ * The whole sentence waits one tap away, under Why.
+ */
+export function itemReadouts(item: BriefItem, names: Names): Readout[] {
+  const text = itemSentence(item, names);
+  const raw = cleanText(item.text, 600);
+  switch (item.kind) {
+    case 'proposal':
+      return [{ v: item.tier ?? 'normal', k: 'tier' }];
+    case 'merged': {
+      const m = /and (.+?) was paid ([\d,.]+) credits/.exec(raw);
+      return m ? [{ v: 'merged', tone: 'ok' }, { v: m[2], k: 'cr' }, { v: cleanText(m[1], 60), tone: 'quiet' }] : [{ v: 'merged', tone: 'ok' }];
+    }
+    case 'pr': {
+      const n = /PR #(\d+)/.exec(raw);
+      const by = / by (.+?) waits/.exec(raw);
+      return [...(n ? [{ v: `#${n[1]}`, k: 'PR' }] : []), ...(by ? [{ v: cleanText(by[1], 60), tone: 'quiet' as const }] : []), { v: 'review', tone: 'warn' }];
+    }
+    case 'failed': {
+      if (/for good/.test(raw)) return [{ v: 'failed', tone: 'fail' }, { v: 'no attempts left', tone: 'quiet' }];
+      const left = /with (\w+) attempts? left/.exec(raw);
+      return [{ v: 'failed', tone: 'fail' }, ...(left ? [{ v: NUMBER_WORDS[left[1]] ?? left[1], k: 'attempt left' }] : [])];
+    }
+    case 'halt':
+      return [{ v: 'halted', tone: 'fail' }];
+    case 'revert':
+      return [{ v: 'reverted', tone: 'fail' }];
+    case 'audit': {
+      const c = auditCounts(raw);
+      // The claims are the row's bar; the readout is what the audit asks of him.
+      return c ? [{ v: String(c.jobs), k: 'jobs proposed' }] : [{ v: clause(text) }];
+    }
+    case 'audit-due':
+      return [{ v: 'never audited', tone: 'warn' }];
+    case 'usage': {
+      const now = /(\d+(?:\.\d+)?)%/.exec(item.title);
+      const cap = /cap is (\d+)%/.exec(raw);
+      return [...(now ? [{ v: `${Math.round(Number(now[1]))}%`, k: 'five-hour' }] : []), ...(cap ? [{ v: `${cap[1]}%`, k: 'cap' }] : [])];
+    }
+    case 'autonomy': {
+      const a = agreementOf(raw);
+      return a ? [{ v: `${a.agreed}/${a.of}`, k: 'agreed' }, ...(a.here !== null ? [{ v: `${a.here}/${a.here}`, k: 'here' }] : [])] : [{ v: clause(text) }];
+    }
+    case 'tour':
+      return [{ v: clause(text.replace(/^A walk through last week, /, ''), 40) }];
+    default:
+      return [{ v: clause(text) }];
+  }
 }
 
 const sentenceEnd = (s: string): string => (!s || /[.!?)"]$/.test(s) ? s : `${s}.`);
@@ -138,30 +226,30 @@ export function itemSentence(item: BriefItem, names: Names): string {
 }
 
 const DONE: Partial<Record<BriefAction, string>> = {
-  accept: 'Posted as a job',
+  accept: 'Posted',
   dismiss: 'Dismissed',
   retry: 'Posted again',
   resume: 'Resumed',
   audit: 'Audit queued',
-  tour: 'Walked through the week',
+  tour: 'Walked',
   grant: 'Granted',
-  decline: `Not yet; quiet for ${AGREE.quietDays} days`,
+  decline: `Not yet, quiet ${AGREE.quietDays} days`,
   revoke: 'Taken back',
 };
 
 /**
- * What he did with the item and when, in quiet words: "Posted as a job,
- * 9:14". Looking (Ask why, the diff, the floor, the PR) is not acting, so
- * it leaves no line. A cap names the limit he set, when given.
+ * What he did with the item and when, as a short readout: "Posted 09:14".
+ * Looking (Why, the diff, the floor, the PR) is not acting, so it leaves no
+ * line. A cap names the limit he set, when given.
  */
 export function actedLine(item: BriefItem, capPct?: number | null): string {
   const a = item.acted;
   if (!a) return '';
   const at = clock(Date.parse(a.at));
-  if (a.action === 'tier') return `Tier set to ${item.tier ?? 'normal'}, ${at}`;
-  if (a.action === 'cap') return typeof capPct === 'number' ? `Today's limit set to ${Math.round(capPct)}% by you, ${at}` : `Today's limit set by you, ${at}`;
+  if (a.action === 'tier') return `Tier ${item.tier ?? 'normal'} ${at}`;
+  if (a.action === 'cap') return typeof capPct === 'number' ? `Limit ${Math.round(capPct)}% ${at}` : `Limit set ${at}`;
   const done = DONE[a.action];
-  return done ? `${done}, ${at}` : '';
+  return done ? `${done} ${at}` : '';
 }
 
 /** A window now, as Settings and the treasury show it too (shared windowNowPct). */
@@ -186,11 +274,11 @@ export function capBounds(hardStopPct: number): { min: number; max: number } {
   return { min: 5, max: Math.max(5, hardStopPct - 5) };
 }
 
-/** The line under the title: where the window starts, and, in a second window, that he has looked already. */
+/** The window the brief covers, as a readout: "Since yesterday 06:40", and in a second window ", second look". */
 export function sinceLine(since: string, today: string, first: boolean): string {
   const at = Date.parse(since);
-  const when = Number.isFinite(at) ? `Since ${dayWords(at, today) || 'this morning '}at ${clock(at)}.` : '';
-  return first ? when : `${when} You have opened it once already today.`.trim();
+  const when = Number.isFinite(at) ? `Since ${dayWords(at, today)}${clock(at)}` : '';
+  return first ? when : `${when}, second look`.replace(/^, /, '');
 }
 
 // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
@@ -279,11 +367,11 @@ export function grantState(g: Grant, now: number = Date.now()): string {
 
 export type GrantMove = 'grant' | 'decline' | 'revoke' | 'regrant';
 
-/** Each move's label, the brief's own words for the first three. */
+/** Each move's label in Settings and on the district page, which keep their longer words until their own redesign. */
 export const MOVE_LABEL: Record<GrantMove, string> = {
-  grant: LABELS.grant,
-  decline: LABELS.decline,
-  revoke: LABELS.revoke,
+  grant: 'Let the city do this on its own here',
+  decline: 'Not yet',
+  revoke: 'Take it back',
   regrant: 'Grant it again',
 };
 

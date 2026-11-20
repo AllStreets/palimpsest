@@ -20,7 +20,8 @@ import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, HANDLED_HEAD, itemSentence, kindWords, sinceLine, usageLine, waitingGroups } from './brief-words';
+import { actedLine, actionLabel, agreementOf, auditCounts, briefMeta, briefTitle, capBounds, emptyMorning, grantState, HANDLED_HEAD, itemReadouts, itemSentence, kindWords, leadFigures, sinceLine, usageLine, waitingGroups } from './brief-words';
+import { TIER_VALUE, windowNowPct } from '../../../shared/market-rules';
 import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
 import { createSheet, el, textButton } from './controls';
@@ -28,6 +29,7 @@ import { awardRounds, type Names } from './detail';
 import { handoffs } from './handoffs';
 import { coalesce, namesOf, refusal, secHead } from './pages';
 import './market.css';
+import './hologram.css';
 import { externalLink } from './external';
 import { summaryBlocks, summaryNodes } from './summary-md';
 
@@ -57,6 +59,131 @@ const SECTIONS: Array<[keyof Brief['sections'], string]> = [
 ];
 /** The engine events after which the brief is read again: anything that moves an item or adds one. */
 const READ_ON = /^(brief\.action|job\.(changed|proposed|posted)|audit\.(ended|started)|milestone\.reached|repo\.(halted|resumed|connected|disconnected)|run\.ended|merge\.(detected|reverted)|report\.written|autonomy\.(asked|granted|declined|suspended|revoked|acted))$/;
+/**
+ * Hologram (redesign direction B): each action's weight, by its consequence. Granting the city authority is the
+ * heaviest, then spending money, then deciding, and looking is the lightest.
+ */
+const WEIGHT: Partial<Record<BriefAction, 'grant' | 'spend' | 'decide'>> = {
+  grant: 'grant',
+  accept: 'spend',
+  retry: 'spend',
+  resume: 'spend',
+  cap: 'spend',
+  audit: 'spend',
+  tier: 'decide',
+  dismiss: 'decide',
+  decline: 'decide',
+  revoke: 'decide',
+};
+const weightOf = (a: BriefAction): string => WEIGHT[a] ?? 'look';
+const RANK = ['look', 'decide', 'spend', 'grant'];
+/** Each kind's light: the edge of its slip. */
+const TONE: Partial<Record<BriefItem['kind'], string>> = {
+  merged: 'ok',
+  failed: 'fail',
+  halt: 'fail',
+  revert: 'fail',
+  pr: 'warn',
+  proposal: 'ask',
+  'audit-due': 'warn',
+  usage: 'warn',
+  stale: 'warn',
+  autonomy: 'grant',
+};
+const SVG = 'http://www.w3.org/2000/svg';
+function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
+  const n = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+  return n;
+}
+
+/** An arc gauge: a window's use as a lit arc of 270 degrees, the cap as a tick on the ring. */
+function gauge(label: string, pct: number | null, cap: number | null): HTMLElement {
+  const box = el('div', 'hg-gauge');
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const sweep = 0.75;
+  const ring = svg('svg', { viewBox: '0 0 64 64', 'aria-hidden': 'true' });
+  const g = svg('g', { transform: 'rotate(135 32 32)' });
+  g.append(svg('circle', { class: 'hg-gauge-track', cx: 32, cy: 32, r, 'stroke-dasharray': `${c * sweep} ${c}` }));
+  const v = pct === null ? 0 : Math.min(100, Math.max(0, pct)) / 100;
+  g.append(svg('circle', { class: 'hg-gauge-value', cx: 32, cy: 32, r, 'stroke-dasharray': `${Math.max(0.01, c * sweep * v)} ${c}` }));
+  if (cap !== null) {
+    const a = ((135 + 270 * (cap / 100)) * Math.PI) / 180;
+    ring.append(svg('line', { class: 'hg-gauge-cap', x1: 32 + Math.cos(a) * 21, y1: 32 + Math.sin(a) * 21, x2: 32 + Math.cos(a) * 31, y2: 32 + Math.sin(a) * 31 }));
+  }
+  ring.prepend(g);
+  const fig = el('span', 'hg-gauge-fig', pct === null ? '?' : String(Math.round(pct)));
+  fig.append(el('span', 'hg-unit', '%'));
+  box.append(ring, fig, el('span', 'hg-label', label));
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `${label} window ${pct === null ? 'not read' : `${Math.round(pct)}%`}${cap === null ? '' : `, limit ${cap}%`}`);
+  return box;
+}
+
+/** A head figure: a large readout over its short label. */
+function figure(value: string, label: string, tone = ''): HTMLElement {
+  const box = el('div', `hg-figure${tone ? ` ${tone}` : ''}`);
+  box.append(el('span', 'hg-figure-value', value), el('span', 'hg-label', label));
+  return box;
+}
+
+/** The autonomy ask's evidence as a ring: one tick a decision, the misses dark; the run here beside it. */
+function agreementRing(text: string): HTMLElement | null {
+  const a = agreementOf(text);
+  if (!a) return null;
+  const box = el('div', 'hg-agree');
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `The master agreed with you on ${a.agreed} of the last ${a.of}${a.here !== null ? `, and on its last ${a.here} here` : ''}`);
+  const ring = svg('svg', { viewBox: '0 0 120 120', 'aria-hidden': 'true' });
+  for (let i = 0; i < a.of; i++) {
+    const ang = ((-90 + (360 / a.of) * i) * Math.PI) / 180;
+    const on = i < a.agreed;
+    ring.append(svg('line', { class: on ? 'on' : 'off', x1: 60 + Math.cos(ang) * 44, y1: 60 + Math.sin(ang) * 44, x2: 60 + Math.cos(ang) * 56, y2: 60 + Math.sin(ang) * 56 }));
+  }
+  if (a.here !== null) {
+    const r = 34;
+    ring.append(svg('circle', { class: 'here', cx: 60, cy: 60, r }));
+  }
+  const core = el('div', 'hg-agree-core');
+  const v = el('span', 'hg-agree-value', String(a.agreed));
+  v.append(el('span', 'hg-agree-of', `/${a.of}`));
+  core.append(v, el('span', 'hg-label', 'agreed'));
+  const ringBox = el('div', 'hg-agree-ring');
+  ringBox.append(ring, core);
+  box.append(ringBox);
+  if (a.here !== null) {
+    const here = el('div', 'hg-figure');
+    here.append(el('span', 'hg-figure-value', `${a.here}/${a.here}`), el('span', 'hg-label', 'on this repo'));
+    box.append(here);
+  }
+  return box;
+}
+
+/** An audit's claims as one bar: real, partial, missing, broken. */
+function claimsBar(text: string): HTMLElement | null {
+  const c = auditCounts(text);
+  if (!c) return null;
+  const all = c.real + c.partial + c.missing + c.broken;
+  if (!all) return null;
+  const box = el('div', 'hg-claims');
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `${c.real} real, ${c.partial} partial, ${c.missing} missing, ${c.broken} broken`);
+  const bar = el('div', 'hg-claims-bar');
+  const key = el('div', 'hg-claims-key');
+  for (const [k, n] of [['real', c.real], ['partial', c.partial], ['missing', c.missing], ['broken', c.broken]] as const) {
+    if (!n) continue;
+    const seg = el('span', `seg ${k}`);
+    seg.style.flexGrow = String(n);
+    bar.append(seg);
+    const kk = el('span', `hg-claims-k ${k}`);
+    kk.append(el('b', '', String(n)), ` ${k}`);
+    key.append(kk);
+  }
+  box.append(bar, key);
+  return box;
+}
+
 /** The words for a week with fewer than two things to walk through. */
 export const NO_TOUR = 'Not enough happened this week for a walk through it.';
 
@@ -73,8 +200,38 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   // The palette (Phase 5) goes where the brief's items go: the city's flight to a tower, and the one event stream.
   handoffs.listen = opts.listen;
   handoffs.flyToTower = (repo) => opts.flyToFloor({ repo, floorId: null, agentId: null });
+  // The pane behind the glass: a second sheet set up and to the right, its lit edge showing.
+  const planes = el('div', 'hg-planes');
+  planes.setAttribute('aria-hidden', 'true');
+  planes.append(el('div', 'hg-plane mid'));
+  planes.hidden = true;
+  parent.append(planes);
   const sheet = createSheet(parent, 'brief', '', opts.onDismiss);
+  sheet.root.classList.add('holo');
   const head = sheet.root.querySelector<HTMLElement>('.sheet-head')!;
+  // The glass's own light: an emitter along its foot and a sweep down its edge on open, never hit.
+  const light = el('div', 'hg-light');
+  light.setAttribute('aria-hidden', 'true');
+  sheet.root.append(light);
+  // Parallax: the planes and the hovered slip follow the pointer at their depths (transform only, on a frame).
+  let pending = 0;
+  const moveTo = { x: 0, y: 0 };
+  const parallaxOn = (): boolean => !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const onMove = (e: PointerEvent): void => {
+    if (!parallaxOn()) return;
+    moveTo.x = (e.clientX / window.innerWidth) * 2 - 1;
+    moveTo.y = (e.clientY / window.innerHeight) * 2 - 1;
+    if (pending) return;
+    pending = requestAnimationFrame(() => {
+      pending = 0;
+      const root = document.documentElement.style;
+      root.setProperty('--hg-px', moveTo.x.toFixed(3));
+      root.setProperty('--hg-py', moveTo.y.toFixed(3));
+    });
+  };
+  window.addEventListener('pointermove', onMove, { passive: true });
+  const readouts = el('div', 'hg-readouts');
+  head.append(readouts);
   // Scrolled, the head is ruled off from the rows passing under it.
   sheet.body.addEventListener('scroll', () => {
     const on = sheet.body.scrollTop > 4;
@@ -92,9 +249,13 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   const usageText = document.createTextNode('');
   const toTreasury = el('a', 'brief-why-link brief-report-link', 'The treasury');
   toTreasury.href = routeHref('treasury');
+  // The gauges in the head are the way to the treasury now; this one stays for a screen reader's reading only.
+  toTreasury.tabIndex = -1;
   usage.append(usageText, ' ', toTreasury, ' keeps the daily report.');
   const trouble = el('p', 'detail-trouble');
   trouble.hidden = true;
+  // The figures in the head carry the lead, the window and the usage; the sentences stay for a screen reader.
+  for (const p of [lead, since, usage]) p.classList.add('hg-sr');
   sheet.body.append(trouble, lead, empty, since, usage);
   const secs = new Map<keyof Brief['sections'], { box: HTMLElement; list: HTMLElement; key: HTMLElement }>();
   for (const [k, name] of SECTIONS) {
@@ -103,7 +264,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const list = el('ol', 'brief-list');
     const key = el('p', 'jobs-key brief-key');
     key.hidden = true;
-    box.append(secHead(name), key, list);
+    box.append(secHead(name, ''), key, list);
     box.hidden = true;
     sheet.body.append(box);
     secs.set(k, { box, list, key });
@@ -364,6 +525,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       // The open is asked for before look() records it, so a re-render the record starts cannot lose the click.
       const link = externalLink(el('a', 'textbtn brief-act', label), item.refs.prUrl, () => look(item, 'open-pr'));
       link.dataset.action = a;
+      link.dataset.weight = weightOf(a);
       link.setAttribute('aria-label', `${label}: ${head}, on GitHub`);
       return link;
     }
@@ -395,7 +557,11 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       }
     });
     b.dataset.action = a;
+    b.dataset.weight = weightOf(a);
     b.setAttribute('aria-label', `${label}: ${head}`);
+    // A key that spends shows what it may spend, in its own light.
+    if (a === 'accept' && item.kind === 'proposal') b.append(el('span', 'hg-cost', `${TIER_VALUE[item.tier ?? 'normal']}`));
+    if (a === 'grant') b.prepend(el('span', 'hg-seal'));
     if (a === 'why') {
       const id = `brief-why-${(whyIds += 1)}`;
       b.setAttribute('aria-expanded', String(whyOpen.has(item.id)));
@@ -463,15 +629,39 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     li.dataset.kind = item.kind;
     if (item.acted) li.dataset.acted = item.acted.action;
     if (busy.has(item.id)) li.setAttribute('aria-busy', 'true');
+    li.dataset.tone = TONE[item.kind] ?? '';
+    const m = briefMeta(item, now);
+    if (m.where || m.when) {
+      const meta = el('p', 'hg-meta');
+      if (m.where) meta.append(el('span', 'hg-where', m.where));
+      if (m.when) meta.append(el('span', 'hg-when', m.when));
+      li.append(meta);
+    }
     li.append(el('h3', 'brief-head', headOf(item)));
-    const line = el('p', 'brief-line');
-    const dl = dateline(item, now);
-    if (dl) line.append(el('span', 'brief-dateline', dl));
-    line.append(el('span', 'brief-sentence', itemSentence(item, names)));
+    if (item.kind === 'autonomy') {
+      const ring = agreementRing(item.text);
+      if (ring) li.append(ring);
+    }
+    if (item.kind === 'audit') {
+      const bar = claimsBar(item.text);
+      if (bar) li.append(bar);
+    }
+    const line = el('div', 'brief-line');
+    const outs = el('p', 'hg-outs');
+    // The autonomy ask's ring carries its figures; the row repeats none of them.
+    for (const r of item.kind === 'autonomy' && li.querySelector('.hg-agree') ? [] : itemReadouts(item, names)) {
+      const o = el('span', `hg-out${r.tone ? ` ${r.tone}` : ''}${r.k ? '' : ' bare'}`);
+      o.append(el('span', 'hg-out-v', r.v));
+      if (r.k) o.append(el('span', 'hg-out-k', r.k));
+      outs.append(o);
+    }
+    line.append(outs);
     const acts = item.actions.map((a) => actionNode(item, a)).filter((x): x is HTMLElement => x !== null);
     if (acts.length) {
       const span = el('span', 'brief-acts');
-      span.append(...acts);
+      // The heaviest key ends the row, where the eye ends.
+      const rank = (n: HTMLElement): number => RANK.indexOf(n.dataset.weight ?? 'look');
+      span.append(...acts.sort((x, y) => rank(x) - rank(y)));
       line.append(span);
     }
     const did = actedLine(item, item.kind === 'usage' ? brief?.usage.todayCapPct : null);
@@ -497,6 +687,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       box.setAttribute('role', 'region');
       box.setAttribute('aria-label', `Why: ${headOf(item)}`);
       const got = whyOf.get(item.id);
+      // The whole sentence, one tap away: the row itself carries only its readouts.
+      box.append(el('p', 'brief-why-text hg-said', itemSentence(item, names)));
       box.append(got && got !== 'reading' ? got : el('p', 'brief-why-text reading', 'Reading the reason'));
       li.append(box);
     }
@@ -545,6 +737,30 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) into.replaceChildren(...want);
   }
 
+  function drawReadouts(b: Brief, first: boolean): void {
+    const f = leadFigures(b.lead);
+    const waiting = waitingGroups(b.sections.waiting).open.length;
+    const five = windowNowPct(b.usage.fiveHour);
+    const seven = windowNowPct(b.usage.sevenDay);
+    const cap = Math.round(b.usage.todayCapPct ?? b.usage.fiveHour.capPct ?? settings.dayCapPct);
+    const sinceWords = sinceLine(b.since, b.day, first).replace(/^Since /, '');
+    const key = JSON.stringify([waiting, f, five, seven, cap, sinceWords]);
+    if (readouts.dataset.key === key) return;
+    readouts.dataset.key = key;
+    const figs = el('div', 'hg-figures');
+    figs.append(
+      figure(String(waiting).padStart(2, '0'), 'waiting', waiting ? 'hot' : ''),
+      figure(String(f.merged).padStart(2, '0'), 'merged'),
+      figure(f.spent ?? '0', 'credits spent'),
+    );
+    const gauges = el('a', 'hg-gauges');
+    gauges.href = routeHref('treasury');
+    gauges.setAttribute('aria-label', `${usageLine(b.usage, settings.dayCapPct)} The treasury keeps the daily report.`);
+    gauges.append(gauge('5 hour', five, cap), gauge('7 day', seven, null));
+    const when = el('p', 'hg-since', `since ${sinceWords}`);
+    readouts.replaceChildren(figs, gauges, when);
+  }
+
   function render(): void {
     if (!sheet.shown || !brief) return;
     const b = brief;
@@ -555,6 +771,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const first = firstHere ?? b.firstOpen;
     sheet.root.dataset.first = String(first);
     since.textContent = sinceLine(b.since, b.day, first);
+    drawReadouts(b, first);
     usageText.textContent = usageLine(b.usage, settings.dayCapPct);
     const items = allItems(b);
     // An empty morning: the one line takes the lead's place, and the lead's own second sentence follows it quietly.
@@ -569,16 +786,20 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       // What an audit does is said once, under the section that offers it.
       const due = list.some((i) => i.kind === 'audit-due');
       s.key.hidden = !due;
-      if (due) s.key.textContent = 'An audit reads a fresh clone of the repo in a sandbox and proposes jobs for what its README promises and its code does not do. Nothing runs until you post one.';
+      if (due) s.key.textContent = 'Audits check the README against the code. Nothing runs until you post.';
       // Waiting on you: the rows that need a click, then what he settled today in a quieter list of its own.
       if (k === 'waiting') {
         const { open, handled } = waitingGroups(list);
         s.list.hidden = open.length === 0;
         handledHead.hidden = handled.length === 0;
         handledList.hidden = handled.length === 0;
-        fill(s.list, open, now, seen);
+        // The heaviest ask stands first: an offer of authority leads what waits on him (the order of the rest is the engine's).
+        fill(s.list, [...open.filter((i) => i.kind === 'autonomy'), ...open.filter((i) => i.kind !== 'autonomy')], now, seen);
         fill(handledList, handled, now, seen);
       } else fill(s.list, list, now, seen);
+      const count = s.box.querySelector<HTMLElement>('.repos-sec-count');
+      const n = k === 'waiting' ? waitingGroups(list).open.length : list.length;
+      if (count) count.textContent = String(n).padStart(2, '0');
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     if (focusNext) {
@@ -594,6 +815,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     show() {
       if (!sheet.shown) {
         sheet.show();
+        planes.hidden = false;
+        requestAnimationFrame(() => planes.classList.add('open'));
         unlisten = opts.listen(onEvent);
       }
       render();
@@ -601,6 +824,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     },
     hide() {
       sheet.hide();
+      planes.classList.remove('open');
+      planes.hidden = true;
       unlisten?.();
       unlisten = null;
       whyOpen.clear();
