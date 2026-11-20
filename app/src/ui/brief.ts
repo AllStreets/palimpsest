@@ -20,6 +20,7 @@ import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
+import { clock } from './time-words';
 import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, HANDLED_HEAD, itemSentence, kindWords, sinceLine, usageLine, waitingGroups } from './brief-words';
 import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
@@ -28,8 +29,10 @@ import { awardRounds, type Names } from './detail';
 import { handoffs } from './handoffs';
 import { coalesce, namesOf, refusal, secHead } from './pages';
 import './market.css';
+import './phosphor.css';
 import { externalLink } from './external';
 import { summaryBlocks, summaryNodes } from './summary-md';
+import { windowNowPct } from '../../../shared/market-rules';
 
 export interface BriefScreen {
   show(): void;
@@ -57,6 +60,99 @@ const SECTIONS: Array<[keyof Brief['sections'], string]> = [
 ];
 /** The engine events after which the brief is read again: anything that moves an item or adds one. */
 const READ_ON = /^(brief\.action|job\.(changed|proposed|posted)|audit\.(ended|started)|milestone\.reached|repo\.(halted|resumed|connected|disconnected)|run\.ended|merge\.(detected|reverted)|report\.written|autonomy\.(asked|granted|declined|suspended|revoked|acted))$/;
+/**
+ * Phosphor (redesign direction A): each action's weight, by its consequence. Granting the city authority is the
+ * heaviest, then spending money, then deciding, and looking is the lightest.
+ */
+const WEIGHT: Partial<Record<BriefAction, 'grant' | 'spend' | 'decide'>> = {
+  grant: 'grant',
+  accept: 'spend',
+  tier: 'spend',
+  retry: 'spend',
+  resume: 'spend',
+  cap: 'spend',
+  audit: 'spend',
+  dismiss: 'decide',
+  decline: 'decide',
+  revoke: 'decide',
+};
+const weightOf = (a: BriefAction): string => WEIGHT[a] ?? 'look';
+/** Each item's kind as a short state tag on its meta line, and its tone: news, a decision, or a fault. */
+const TAG: Record<BriefItem['kind'], [string, '' | 'ask' | 'fault' | 'warn']> = {
+  merged: ['merged', ''],
+  failed: ['failed', 'fault'],
+  pr: ['review', 'ask'],
+  proposal: ['proposal', 'ask'],
+  halt: ['halted', 'fault'],
+  revert: ['reverted', 'fault'],
+  note: ['note', ''],
+  audit: ['audit', ''],
+  'audit-due': ['audit due', 'ask'],
+  usage: ['limit', 'warn'],
+  stale: ['no reading', 'warn'],
+  milestone: ['milestone', ''],
+  tour: ['the week', ''],
+  autonomy: ['authority', 'ask'],
+  graduate: ['graduate', ''],
+  acted: ['acted', ''],
+};
+const reducedMotion = (): boolean => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** A segmented meter: `n` cells, lit to `pct`, the cap's cell marked. */
+function meter(label: string, pct: number | null, cap: number | null): HTMLElement {
+  const box = el('div', 'ph-meter');
+  const n = 20;
+  const lit = pct === null ? 0 : Math.round((Math.min(100, Math.max(0, pct)) / 100) * n);
+  const capAt = cap === null ? -1 : Math.min(n - 1, Math.round((cap / 100) * n) - 1);
+  const cells = el('span', 'ph-cells');
+  cells.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < n; i++) {
+    const c = el('span', `ph-cell${i < lit ? ' on' : ''}${i === capAt ? ' cap' : ''}${i > capAt && capAt >= 0 ? ' over' : ''}`);
+    cells.append(c);
+  }
+  const fig = el('span', 'ph-fig', pct === null ? '?' : `${Math.round(pct)}`);
+  fig.append(el('span', 'ph-unit', '%'));
+  box.append(el('span', 'ph-label', label), cells, fig);
+  box.setAttribute('aria-label', `${label} ${pct === null ? 'not read' : `${Math.round(pct)}%`}${cap === null ? '' : `, limit ${cap}%`}`);
+  return box;
+}
+
+/**
+ * The autonomy ask's evidence as an instrument: how often the master agreed with him on this kind of work, one cell
+ * a decision, and its run here. Read from the ask's own sentence; nothing when the sentence does not say.
+ */
+function agreement(text: string): HTMLElement | null {
+  const all = /agreed with you on (\d+) of the last (\d+)/.exec(text);
+  if (!all) return null;
+  const [agreed, of] = [Number(all[1]), Number(all[2])];
+  const here = /on its last (\d+) here/.exec(text);
+  const box = el('div', 'ph-agree');
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `The master agreed with you on ${agreed} of the last ${of}${here ? `, and on its last ${here[1]} here` : ''}`);
+  const fig = el('div', 'ph-agree-fig');
+  const v = el('span', 'ph-agree-value', String(agreed));
+  v.append(el('span', 'ph-agree-of', `/${of}`));
+  fig.append(v, el('span', 'ph-figure-label', 'agreed with you'));
+  const cells = el('div', 'ph-agree-cells');
+  for (let i = 0; i < of; i++) cells.append(el('span', i < agreed ? 'on' : 'off'));
+  box.append(fig, cells);
+  if (here) {
+    const h = el('div', 'ph-agree-fig here');
+    const hv = el('span', 'ph-agree-value', here[1]);
+    hv.append(el('span', 'ph-agree-of', `/${here[1]}`));
+    h.append(hv, el('span', 'ph-figure-label', 'here'));
+    box.append(h);
+  }
+  return box;
+}
+
+/** A figure readout: a large number over its short label. */
+function figure(value: string, label: string, tone = ''): HTMLElement {
+  const box = el('div', `ph-figure${tone ? ` ${tone}` : ''}`);
+  box.append(el('span', 'ph-figure-value', value), el('span', 'ph-figure-label', label));
+  return box;
+}
+
 /** The words for a week with fewer than two things to walk through. */
 export const NO_TOUR = 'Not enough happened this week for a walk through it.';
 
@@ -73,6 +169,13 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   // The palette (Phase 5) goes where the brief's items go: the city's flight to a tower, and the one event stream.
   handoffs.listen = opts.listen;
   handoffs.flyToTower = (repo) => opts.flyToFloor({ repo, floorId: null, agentId: null });
+  // The briefs behind this one: the two days before, set back as older screens in the stack (a palimpsest of mornings).
+  const stack = el('div', 'ph-stack');
+  stack.setAttribute('aria-hidden', 'true');
+  const backs = [el('div', 'ph-back far'), el('div', 'ph-back near')];
+  stack.append(...backs);
+  stack.hidden = true;
+  parent.append(stack);
   const sheet = createSheet(parent, 'brief', '', opts.onDismiss);
   const head = sheet.root.querySelector<HTMLElement>('.sheet-head')!;
   // Scrolled, the head is ruled off from the rows passing under it.
@@ -81,6 +184,17 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     if ((sheet.root.dataset.scrolled === 'true') !== on) sheet.root.dataset.scrolled = String(on);
   }, { passive: true });
   const title = head.querySelector<HTMLElement>('.sheet-title')!;
+  // The day's readouts stand in the pinned head, under the date: what waits, what merged, what was spent, the windows.
+  const readouts = el('div', 'ph-readouts');
+  head.append(readouts);
+  // The panel's machined frame: corner registration and the light on its top edge, drawn over everything, never hit.
+  const frame = el('div', 'ph-frame');
+  frame.setAttribute('aria-hidden', 'true');
+  sheet.root.append(frame);
+  /** The rows' sentences still to type in, in page order, while the sheet's opening plays. */
+  let typing: HTMLElement[] = [];
+  let typeIn = false;
+  let typer = 0;
   // The day is the page's heading: no kicker over it. The sheet is named for the screen it is.
   sheet.root.setAttribute('aria-label', 'Brief');
   // The lead and the colophon open the page and scroll away with it, so the ledgers have the height.
@@ -103,7 +217,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const list = el('ol', 'brief-list');
     const key = el('p', 'jobs-key brief-key');
     key.hidden = true;
-    box.append(secHead(name), key, list);
+    box.append(secHead(name, ''), key, list);
     box.hidden = true;
     sheet.body.append(box);
     secs.set(k, { box, list, key });
@@ -364,6 +478,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       // The open is asked for before look() records it, so a re-render the record starts cannot lose the click.
       const link = externalLink(el('a', 'textbtn brief-act', label), item.refs.prUrl, () => look(item, 'open-pr'));
       link.dataset.action = a;
+      link.dataset.weight = weightOf(a);
       link.setAttribute('aria-label', `${label}: ${head}, on GitHub`);
       return link;
     }
@@ -395,6 +510,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       }
     });
     b.dataset.action = a;
+    b.dataset.weight = weightOf(a);
     b.setAttribute('aria-label', `${label}: ${head}`);
     if (a === 'why') {
       const id = `brief-why-${(whyIds += 1)}`;
@@ -463,15 +579,39 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     li.dataset.kind = item.kind;
     if (item.acted) li.dataset.acted = item.acted.action;
     if (busy.has(item.id)) li.setAttribute('aria-busy', 'true');
-    li.append(el('h3', 'brief-head', headOf(item)));
-    const line = el('p', 'brief-line');
+    // The meta line over the headline: where (lit), when (dim), and the item's state tag at the right.
+    const meta = el('p', 'ph-meta');
     const dl = dateline(item, now);
-    if (dl) line.append(el('span', 'brief-dateline', dl));
-    line.append(el('span', 'brief-sentence', itemSentence(item, names)));
+    if (dl) {
+      const d = el('span', 'brief-dateline');
+      const cut = dl.indexOf(', ');
+      if (cut > 0) d.append(el('span', 'ph-where', dl.slice(0, cut)), el('span', 'ph-when', dl.slice(cut + 2)));
+      else d.append(el('span', /\d/.test(dl) ? 'ph-when' : 'ph-where', dl));
+      meta.append(d);
+    }
+    const [tag, tone] = TAG[item.kind];
+    const t = el('span', `ph-tag${tone ? ` ${tone}` : ''}`, tag);
+    meta.append(t);
+    li.append(meta, el('h3', 'brief-head', headOf(item)));
+    if (item.kind === 'autonomy') {
+      const strip = agreement(item.text);
+      if (strip) li.append(strip);
+    }
+    const line = el('p', 'brief-line');
+    const sentence = el('span', 'brief-sentence', itemSentence(item, names));
+    line.append(sentence);
+    if (typeIn) {
+      sentence.dataset.full = sentence.textContent ?? '';
+      sentence.textContent = '';
+      sentence.classList.add('typing');
+      typing.push(sentence);
+    }
     const acts = item.actions.map((a) => actionNode(item, a)).filter((x): x is HTMLElement => x !== null);
     if (acts.length) {
       const span = el('span', 'brief-acts');
-      span.append(...acts);
+      // The heaviest key leads the row.
+      const rank = (n: HTMLElement): number => ['grant', 'spend', 'decide', 'look'].indexOf(n.dataset.weight ?? 'look');
+      span.append(...acts.sort((x, y) => rank(x) - rank(y)));
       line.append(span);
     }
     const did = actedLine(item, item.kind === 'usage' ? brief?.usage.todayCapPct : null);
@@ -545,18 +685,81 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) into.replaceChildren(...want);
   }
 
+  function drawReadouts(b: Brief, items: BriefItem[]): void {
+    const waiting = waitingGroups(b.sections.waiting).open.length;
+    const merged = /(\d+) merged/.exec(b.lead)?.[1] ?? String(items.filter((i) => i.kind === 'merged').length);
+    const spent = /spent ([\d,.]+) credits/.exec(b.lead)?.[1] ?? null;
+    const five = windowNowPct(b.usage.fiveHour);
+    const seven = windowNowPct(b.usage.sevenDay);
+    const cap = Math.round(b.usage.todayCapPct ?? b.usage.fiveHour.capPct ?? settings.dayCapPct);
+    const key = JSON.stringify([waiting, merged, spent, five, seven, cap, b.since]);
+    if (readouts.dataset.key === key) return;
+    readouts.dataset.key = key;
+    const figs = el('div', 'ph-figures');
+    const at = Date.parse(b.since);
+    figs.append(
+      figure(String(waiting).padStart(2, '0'), 'waiting on you', waiting ? 'hot' : ''),
+      figure(merged.padStart(2, '0'), 'merged'),
+      figure(spent ?? '0', 'credits spent'),
+      figure(Number.isFinite(at) ? clock(at) : '?', 'since', 'quiet'),
+    );
+    const meters = el('div', 'ph-meters');
+    meters.append(meter('5 hour', five, cap), meter('7 day', seven, null));
+    readouts.replaceChildren(figs, meters);
+  }
+
+  /** Types the queued sentences in, a few at once, fast enough that the page is whole within about a second. */
+  function startTyping(): void {
+    window.clearTimeout(typer);
+    const queue = typing.filter((s) => s.isConnected);
+    typing = [];
+    if (!queue.length) return;
+    const t0 = performance.now();
+    const CPS = 900;
+    const STAGGER = 70;
+    const step = (): void => {
+      const t = performance.now() - t0;
+      let left = 0;
+      queue.forEach((s, i) => {
+        const full = s.dataset.full ?? '';
+        const n = Math.max(0, Math.floor(((t - i * STAGGER) / 1000) * CPS));
+        if (n >= full.length) {
+          if (s.classList.contains('typing')) {
+            s.textContent = full;
+            s.classList.remove('typing');
+            delete s.dataset.full;
+          }
+          return;
+        }
+        left++;
+        const next = full.slice(0, n);
+        if (s.textContent !== next) s.textContent = next;
+      });
+      if (left) typer = window.setTimeout(() => requestAnimationFrame(step), 16);
+    };
+    requestAnimationFrame(step);
+  }
+
   function render(): void {
     if (!sheet.shown || !brief) return;
     const b = brief;
     const now = Date.now();
     const t = briefTitle(b.day);
     if (title.textContent !== t) title.textContent = t;
+    const [y, m, d] = b.day.split('-').map(Number);
+    backs.forEach((back, i) => {
+      const day = new Date(y, m - 1, d - (2 - i), 12);
+      const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+      const words = briefTitle(key);
+      if (back.textContent !== words) back.replaceChildren(el('span', 'ph-back-day', words));
+    });
     if (lead.textContent !== b.lead) lead.textContent = cleanText(b.lead, 600);
     const first = firstHere ?? b.firstOpen;
     sheet.root.dataset.first = String(first);
     since.textContent = sinceLine(b.since, b.day, first);
     usageText.textContent = usageLine(b.usage, settings.dayCapPct);
     const items = allItems(b);
+    drawReadouts(b, items);
     // An empty morning: the one line takes the lead's place, and the lead's own second sentence follows it quietly.
     empty.hidden = items.length > 0;
     lead.hidden = items.length === 0;
@@ -569,7 +772,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       // What an audit does is said once, under the section that offers it.
       const due = list.some((i) => i.kind === 'audit-due');
       s.key.hidden = !due;
-      if (due) s.key.textContent = 'An audit reads a fresh clone of the repo in a sandbox and proposes jobs for what its README promises and its code does not do. Nothing runs until you post one.';
+      if (due) s.key.textContent = 'An audit checks the README against the code and proposes jobs. Nothing runs until you post one.';
       // Waiting on you: the rows that need a click, then what he settled today in a quieter list of its own.
       if (k === 'waiting') {
         const { open, handled } = waitingGroups(list);
@@ -579,6 +782,13 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
         fill(s.list, open, now, seen);
         fill(handledList, handled, now, seen);
       } else fill(s.list, list, now, seen);
+      const count = s.box.querySelector<HTMLElement>('.repos-sec-count');
+      const n = k === 'waiting' ? waitingGroups(list).open.length : list.length;
+      if (count) count.textContent = String(n).padStart(2, '0');
+    }
+    if (typeIn) {
+      typeIn = false;
+      startTyping();
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     if (focusNext) {
@@ -594,13 +804,21 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     show() {
       if (!sheet.shown) {
         sheet.show();
+        stack.hidden = false;
+        requestAnimationFrame(() => stack.classList.add('open'));
         unlisten = opts.listen(onEvent);
+        // The opening: the scan sweeps the panel and the rows' sentences type themselves in, once. Reduced motion: whole.
+        typeIn = !reducedMotion();
+        sheet.root.classList.toggle('ph-opening', typeIn);
+        if (typeIn) window.setTimeout(() => sheet.root.classList.remove('ph-opening'), 1400);
       }
       render();
       read();
     },
     hide() {
       sheet.hide();
+      stack.classList.remove('open');
+      stack.hidden = true;
       unlisten?.();
       unlisten = null;
       whyOpen.clear();
@@ -609,6 +827,9 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       quiet.clear();
       errors.clear();
       rows.clear();
+      window.clearTimeout(typer);
+      typing = [];
+      typeIn = false;
       for (const s of secs.values()) s.list.replaceChildren();
       handledList.replaceChildren();
     },

@@ -1,0 +1,1048 @@
+/*
+ * Direction A, Phosphor (screens redesign, Stage 1, throwaway): the Brief as a stack of phosphor terminals floating
+ * over the live city. One green, monospace throughout (Martian Mono, its width axis doing the display work),
+ * sentences that type themselves in, and actions as bracketed keys weighted by what they cost.
+ */
+@font-face {
+  font-family: 'Martian Mono';
+  src: url('/fonts/martian-mono.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 800;
+  font-stretch: 75% 112.5%;
+  font-display: swap;
+}
+
+:root {
+  --ph: #6dffa4;
+  --ph-hi: #e2ffec;
+  --ph-1: #b9f5cf;
+  --ph-2: #86cfa2;
+  --ph-3: #5f9f79;
+  --ph-line: rgba(109, 255, 164, 0.16);
+  --ph-line-2: rgba(109, 255, 164, 0.3);
+  --ph-glass: rgba(2, 9, 5, 0.92);
+  --ph-deep: rgba(0, 4, 2, 0.72);
+  --ph-warn: #ffc76e;
+  --ph-fail: #ff8a73;
+  --ph-mono: 'Martian Mono', ui-monospace, Menlo, monospace;
+  --ph-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* ---------------------------------------------------------------- the room: the scrim gives way to a vignette */
+
+.scrim:has(+ .sheet.brief) {
+  background: radial-gradient(120% 90% at 0% 40%, rgba(0, 6, 3, 0.66) 0%, rgba(0, 5, 2, 0.38) 45%, rgba(0, 0, 0, 0.06) 80%);
+}
+
+/* The running head over the Brief speaks the terminal's type. */
+body[data-route='brief'] .runhead {
+  font-family: var(--ph-mono);
+  font-stretch: 87.5%;
+}
+body[data-route='brief'] .runhead::before {
+  right: auto;
+  width: 100vw;
+  background: linear-gradient(to bottom, rgba(0, 5, 2, 0.78) 0, rgba(0, 5, 2, 0.5) 46px, rgba(0, 5, 2, 0) 70px);
+  mask-image: linear-gradient(to right, #000 0, #000 var(--sheet-w), rgba(0, 0, 0, 0.35) calc(var(--sheet-w) + 240px), transparent 100%);
+}
+body[data-route='brief'] .runhead-mark {
+  font-family: var(--ph-mono);
+  font-style: normal;
+  font-weight: 700;
+  font-stretch: 112.5%;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--ph-hi);
+}
+body[data-route='brief'] .runhead-link {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--ph-2);
+}
+body[data-route='brief'] .runhead-link[aria-current='page'] {
+  color: var(--ph);
+  text-shadow: 0 0 10px rgba(109, 255, 164, 0.55);
+}
+body[data-route='brief'] .runhead-link[aria-current='page']::after {
+  height: 2px;
+  background: var(--ph);
+  box-shadow: 0 0 8px var(--ph);
+}
+body[data-route='brief'] .runhead-count {
+  font-size: 10.5px;
+  color: var(--ph-3);
+}
+
+/* ---------------------------------------------------------------- the terminal stack */
+
+.sheet.brief {
+  top: 66px;
+  left: 18px;
+  bottom: 18px;
+  width: calc(var(--sheet-w) - 18px);
+  font-family: var(--ph-mono);
+  font-stretch: 87.5%;
+  color: var(--ph-1);
+  background:
+    /* the screen's own light, strongest at its upper edge */
+    radial-gradient(140% 60% at 30% -10%, rgba(64, 255, 150, 0.09), transparent 60%),
+    linear-gradient(180deg, rgba(10, 34, 20, 0.5), rgba(2, 9, 5, 0) 220px),
+    var(--ph-glass);
+  /* No backdrop blur: over a city redrawn every frame it cost a third of the frame. The glass is dark enough alone. */
+  border: 1px solid rgba(109, 255, 164, 0.22);
+  border-top-color: rgba(160, 255, 200, 0.42);
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(200, 255, 220, 0.12),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.5),
+    inset 0 -40px 80px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    0 0 14px rgba(109, 255, 164, 0.16),
+    0 0 60px rgba(60, 255, 140, 0.1),
+    0 40px 90px -20px rgba(0, 0, 0, 0.85);
+  transform: translateX(-10px) scale(0.995);
+  transform-origin: 0 50%;
+}
+.sheet.brief.open {
+  transform: none;
+}
+/* The terminal behind: a second, older screen set back and to the right, its edge catching the same green. */
+/*
+ * The briefs behind: the two mornings before, set back as older screens to the right of this one, each a step
+ * dimmer and deeper, their date standing up their visible edge. Separate from the sheet, so the glass never shows them.
+ */
+.ph-stack[hidden] {
+  display: none;
+}
+.ph-stack {
+  position: fixed;
+  z-index: 5;
+  top: 66px;
+  left: 18px;
+  bottom: 18px;
+  width: calc(var(--sheet-w) - 18px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease 0.08s;
+}
+.ph-stack.open {
+  opacity: 1;
+}
+.ph-back {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(109, 255, 164, 0.2);
+  border-right-color: rgba(150, 255, 195, 0.36);
+  background: linear-gradient(180deg, rgba(6, 26, 15, 0.86), rgba(1, 7, 4, 0.9));
+  box-shadow: 0 0 24px rgba(109, 255, 164, 0.06), 24px 30px 60px rgba(0, 0, 0, 0.55);
+}
+.ph-back.near {
+  transform: translate(24px, 18px) scale(0.985);
+  transform-origin: 100% 0;
+}
+.ph-back.far {
+  transform: translate(46px, 36px) scale(0.97);
+  transform-origin: 100% 0;
+  border-color: rgba(109, 255, 164, 0.12);
+  border-right-color: rgba(150, 255, 195, 0.22);
+  background: linear-gradient(180deg, rgba(4, 18, 10, 0.8), rgba(1, 5, 3, 0.86));
+}
+.ph-back-day {
+  position: absolute;
+  top: 40px;
+  right: 5px;
+  writing-mode: vertical-rl;
+  font-family: var(--ph-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  font-stretch: 75%;
+  letter-spacing: 0.04em;
+  color: rgba(109, 255, 164, 0.5);
+  white-space: nowrap;
+}
+.ph-back.far .ph-back-day {
+  color: rgba(109, 255, 164, 0.32);
+}
+.ph-back.near .ph-back-day {
+  right: 6px;
+}
+
+/* The scan: once, as the panel opens, a band of light runs down the glass. */
+.sheet.brief::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 0, rgba(109, 255, 164, 0) 40%, rgba(109, 255, 164, 0.16) 49.6%, rgba(220, 255, 235, 0.5) 50%, rgba(109, 255, 164, 0) 50.4%, transparent 100%);
+  background-size: 100% 260%;
+  background-position: 0 100%;
+  opacity: 0;
+}
+.sheet.brief.ph-opening::after {
+  animation: ph-scan 1.1s var(--ph-ease) 0.05s 1 both;
+}
+@keyframes ph-scan {
+  0% {
+    opacity: 1;
+    background-position: 0 100%;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    background-position: 0 0%;
+  }
+}
+
+/* The machined frame: four lit corner registrations, and light caught along the top edge. */
+.ph-frame {
+  position: absolute;
+  inset: -1px;
+  z-index: 3;
+  border-radius: 6px;
+  pointer-events: none;
+  --t: rgba(170, 255, 205, 0.85);
+  background:
+    linear-gradient(90deg, transparent 8%, rgba(200, 255, 225, 0.7) 30%, rgba(200, 255, 225, 0.15) 62%, transparent 85%) top / 100% 1px no-repeat,
+    linear-gradient(var(--t), var(--t)) top left / 14px 2px no-repeat,
+    linear-gradient(var(--t), var(--t)) top left / 2px 14px no-repeat,
+    linear-gradient(var(--t), var(--t)) top right / 14px 2px no-repeat,
+    linear-gradient(var(--t), var(--t)) top right / 2px 14px no-repeat,
+    linear-gradient(var(--t), var(--t)) bottom left / 14px 2px no-repeat,
+    linear-gradient(var(--t), var(--t)) bottom left / 2px 14px no-repeat,
+    linear-gradient(var(--t), var(--t)) bottom right / 14px 2px no-repeat,
+    linear-gradient(var(--t), var(--t)) bottom right / 2px 14px no-repeat;
+  filter: drop-shadow(0 0 3px rgba(109, 255, 164, 0.6));
+}
+
+/* ---------------------------------------------------------------- the head: the date, and the day's readouts */
+
+.sheet.brief .sheet-head {
+  padding: 26px 30px 0;
+  background: linear-gradient(180deg, rgba(4, 16, 9, 0.6), rgba(2, 9, 5, 0.2));
+  border-radius: 6px 6px 0 0;
+  border-bottom: 1px solid var(--ph-line);
+}
+.sheet.brief[data-scrolled='true'] .sheet-head {
+  border-bottom-color: var(--ph-line-2);
+  box-shadow: 0 12px 24px -12px rgba(0, 0, 0, 0.9);
+}
+.sheet.brief .sheet-title {
+  font-family: var(--ph-mono);
+  font-weight: 760;
+  font-stretch: 112.5%;
+  font-size: 30px;
+  line-height: 1.02;
+  letter-spacing: -0.045em;
+  color: var(--ph-hi);
+  text-shadow: 0 0 18px rgba(109, 255, 164, 0.45), 0 0 2px rgba(180, 255, 210, 0.6);
+}
+
+.ph-readouts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: end;
+  gap: 18px 26px;
+  margin-top: 18px;
+  padding-bottom: 16px;
+}
+.ph-figures {
+  display: flex;
+  gap: 22px;
+}
+.ph-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ph-figure-value {
+  font-weight: 640;
+  font-stretch: 100%;
+  font-size: 23px;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--ph-1);
+  font-variant-numeric: tabular-nums;
+}
+.ph-figure.quiet .ph-figure-value {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ph-2);
+  padding-top: 8px;
+}
+.ph-figure.hot .ph-figure-value {
+  color: var(--ph);
+  text-shadow: 0 0 14px rgba(109, 255, 164, 0.6);
+}
+.ph-figure-label,
+.ph-label {
+  font-size: 10px;
+  font-weight: 450;
+  font-stretch: 75%;
+  letter-spacing: 0.02em;
+  color: var(--ph-3);
+  white-space: nowrap;
+}
+.ph-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-self: end;
+}
+.ph-meter {
+  display: grid;
+  grid-template-columns: 44px auto 34px;
+  align-items: center;
+  gap: 10px;
+}
+.ph-cells {
+  display: flex;
+  gap: 2px;
+}
+.ph-cell {
+  width: 6px;
+  height: 11px;
+  border-radius: 1px;
+  background: rgba(109, 255, 164, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(109, 255, 164, 0.12);
+}
+.ph-cell.on {
+  background: linear-gradient(180deg, #a6ffc8, var(--ph) 60%, #3fd780);
+  box-shadow: 0 0 6px rgba(109, 255, 164, 0.55);
+}
+.ph-cell.over {
+  background: rgba(255, 199, 110, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 199, 110, 0.14);
+}
+.ph-cell.cap {
+  position: relative;
+}
+.ph-cell.cap::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  right: -2px;
+  width: 1px;
+  background: var(--ph-warn);
+  box-shadow: 0 0 6px var(--ph-warn);
+}
+.ph-fig {
+  font-size: 12px;
+  font-weight: 560;
+  text-align: right;
+  color: var(--ph-1);
+  font-variant-numeric: tabular-nums;
+}
+.ph-unit {
+  margin-left: 1px;
+  font-size: 9.5px;
+  color: var(--ph-3);
+}
+
+/* The prose the readouts replace stays for a screen reader. */
+.sheet.brief .brief-lead,
+.sheet.brief .brief-since,
+.sheet.brief .brief-usage {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- the body */
+
+.sheet.brief .sheet-body {
+  padding: 4px 30px 56px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 40px), transparent);
+  scrollbar-color: rgba(109, 255, 164, 0.25) transparent;
+}
+.sheet.brief .brief-sec .repos-sec {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 0 10px;
+  border-bottom: 0;
+}
+.sheet.brief .repos-sec-name {
+  font-family: var(--ph-mono);
+  font-style: normal;
+  font-weight: 600;
+  font-stretch: 100%;
+  font-size: 12px;
+  letter-spacing: 0;
+  color: var(--ph-1);
+  order: 1;
+}
+/* Each section is ruled from its name to the panel's edge, the count closing the rule. */
+.sheet.brief .brief-sec .repos-sec::after {
+  content: '';
+  order: 2;
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--ph-line-2), var(--ph-line));
+}
+.sheet.brief .repos-sec-count {
+  order: 3;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ph-3);
+}
+.sheet.brief .brief-sec .repos-sec::before {
+  content: '';
+  order: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--ph-3);
+}
+
+/* Waiting on you: its own recessed screen, nearer than the rest, its mark breathing. */
+.sheet.brief .brief-sec[data-sec='waiting'] {
+  margin: 0 -30px;
+  padding: 0 30px 8px;
+  background: linear-gradient(180deg, rgba(0, 3, 1, 0.6), rgba(0, 3, 1, 0.28));
+  box-shadow: inset 0 18px 28px -18px rgba(0, 0, 0, 0.9), inset 0 -1px 0 rgba(109, 255, 164, 0.14), 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+.sheet.brief .brief-sec[data-sec='waiting'] .repos-sec {
+  padding-top: 16px;
+}
+.sheet.brief .brief-sec[data-sec='waiting'] .repos-sec::before {
+  background: var(--ph);
+  box-shadow: 0 0 10px var(--ph);
+  animation: ph-pulse 2.4s ease-in-out infinite;
+}
+.sheet.brief .brief-sec[data-sec='waiting'] .repos-sec-name {
+  color: var(--ph);
+}
+.sheet.brief .brief-sec[data-sec='waiting'] .repos-sec-count {
+  color: var(--ph);
+}
+@keyframes ph-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.sheet.brief .brief-key {
+  max-width: 62ch;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--ph-3);
+}
+
+/* ---------------------------------------------------------------- a row */
+
+.sheet.brief .brief-item {
+  position: relative;
+  padding: 15px 0 16px 0;
+  border-bottom: 1px solid rgba(109, 255, 164, 0.08);
+}
+.sheet.brief .brief-list > .brief-item:last-child {
+  border-bottom: 0;
+}
+/* The row's state lives in its tag. */
+.sheet.brief .brief-item::before {
+  display: none;
+}
+.sheet.brief .brief-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 18px;
+  width: 3px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--ph-3);
+  opacity: 0.7;
+}
+.sheet.brief .brief-sec[data-sec='waiting'] .brief-item::before {
+  background: var(--ph);
+  opacity: 1;
+  box-shadow: 0 0 8px rgba(109, 255, 164, 0.7);
+}
+.sheet.brief .brief-item[data-kind='failed']::before,
+.sheet.brief .brief-item[data-kind='halt']::before,
+.sheet.brief .brief-item[data-kind='revert']::before {
+  background: var(--ph-fail);
+  box-shadow: 0 0 8px rgba(255, 138, 115, 0.6);
+  opacity: 1;
+}
+.sheet.brief .brief-item[data-kind='usage']::before,
+.sheet.brief .brief-item[data-kind='stale']::before {
+  background: var(--ph-warn);
+  box-shadow: 0 0 8px rgba(255, 199, 110, 0.5);
+  opacity: 1;
+}
+.ph-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  font-stretch: 75%;
+  letter-spacing: 0.01em;
+}
+.sheet.brief .ph-meta .brief-dateline {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  font-size: inherit;
+}
+.ph-where {
+  color: var(--ph);
+}
+.ph-when {
+  margin-left: 12px;
+  color: var(--ph-3);
+}
+.ph-tag {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 7px 3px;
+  border-radius: 2px;
+  color: var(--ph-3);
+  box-shadow: inset 0 0 0 1px rgba(109, 255, 164, 0.16);
+}
+.ph-tag.ask {
+  color: var(--ph-2);
+  box-shadow: inset 0 0 0 1px rgba(109, 255, 164, 0.3);
+}
+.sheet.brief .brief-item[data-kind='autonomy'] .ph-tag {
+  color: #02120a;
+  font-weight: 700;
+  background: var(--ph);
+  box-shadow: 0 0 12px rgba(109, 255, 164, 0.5);
+}
+.ph-tag.fault {
+  color: var(--ph-fail);
+  background: rgba(255, 138, 115, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 138, 115, 0.4);
+}
+.ph-tag.warn {
+  color: var(--ph-warn);
+  background: rgba(255, 199, 110, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 199, 110, 0.36);
+}
+.sheet.brief .brief-head {
+  max-width: 62ch;
+  font-family: var(--ph-mono);
+  font-weight: 620;
+  font-stretch: 87.5%;
+  font-size: 14.5px;
+  line-height: 1.38;
+  letter-spacing: -0.015em;
+  color: var(--ph-hi);
+}
+.sheet.brief .brief-line {
+  margin-top: 5px;
+  max-width: 76ch;
+  font-size: 11.5px;
+  font-weight: 330;
+  line-height: 1.66;
+  color: var(--ph-2);
+}
+.sheet.brief .brief-dateline {
+  display: inline-block;
+  margin-right: 10px;
+  padding: 1px 6px 2px;
+  border-radius: 2px;
+  font-size: 10.5px;
+  font-weight: 500;
+  font-stretch: 75%;
+  color: var(--ph);
+  background: rgba(109, 255, 164, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(109, 255, 164, 0.14);
+}
+.sheet.brief .brief-sentence {
+  margin-right: 0;
+}
+/* The sentence typing in: a block cursor rides its end. */
+.sheet.brief .brief-sentence.typing::after {
+  content: '';
+  display: inline-block;
+  width: 0.6em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.18em;
+  background: var(--ph);
+  box-shadow: 0 0 8px var(--ph);
+}
+
+/* ---------------------------------------------------------------- the keys */
+
+.sheet.brief .brief-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin: 12px 0 0;
+  white-space: normal;
+}
+.sheet.brief .brief-act,
+.sheet.brief a.brief-act {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  margin: 0;
+  padding: 0 12px;
+  font-family: var(--ph-mono);
+  font-stretch: 87.5%;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-decoration: none;
+  color: var(--ph-2);
+  cursor: pointer;
+  transition: color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+/* The brackets: two machined jaws, top and bottom lips, that open a step on hover. */
+.sheet.brief .brief-act::before,
+.sheet.brief .brief-act::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  border: 1px solid currentColor;
+  opacity: 0.75;
+  transition: transform 0.22s var(--ph-ease), opacity 0.18s ease;
+}
+.sheet.brief .brief-act::before {
+  left: 0;
+  border-right: 0;
+  border-radius: 2px 0 0 2px;
+}
+.sheet.brief .brief-act::after {
+  right: 0;
+  border-left: 0;
+  border-radius: 0 2px 2px 0;
+}
+.sheet.brief .brief-act:hover {
+  color: var(--ph-hi);
+}
+.sheet.brief .brief-act:hover::before {
+  transform: translateX(-2px);
+  opacity: 1;
+}
+.sheet.brief .brief-act:hover::after {
+  transform: translateX(2px);
+  opacity: 1;
+}
+.sheet.brief .brief-act:focus-visible {
+  outline: none;
+  color: var(--ph-hi);
+  box-shadow: 0 0 0 1px var(--ph), 0 0 0 4px rgba(109, 255, 164, 0.25), 0 0 16px rgba(109, 255, 164, 0.4);
+  border-radius: 2px;
+}
+
+/* Look: words alone at rest; the jaws close round them only under the pointer or focus. */
+.sheet.brief .brief-act[data-weight='look'] {
+  padding: 0 10px;
+  color: var(--ph-3);
+}
+.sheet.brief .brief-act[data-weight='look']::before,
+.sheet.brief .brief-act[data-weight='look']::after {
+  opacity: 0;
+  transform: none;
+}
+.sheet.brief .brief-act[data-weight='look']:hover,
+.sheet.brief .brief-act[data-weight='look']:focus-visible {
+  color: var(--ph-1);
+}
+.sheet.brief .brief-act[data-weight='look']:hover::before,
+.sheet.brief .brief-act[data-weight='look']:hover::after {
+  opacity: 0.8;
+  transform: none;
+}
+.sheet.brief .brief-acts .brief-act[data-weight='look']:first-of-type,
+.sheet.brief .brief-acts > .brief-act[data-weight='spend'] + .brief-act[data-weight='look'],
+.sheet.brief .brief-acts > .brief-act[data-weight='decide'] + .brief-act[data-weight='look'] {
+  margin-left: 4px;
+}
+/* Decide: the jaws alone, unlit. */
+.sheet.brief .brief-act[data-weight='decide'] {
+  color: var(--ph-2);
+}
+.sheet.brief .brief-act[data-weight='decide']::before,
+.sheet.brief .brief-act[data-weight='decide']::after {
+  opacity: 0.55;
+}
+/* Spend: a keycap lit from inside, a lip of shadow under it, its jaws bright and a bloom round it. */
+.sheet.brief .brief-act[data-weight='spend'] {
+  height: 28px;
+  padding: 0 14px;
+  color: var(--ph-hi);
+  font-weight: 640;
+  background: linear-gradient(180deg, rgba(109, 255, 164, 0.24), rgba(109, 255, 164, 0.08) 60%, rgba(109, 255, 164, 0.12));
+  box-shadow:
+    inset 0 1px 0 rgba(210, 255, 225, 0.35),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(109, 255, 164, 0.5),
+    0 0 16px rgba(109, 255, 164, 0.16),
+    0 4px 8px -2px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 0 8px rgba(109, 255, 164, 0.6);
+  border-radius: 3px;
+}
+.sheet.brief .brief-act[data-weight='spend']::before,
+.sheet.brief .brief-act[data-weight='spend']::after {
+  opacity: 0;
+}
+.sheet.brief .brief-act[data-weight='spend']:hover {
+  background: linear-gradient(180deg, rgba(109, 255, 164, 0.36), rgba(109, 255, 164, 0.14) 60%, rgba(109, 255, 164, 0.18));
+  box-shadow:
+    inset 0 1px 0 rgba(210, 255, 225, 0.45),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(140, 255, 190, 0.8),
+    0 0 22px rgba(109, 255, 164, 0.3),
+    0 4px 8px -2px rgba(0, 0, 0, 0.7);
+}
+.sheet.brief .brief-act[data-weight='spend']:active {
+  transform: translateY(1px);
+}
+.sheet.brief .brief-act:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------- the autonomy ask: the heaviest thing on the page */
+
+.sheet.brief .brief-item[data-kind='autonomy'] {
+  margin: 14px -8px 12px;
+  padding: 20px 20px 20px 24px;
+  border: 1px solid rgba(109, 255, 164, 0.5);
+  border-radius: 4px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgba(109, 255, 164, 0.14), transparent 60%),
+    linear-gradient(180deg, rgba(6, 30, 16, 0.92), rgba(2, 12, 6, 0.92));
+  box-shadow:
+    inset 0 1px 0 rgba(210, 255, 225, 0.25),
+    0 0 0 4px rgba(109, 255, 164, 0.05),
+    0 0 40px rgba(109, 255, 164, 0.18),
+    0 22px 40px -16px rgba(0, 0, 0, 0.9);
+}
+.sheet.brief .brief-item[data-kind='autonomy']::before {
+  top: 24px;
+  left: 10px;
+  height: 18px;
+  background: var(--ph);
+  box-shadow: 0 0 12px var(--ph);
+}
+.sheet.brief .brief-item[data-kind='autonomy'] .brief-head {
+  font-size: 17px;
+  font-weight: 700;
+  font-stretch: 100%;
+  line-height: 1.3;
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 14px rgba(109, 255, 164, 0.35);
+}
+.sheet.brief .brief-item[data-kind='autonomy'] .brief-line {
+  color: var(--ph-1);
+}
+.sheet.brief .brief-item[data-kind='autonomy'] .brief-acts {
+  margin-top: 18px;
+  gap: 10px 12px;
+}
+.sheet.brief .brief-item[data-kind='autonomy'] .brief-line {
+  color: var(--ph-2);
+}
+/*
+ * Grant: a guarded key. A dark guard ring round a lit key, a recessed seal at its left with a lit diamond set in it,
+ * a bevel on every edge. Nothing else on the page is built like it.
+ */
+.sheet.brief .brief-act[data-weight='grant'] {
+  height: 40px;
+  padding: 0 22px 0 52px;
+  font-size: 12.5px;
+  font-weight: 760;
+  font-stretch: 87.5%;
+  color: #01140a;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 45%),
+    linear-gradient(180deg, #9dffc2 0%, var(--ph) 50%, #2fc46f 100%);
+  border-radius: 3px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 1px 0 0 rgba(255, 255, 255, 0.25),
+    inset 0 -3px 0 rgba(0, 70, 30, 0.5),
+    0 0 0 1px #01140a,
+    0 0 0 5px rgba(0, 10, 4, 0.95),
+    0 0 0 6px rgba(109, 255, 164, 0.55),
+    0 0 26px 4px rgba(109, 255, 164, 0.4),
+    0 14px 24px -8px rgba(0, 0, 0, 0.9);
+}
+.sheet.brief .brief-act[data-weight='grant']::before {
+  left: 6px;
+  top: 6px;
+  bottom: 6px;
+  width: 32px;
+  height: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 2px;
+  opacity: 1;
+  /* the seal: a lit core inside a lit ring, set in a dark well */
+  background:
+    radial-gradient(circle at 50% 50%, var(--ph-hi) 0 2.5px, transparent 3px),
+    radial-gradient(circle at 50% 50%, transparent 0 6px, var(--ph) 6.5px 8px, transparent 8.5px),
+    radial-gradient(circle at 50% 50%, rgba(109, 255, 164, 0.4), transparent 70%),
+    #032113;
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.8), inset 0 -1px 0 rgba(160, 255, 200, 0.25), 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.sheet.brief .brief-act[data-weight='grant']::after {
+  display: none;
+}
+.sheet.brief .brief-act[data-weight='grant']:hover {
+  color: #000;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 45%),
+    linear-gradient(180deg, #b8ffd3 0%, #86ffb6 50%, #3ad67c 100%);
+}
+.sheet.brief .brief-act[data-weight='grant']:hover::before {
+  transform: none;
+}
+.sheet.brief .brief-act[data-weight='grant']:active {
+  transform: translateY(1px);
+}
+.sheet.brief .brief-act[data-weight='grant']:focus-visible {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 0 0 1px #01140a, 0 0 0 5px rgba(0, 10, 4, 0.95), 0 0 0 7px var(--ph-hi), 0 0 30px 6px rgba(109, 255, 164, 0.6);
+}
+
+/* The agreement: the master's record with him on this kind of work, one cell a decision. */
+.ph-agree {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 14px 0 12px;
+  padding: 12px 14px;
+  border-radius: 3px;
+  background: rgba(0, 6, 2, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(109, 255, 164, 0.18), inset 0 8px 16px -8px rgba(0, 0, 0, 0.8);
+}
+.ph-agree-fig {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: none;
+}
+.ph-agree-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-stretch: 100%;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--ph);
+  text-shadow: 0 0 12px rgba(109, 255, 164, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+.ph-agree-of {
+  margin-left: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ph-3);
+  text-shadow: none;
+}
+.ph-agree-cells {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(25, 1fr);
+  gap: 3px;
+}
+.ph-agree-cells > span {
+  height: 9px;
+  border-radius: 1px;
+}
+.ph-agree-cells > .on {
+  background: linear-gradient(180deg, #b0ffd0, var(--ph) 60%, #3fd780);
+  box-shadow: 0 0 5px rgba(109, 255, 164, 0.5);
+}
+.ph-agree-cells > .off {
+  box-shadow: inset 0 0 0 1px rgba(255, 199, 110, 0.7);
+}
+
+/* ---------------------------------------------------------------- handled, acted, the reason, the quiet lines */
+
+.sheet.brief .brief-handled-head {
+  margin-top: 18px;
+  padding: 8px 0 6px;
+  border-bottom: 1px dashed rgba(109, 255, 164, 0.14);
+  font-family: var(--ph-mono);
+  font-size: 10.5px;
+  font-stretch: 75%;
+  color: var(--ph-3);
+}
+.sheet.brief .brief-handled .brief-item {
+  padding: 9px 0 9px 18px;
+}
+.sheet.brief .brief-handled .brief-item::before {
+  top: 14px;
+  height: 6px;
+  background: var(--ph-3) !important;
+  box-shadow: none !important;
+  opacity: 0.6;
+}
+.sheet.brief .brief-handled .brief-head {
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--ph-2);
+}
+.sheet.brief .brief-handled .brief-line {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ph-3);
+}
+.sheet.brief .brief-handled .brief-dateline {
+  color: var(--ph-3);
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+.sheet.brief .brief-handled .brief-acts {
+  margin-top: 6px;
+}
+.sheet.brief .brief-acted {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-family: var(--ph-mono);
+  font-style: normal;
+  font-size: 10.5px;
+  font-weight: 500;
+  font-stretch: 75%;
+  color: var(--ph);
+}
+.sheet.brief .brief-acted::before {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg) translateY(-2px);
+}
+.sheet.brief .brief-item[data-acted='dismiss'] .brief-acted {
+  color: var(--ph-3);
+}
+.sheet.brief .brief-item[data-acted='dismiss'] .brief-head,
+.sheet.brief .brief-item[data-acted='dismiss'] .brief-sentence {
+  color: var(--ph-3);
+}
+.sheet.brief .brief-quiet {
+  font-family: var(--ph-mono);
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ph-3);
+}
+.sheet.brief .brief-error {
+  font-size: 11px;
+  color: var(--ph-fail);
+}
+.sheet.brief .brief-why {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-left: 0;
+  border-radius: 3px;
+  background: rgba(0, 3, 1, 0.6);
+  box-shadow: inset 0 0 0 1px var(--ph-line), inset 3px 0 0 var(--ph);
+}
+.sheet.brief .brief-why-text,
+.sheet.brief .brief-why-summary {
+  font-family: var(--ph-mono);
+  font-style: normal;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ph-2);
+}
+.sheet.brief .brief-why-link {
+  color: var(--ph);
+  text-decoration-color: rgba(109, 255, 164, 0.4);
+}
+.sheet.brief .brief-cap,
+.sheet.brief .brief-cap-until {
+  font-family: var(--ph-mono);
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ph-2);
+}
+.sheet.brief .brief-cap-input {
+  font-family: var(--ph-mono);
+  color: var(--ph-hi);
+  border-bottom-color: var(--ph);
+}
+.sheet.brief .prop-tier-choice {
+  font-family: var(--ph-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet.brief,
+  .sheet.brief.open {
+    transform: none;
+    transition: opacity 0.2s ease;
+  }
+  .sheet.brief::after,
+  .sheet.brief .brief-sec[data-sec='waiting'] .repos-sec::before {
+    animation: none !important;
+  }
+  .sheet.brief .brief-act::before,
+  .sheet.brief .brief-act::after {
+    transition: none;
+  }
+}
+
+/* Handled today: one compact line of keys beside what he did. */
+.sheet.brief .brief-handled .brief-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+}
+.sheet.brief .brief-handled .brief-sentence {
+  flex-basis: 100%;
+}
+.sheet.brief .brief-handled .brief-acts {
+  margin: 4px 0 0 -10px;
+}
+.sheet.brief .brief-handled .brief-acted {
+  margin-top: 4px;
+}
+
+/* A narrow window: smaller meters and figures, and the since readout steps out, so the head never spills. */
+.sheet.brief {
+  container-type: inline-size;
+  container-name: ph;
+}
+@container ph (max-width: 640px) {
+  .ph-readouts {
+    gap: 14px 16px;
+  }
+  .ph-figures {
+    gap: 16px;
+  }
+  .ph-figure.quiet {
+    display: none;
+  }
+  .ph-figure-value {
+    font-size: 20px;
+  }
+  .ph-meter {
+    grid-template-columns: 38px auto 30px;
+    gap: 8px;
+  }
+  .ph-cells {
+    gap: 1.5px;
+  }
+  .ph-cell {
+    width: 4px;
+  }
+}

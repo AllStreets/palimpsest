@@ -52,6 +52,7 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 | `newsreader.woff2`, `newsreader-italic.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type | Repo names, era headings |
 | `plex-sans.woff2` | [IBM Plex Sans](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Interface text |
 | `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Commit and PR refs |
+| `martian-mono.woff2` | [Martian Mono](https://github.com/evilmartians/mono) | Evil Martians | The Brief in direction A, Phosphor (license text in `martian-mono-OFL.txt`) |
 | `docs/brand/fonts/Cinzel*.ttf` | [Cinzel](https://github.com/NDISCOVER/Cinzel) | Natanael Gama, The Cinzel Project Authors | The letterforms of the 3D wordmark and the P of the app mark (license text in `docs/brand/fonts/OFL-Cinzel.txt`) |
 
 ## Brand and media
