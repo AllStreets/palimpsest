@@ -16,8 +16,9 @@
  * screen over the screens framing), brief-scrolled.png (its body scrolled to
  * the end), brief-overview.png (over the overview, the city at its
  * brightest framing), brief-autonomy.png (the city's autonomy ask at the
- * top), brief-1280.png (a 1280 x 800 window) and brief-reduced-motion.png
- * (prefers-reduced-motion emulated).
+ * top), brief-1280.png (a 1280 x 800 window), brief-reduced-motion.png
+ * (prefers-reduced-motion emulated) and brief-closed.png (the city over the
+ * first still's framing once the Brief has closed, its own plates back).
  *
  * frames, at perf's 1512 x 890 window and 2x, on high and on medium with
  * the governor held: the city alone from home, then the Brief open over it,
@@ -120,6 +121,11 @@ async function stills(out: string, browser: import('playwright').Browser): Promi
       b.scrollTop = 0;
     });
     await shot(page, 'brief-overview');
+    // The Brief closed again over the first still's framing: the city's own plates are back, the HUD gone.
+    await toCity(page);
+    await view(page, f.screens);
+    await page.waitForTimeout(1500);
+    await shot(page, 'brief-closed');
     await page.close();
   }
   {

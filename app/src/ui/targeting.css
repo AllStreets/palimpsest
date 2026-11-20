@@ -86,7 +86,8 @@
     radial-gradient(70% 40% at 100% 100%, rgba(var(--tg-red-rgb), 0.05), transparent 70%),
     linear-gradient(to bottom, rgba(255, 210, 150, 0.03), transparent 18%, transparent 70%, rgba(0, 0, 0, 0.3)),
     linear-gradient(to right, rgba(var(--tg-black), 0.94), rgba(var(--tg-black), 0.9) 70%, rgba(var(--tg-black), 0.8));
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  /* Cast on the back pane at its right and foot, and on the city beyond. */
+  box-shadow: 16px 14px 26px -12px rgba(0, 0, 0, 0.85), 0 30px 80px rgba(0, 0, 0, 0.55);
 }
 .tg-marks {
   position: absolute;
@@ -176,16 +177,44 @@
 .sheet.brief.tg.open .sheet-body {
   animation-delay: 0.12s;
 }
+/* The reveal's clip stands well outside the box at rest, so the head's shadow and its proud left edge show whole. */
 @keyframes tg-reveal {
   from {
     opacity: 0;
-    clip-path: inset(0 0 100% 0);
+    clip-path: inset(-60px -60px 100% -60px);
   }
   to {
     opacity: 1;
-    clip-path: inset(0 0 0 0);
+    clip-path: inset(-60px -60px -60px -60px);
   }
 }
+
+/* ---------------------------------------------------------------- the depths: a back pane, the list, the head nearest */
+
+/*
+ * Three panes at three depths. The back pane stands behind the panel, out past its right and foot, lit along its own
+ * edges; the panel holds the list; the head is a plate nearer still, proud of the panel at the left, lit along its top
+ * and left edges and casting down and right onto the list. Hovering the panel moves the head with the pointer and
+ * the back pane against it, by transform only (brief.ts), a few pixels at most.
+ */
+.tg-plane {
+  position: absolute;
+  top: 46px;
+  bottom: -18px;
+  left: 40px;
+  right: -26px;
+  z-index: -3;
+  pointer-events: none;
+  background:
+    linear-gradient(to left, rgba(var(--tg-amber-rgb), 0.5), rgba(var(--tg-amber-rgb), 0.04) 45%) bottom / 100% 1px no-repeat,
+    linear-gradient(to top, rgba(var(--tg-amber-rgb), 0.45), rgba(var(--tg-amber-rgb), 0.05) 60%) right / 1px 100% no-repeat,
+    linear-gradient(to left, rgba(var(--tg-amber-rgb), 0.12), transparent 14px) right / 14px 100% no-repeat,
+    repeating-linear-gradient(to bottom, rgba(var(--tg-amber-rgb), 0.16) 0 1px, transparent 1px 8px) right / 4px 100% no-repeat,
+    linear-gradient(to bottom, rgba(var(--tg-black), 0.5), rgba(var(--tg-black), 0.72));
+  transition: transform 0.6s var(--tg-ease);
+  will-change: transform;
+}
+
 
 /* ---------------------------------------------------------------- the stream behind the list */
 
@@ -230,19 +259,39 @@
 
 .sheet.brief.tg .sheet-head {
   position: relative;
-  z-index: 1;
-  margin: 7px 7px 0;
-  padding: 19px 33px 18px 27px;
-  /* The head is its own plate: darker, lit along its top, a graticule behind the rangefinders, a shadow cast on the list. */
+  z-index: 4;
+  margin: 14px 22px 0 -14px;
+  padding: 19px 26px 18px 41px;
+  /*
+   * The head is the nearest plate: proud of the panel at the left, denser, lit along its top and left edges in the
+   * HUD's warm white, a graticule behind the rangefinders, and a long shadow cast down and right onto the list.
+   */
   background:
-    linear-gradient(to right, rgba(5, 3, 2, 0.9) 50%, rgba(5, 3, 2, 0) 75%),
+    linear-gradient(to right, rgba(255, 226, 180, 0.75), rgba(var(--tg-amber-rgb), 0.35) 40%, rgba(var(--tg-amber-rgb), 0.04)) top / 100% 1px no-repeat,
+    linear-gradient(to bottom, rgba(255, 226, 180, 0.6), rgba(var(--tg-amber-rgb), 0.08)) left / 1px 100% no-repeat,
+    radial-gradient(80% 120% at 0% 0%, rgba(var(--tg-amber-rgb), 0.1), transparent 60%),
     radial-gradient(circle, rgba(var(--tg-amber-rgb), 0.16) 0.75px, transparent 1.2px) right top / 14px 14px,
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.28));
+    linear-gradient(to bottom, rgba(16, 10, 6, 0.97), rgba(10, 6, 4, 0.96));
   box-shadow:
-    inset 0 1px 0 rgba(255, 210, 150, 0.08),
-    inset 0 -1px 0 rgba(var(--tg-amber-rgb), 0.22),
-    0 14px 24px -12px rgba(0, 0, 0, 0.8);
+    inset 0 -1px 0 rgba(var(--tg-amber-rgb), 0.28),
+    0 26px 34px -18px rgba(0, 0, 0, 0.95),
+    18px 10px 34px -22px rgba(0, 0, 0, 0.9),
+    -6px 0 18px -10px rgba(0, 0, 0, 0.7);
   border-bottom: none;
+  transition: transform 0.6s var(--tg-ease);
+  will-change: transform;
+}
+/* The head's own two ticks at its proud corner, the panel's brackets standing behind it. */
+.sheet.brief.tg .sheet-head::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  width: 14px;
+  height: 14px;
+  border-top: 2px solid var(--tg-amber-hi);
+  border-left: 2px solid var(--tg-amber-hi);
+  pointer-events: none;
 }
 
 .tg-kicker {
@@ -1118,8 +1167,9 @@
   }
 }
 .tg-tele {
+  /* At the frame's foot, so the sky under the tape stays clear for the leader's channel. */
   position: absolute;
-  top: 16px;
+  bottom: 14px;
   left: 18px;
   display: flex;
   flex-direction: column;
@@ -1395,11 +1445,56 @@
   color: var(--tg-dim);
 }
 
+/* A quiet pin: a district with nothing waiting, its name only, dim, on a thin ground; it never lifts and gives way. */
+.tg-pin.quiet.on {
+  opacity: 0.88;
+}
+.tg-pin.quiet .tg-pin-mark {
+  left: -3px;
+  top: -3px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(var(--tg-amber-rgb), 0.6);
+  box-shadow: none;
+}
+.tg-pin.quiet .tg-pin-tag {
+  display: block;
+  left: 8px;
+  bottom: 9px;
+  padding: 1px 6px 2px 5px;
+  background: rgba(var(--tg-black), 0.62);
+  box-shadow: inset 1px 0 0 rgba(var(--tg-amber-rgb), 0.45);
+}
+.tg-pin.quiet .tg-pin-tag::before {
+  left: -8px;
+  bottom: -9px;
+  width: 8px;
+  height: 9px;
+  border-color: rgba(var(--tg-amber-rgb), 0.38);
+}
+.tg-pin.quiet .tg-pin-name {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #d6c3aa;
+}
+
+/* One set of labels: while the HUD is up the city's own plates fade, and come back as it closes. */
+.plates {
+  transition: opacity 0.45s ease;
+}
+html[data-tg-hud='on'] .plates {
+  opacity: 0;
+}
+html[data-tg-hud='on'] .plates .plate {
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------- a narrow window */
 
 @media (max-width: 1360px) {
   .sheet.brief.tg .sheet-head {
-    padding: 20px 32px 14px 26px;
+    padding: 20px 22px 14px 38px;
   }
   .sheet.brief.tg .sheet-body {
     padding: 0 32px 56px 26px;
@@ -1448,7 +1543,11 @@
   .tg-hud,
   .tg-pin,
   .tg-lock,
-  .tg-lines {
+  .tg-lines,
+  .plates,
+  .tg-plane,
+  .sheet.brief.tg .sheet-head,
+  .sheet.brief.tg .brief-item {
     transition: none;
   }
 }

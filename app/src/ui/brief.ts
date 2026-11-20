@@ -215,6 +215,38 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   for (const c of ['tl', 'tr', 'bl', 'br']) marks.append(el('span', `tg-corner ${c}`));
   marks.append(el('span', 'tg-rail'), el('span', 'tg-scan'));
   sheet.root.append(marks);
+  // The back pane, the farthest of the three depths (the list's panel, then the head nearest).
+  const plane = el('div', 'tg-plane');
+  plane.setAttribute('aria-hidden', 'true');
+  sheet.root.prepend(plane);
+  // Parallax on hover: the head follows the pointer across the panel and the back pane moves against it, a few
+  // pixels each, by transform alone, written once a frame at most. At rest when the pointer leaves or motion is reduced.
+  let tilt = 0;
+  let tiltAt = { x: 0, y: 0 };
+  let panel: DOMRect | null = null;
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const lean = (): void => {
+    tilt = 0;
+    const { x, y } = tiltAt;
+    head.style.transform = x || y ? `translate3d(${(x * 5).toFixed(2)}px, ${(y * 3.5).toFixed(2)}px, 0)` : '';
+    plane.style.transform = x || y ? `translate3d(${(x * -7).toFixed(2)}px, ${(y * -5).toFixed(2)}px, 0)` : '';
+  };
+  sheet.root.addEventListener('pointerenter', () => {
+    panel = sheet.root.getBoundingClientRect();
+  });
+  sheet.root.addEventListener('pointermove', (e) => {
+    if (still.matches || !panel) return;
+    tiltAt = {
+      x: Math.max(-1, Math.min(1, ((e.clientX - panel.left) / panel.width) * 2 - 1)),
+      y: Math.max(-1, Math.min(1, ((e.clientY - panel.top) / panel.height) * 2 - 1)),
+    };
+    if (!tilt) tilt = requestAnimationFrame(lean);
+  }, { passive: true });
+  sheet.root.addEventListener('pointerleave', () => {
+    panel = null;
+    tiltAt = { x: 0, y: 0 };
+    if (!tilt) tilt = requestAnimationFrame(lean);
+  });
   const stream = createStream(sheet.root);
   const hud = createHud(parent, sheet.root, sheet.body, opts.city);
   // The window the brief covers, as a readout under the day (the day is the heading; nothing stands over it).

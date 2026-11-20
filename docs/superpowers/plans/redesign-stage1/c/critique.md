@@ -121,3 +121,62 @@ What remains, below the anti-goal level, for Stage 2 if this direction is picked
 The Brief open is within 1.3% of main's on high and equal on medium, well inside the 10% gate. The city-alone rows sit within run-to-run noise of every baseline run: the HUD's frame hook is registered only while the Brief is open, and its layer is display: none otherwise.
 
 What keeps it cheap: no backdrop-filter anywhere; the frame hook projects at most one point pair per district (six here) and writes transforms, plus one SVG path's points; a tower's frame is re-read every 90 frames, not every frame; the active row's position is read only when the list scrolls or the lock moves, never in a frame that wrote; the stream is 18 columns of text, each a composited layer moved by transform; the sweep, the ring and the seal move by transform; the glows are static shadows.
+
+# Continuing C after the pick: four changes
+
+Connor picked C and asked for four changes before the design is locked: one set of labels in the city, B's depth, the running head in C's language, and leaders that never cross another pin. Same harness, a fresh scratch home (port 4789, the GPU lock held), seven stills now: the six plus `brief-closed.png`.
+
+**The choice on labels.** While the Brief is open the city's own plates (Newsreader, cream) fade out over 0.45 s and the HUD names the towers alone. A district with something waiting keeps its numbered amber pin; **a repo district with nothing waiting gets a quiet pin** (a 6 px tick and its name, dim, on a thin ground, never numbered, never lifted, and it waits rather than cover a target's tag). The firms' quarters and the exchange are not districts and get no pin: while the Brief is open the city is read as the brief's targets and where the rest of the repos stand, and the firms' standings are another screen's. Quiet pins beat hiding because, with the plates gone, a tower with nothing on it would otherwise be nameless, and the lock reads stronger against named neighbours than against blanks. When the Brief closes the plates come back (`brief-closed.png`).
+
+## Round 7
+
+Changes: the plates handoff and quiet pins; a back pane behind the panel, the head made a nearer plate (proud of the panel at the left, lit along its top and left edges, a long shadow down and right), hover parallax on the head and the back pane by transform only; the running head in Big Shoulders, the current place in amber corner ticks, Find as a cold key with its shortcut in its own window, a ruled tape under the head; the leader routed in right angles through clear channels, every pin, its stem and the lock's tag treated as boxes to keep 7 px clear of.
+
+What works:
+- One voice in the city. "quarry" and "blank-slate" stand as quiet pins beside the numbered ones; nothing in Newsreader is left over the HUD.
+- The head reads as the nearest plate: it overhangs the panel's left bracket and casts onto the list.
+- The running head no longer looks like a book's title line: "Palimpsest" in the condensed face, a divider tick, the places, the current one held in ticks exactly as a target is held in the list.
+
+Weaknesses:
+1. **The leader still cuts the skyline.** With no cost on the way it arrives, it came in level at the ring's height (brief) or climbed the target tower's own face from below (overview, 1280), drawn across lit glass.
+2. **The back pane reads as a stray strip** beside the rail, too narrow and too dim to say "pane".
+
+## Round 8
+
+Changes: the router prefers arriving from above (level costs more, from below most), so the line climbs at the pane's edge, crosses the sky and comes down onto the ring; the back pane stands wider and lower, lit on its right and foot, the panel casting onto it.
+
+What works: in every still the leader leaves the row, runs up the frame's edge, crosses the sky above every tag and drops onto the ring; it crosses no pin, no stem and no tag.
+
+Weaknesses:
+1. **The channel grazes the telemetry** ("track 06" at the frame's top left) in brief-overview and brief-1280, the line running under its letters.
+2. **The stub column sits on the back pane's lit edge**, two parallel lines a pixel apart.
+
+## Round 9 (final)
+
+Changes: the telemetry moves to the frame's foot and is itself a box the router avoids; the stub column stands 44 px out from the rail, clear of the back pane's edge.
+
+What the final stills show:
+- brief, brief-autonomy, brief-1280 and brief-overview: the leader in three or four right-angled runs with cut corners, clear of kumo's and assay-kit's stepped tags, of the lock's flipped tag and of the telemetry; nothing in the city is crossed.
+- brief-closed: the plates back in Newsreader under the running head, which now marks City in its ticks.
+- brief-scrolled: rows slide under the head plate, its shadow falling on them; the leader is gone while no waiting row is on screen.
+- brief-reduced-motion: no parallax, no transition on the plates or panes; everything at rest.
+
+The parallax never shows in a still (the harness parks the pointer outside the panel). Over the panel it moves the head up to 5 px with the pointer and the back pane up to 7 px against it, transform only, one write a frame at most.
+
+What remains for Stage 2:
+1. Only one leader is drawn at a time, so the rule "offset two lines that would cross" applies to the leader against the pins' own stepped stems (each stem is part of its pin's box). If Stage 2 draws a leader per visible row, the router should take the leaders already placed as boxes too.
+2. The firms and the exchange are unnamed while the Brief is open; if that is missed, they can join as quiet pins.
+3. The running head's new face holds 4.5:1 over lit glass (the scrim test reads it), but the other screens still use Plex and Newsreader under it. Stage 2 should carry the language down into them.
+
+## The perf gate, after the four changes
+
+`tools/redesign-brief.ts frames`, uncapped, main (4c19608, the baseline worktree) then C's round 9 build, in the same sitting, the GPU lock held:
+
+| Tier | View | Main, same sitting | C round 9 |
+| --- | --- | --- | --- |
+| high | city alone | 8.80 ms (p95 9.80) | 8.60 ms (p95 9.80) |
+| high | Brief open | 8.00 ms (p95 8.90) | 7.90 ms (p95 9.20) |
+| medium | city alone | 4.80 ms (p95 6.10) | 4.80 ms (p95 6.10) |
+| medium | Brief open | 4.60 ms (p95 6.20) | 4.50 ms (p95 5.20) |
+
+The Brief open sits at or under main's on both tiers, well inside the 10% gate. The plates still place themselves under the HUD (they fade as one layer, by opacity), so the city costs what it did; the quiet pins add one projection pair per district; the router runs only when a pin, the lock or the row has moved by a pixel; the parallax writes two transforms a frame at most, and only while the pointer moves over the panel.

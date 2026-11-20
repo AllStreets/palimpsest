@@ -35,7 +35,10 @@ export function createRunhead(parent: HTMLElement): Runhead {
   const count = el('span', 'runhead-count', '0');
   count.style.visibility = 'hidden';
   count.setAttribute('aria-hidden', 'true');
-  nav.append(icon, mark);
+  // The stone mark and the name as one plate (redesign C sets it in the HUD's display face).
+  const brand = el('span', 'runhead-brand');
+  brand.append(icon, mark);
+  nav.append(brand);
   for (const { route, name: text } of SCREENS) {
     const a = el('a', 'runhead-link', text);
     a.href = routeHref(route);
