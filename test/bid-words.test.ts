@@ -31,3 +31,11 @@ test("the market's terms are glossed where the bids are read, in plain words (au
   assert.match(terms.get('EV')!.means, /cheaper bid can lose/);
   for (const t of BID_TERMS) assert.doesNotMatch(t.means, /\u2014|\u2013|--/);
 });
+
+test('a job cooling off says plainly that no firm took it and when bids open next', async () => {
+  const { nextBidsWords } = await import('../app/src/ui/bid-words.js');
+  const now = new Date(2026, 10, 19, 21, 0).getTime();
+  assert.equal(nextBidsWords(1, new Date(2026, 10, 19, 21, 40).toISOString(), now), 'No firm took it last round. Next bids at 21:40.');
+  assert.equal(nextBidsWords(4, new Date(2026, 10, 19, 23, 20).toISOString(), now), 'No firm took it in the last 4 rounds. Next bids at 23:20.');
+  assert.equal(nextBidsWords(9, new Date(2026, 10, 20, 21, 0).toISOString(), now), 'No firm took it in the last 9 rounds. Next bids tomorrow at 21:00.');
+});

@@ -78,6 +78,19 @@ export const CREDITS_PER_USD = 20;
 /** Continuous hours below zero before a firm is bankrupt (ruling 6). */
 export const BANKRUPT_HOURS = 72;
 
+/**
+ * How long a job waits before its next round of bids after rounds in a row
+ * that awarded nothing (the economy change of Nov 19): the first wait, which
+ * doubles with each such round, and the longest it can grow to.
+ */
+export const BID_COOL_OFF = { firstMs: 10 * 60_000, capMs: 24 * 3600_000 } as const;
+
+/** The wait after `rounds` rounds in a row with no award: 10 min x 2^(rounds - 1), at most 24 hours. */
+export function coolOffMs(rounds: number): number {
+  const k = Math.max(1, Math.floor(Number.isFinite(rounds) ? rounds : 1));
+  return Math.min(BID_COOL_OFF.capMs, BID_COOL_OFF.firstMs * 2 ** Math.min(k - 1, 32));
+}
+
 /** Rounds away floating point noise (0.9 * 0.8 is 0.7200000000000001), so the books show the numbers people expect. */
 function tidy(x: number): number {
   return Math.round(x * 1e9) / 1e9;

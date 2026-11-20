@@ -256,6 +256,8 @@ test('job detail carries bids, award, sat-out agents and ledger', async () => {
 
   const fresh = await call('GET', `/api/jobs/${postJob(['**']).id}`);
   assert.equal(fresh.json.award, null, 'a job never awarded has no award');
+  assert.equal(fresh.json.nextBids, null, 'a job that has not waited out a round has no next bids time');
+  assert.equal(d.json.nextBids, null, 'nor has an awarded one');
   assert.deepEqual(fresh.json.satOut, [], 'a job with no round has no one sitting out');
   assert.equal((await call('GET', '/api/jobs/job-nope')).status, 404);
 });
@@ -1325,4 +1327,14 @@ test('no view carries a path of this Mac', async () => {
   const detail = await call('GET', `/api/jobs/${made.json.id}`);
   assert.ok(!detail.text.includes('/Users/someone'), 'title, body and acceptance are scrubbed');
   assert.ok(!(await call('GET', '/api/jobs')).text.includes('/Users/someone'));
+});
+
+test('a job cooling off after a round with no award says when its next bids open', async () => {
+  repoOf();
+  const posted = postJob(['**']);
+  const until = new Date(Date.now() + 40 * 60_000).toISOString();
+  record('job.awarded', { jobId: posted.id, tier: 'normal', considered: [], satOut: [], chosen: null, why: 'No bids came in.', at: new Date().toISOString(), coolOffUntil: null, noAwardRounds: 2 });
+  record('job.awarded', { jobId: posted.id, tier: 'normal', considered: [], satOut: [], chosen: null, why: 'No bids came in.', at: new Date().toISOString(), coolOffUntil: until, noAwardRounds: 3 });
+  const d = await call('GET', `/api/jobs/${posted.id}`);
+  assert.deepEqual(d.json.nextBids, { at: until, rounds: 2 });
 });

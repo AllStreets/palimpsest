@@ -43,6 +43,7 @@ function detail(i: number, plan = 'Add the retry.'): JobDetail {
     runs: [{ id: `run-${i}`, bidId: `bid-${i}`, progress: { filesChanged: 2 } } as unknown as JobDetail['runs'][number]],
     inspections: [{ id: `insp-${i}`, runId: `run-${i}`, passed: true, pushable: true, checks: [] } as unknown as JobDetail['inspections'][number]],
     ledger: [],
+    nextBids: null,
     school: { appraisal: null, router: [], durability: null, master: null },
   };
 }

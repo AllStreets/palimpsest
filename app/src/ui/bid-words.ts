@@ -4,6 +4,7 @@
  * as in Phase 2, or the school's appraiser once it is trusted and on.
  */
 import type { Bid } from '../../../shared/types.js';
+import { clock } from './time-words.js';
 
 /** The phrase under the "City's estimate" header for the firm's pass rate (Phase 2's words). */
 export const FIRM_ESTIMATE = "How often this firm's work of this size has passed";
@@ -40,3 +41,16 @@ export const BID_TERMS: ReadonlyArray<{ term: string; name: string; means: strin
   { term: 'Calibrated', name: 'calibrated chance', means: 'that chance as the city counts it, trimmed when the firm’s past bids claimed more than its work bore out' },
   { term: 'EV', name: 'expected value', means: 'what the job is worth, times the calibrated chance, less the price; the highest wins, so a cheaper bid can lose to one more likely to pass' },
 ];
+
+/**
+ * A job cooling off after rounds no firm took, in a sentence for its page:
+ * "No firm took it last round. Next bids at 21:40."
+ */
+export function nextBidsWords(rounds: number, at: string, now: number): string {
+  const when = new Date(at);
+  const day = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(when) - day(new Date(now))) / 86_400_000);
+  const time = days <= 0 ? `at ${clock(when)}` : days === 1 ? `tomorrow at ${clock(when)}` : `${when.toLocaleDateString('en-GB', { weekday: 'long' })} at ${clock(when)}`;
+  const took = rounds > 1 ? `No firm took it in the last ${rounds} rounds.` : 'No firm took it last round.';
+  return `${took} Next bids ${time}.`;
+}

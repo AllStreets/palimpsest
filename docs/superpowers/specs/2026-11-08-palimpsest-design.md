@@ -129,6 +129,7 @@ A job comes from: a labelled GitHub issue, a README-versus-reality proposal, a d
 - **Reputation:** pass rate by job size, plus calibration (Brier score of stated confidence against outcomes), plus durability (merges not later reverted).
 - **Money:** a firm is paid its bid on merge; on failure it eats what it spent. A firm whose treasury stays negative past a grace period goes bankrupt.
 - **Hiring:** a firm can pay the school to breed a specialist or hire a graduate.
+- **Cooling off (Nov 19):** after k rounds in a row that award nothing, a job waits 10 min x 2^(k-1), at most 24 hours, before its next round. An award, his edit of the job or a retry starts the count again. The job's page says so: "No firm took it last round. Next bids at 21:40."
 
 ### 7.3 Credits and the treasury
 

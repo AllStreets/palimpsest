@@ -662,3 +662,68 @@ test("a trusted appraiser moves the award, and with the school off the award is 
   installNet(broken('appraiser-pass', 2));
   assert.equal(await awardOnce(), 'quick');
 });
+
+// ---------------------------------------------------------------- cooling off (economy change A)
+
+test('each round in a row that awards nothing doubles the wait before the next, up to a day', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  addAgent('small-only', 'alpha', 'ollama:qwen', { bidsOn: ['low'] });
+  const j = bidding('high');
+  let t = NOW;
+  const waits: number[] = [];
+  for (let k = 1; k <= 10; k++) {
+    assert.equal(award(job(j.id) as Job, t + 1), null);
+    const c = coolOff(j.id);
+    assert.equal(c.rounds, k);
+    waits.push(Math.round(((c.until as number) - (t + 1)) / MIN));
+    // Not a moment before the wait is over.
+    assert.equal(openBidding(job(j.id) as Job, (c.until as number) - 1).status, 'open');
+    t = c.until as number;
+    assert.equal(openBidding(job(j.id) as Job, t).status, 'bidding');
+  }
+  assert.deepEqual(waits, [10, 20, 40, 80, 160, 320, 640, 1280, 1440, 1440]);
+  const last = entries().filter((e) => e.kind === 'job.awarded').at(-1)!.data as { why: string; noAwardRounds: number };
+  assert.equal(last.noAwardRounds, 10);
+  assert.match(last.why, /opens again after 24 hours/);
+});
+
+test('an award, an edit or a retry starts the count again', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  const { setTier } = await import('../engine/market/jobs.js');
+  addAgent('small-only', 'alpha', 'ollama:qwen', { bidsOn: ['low'] });
+  const j = bidding('high');
+  award(job(j.id) as Job, NOW + 1);
+  openBidding(job(j.id) as Job, NOW + 1 + BID_COOL_OFF_MS);
+  award(job(j.id) as Job, NOW + 2 + BID_COOL_OFF_MS);
+  assert.equal(coolOff(j.id).rounds, 2);
+
+  // His edit: the count is back at nothing and the job opens for bids straight away.
+  setTier(j.id, 'normal');
+  assert.deepEqual(coolOff(j.id), { rounds: 0, until: null });
+  assert.equal(openBidding(job(j.id) as Job, NOW + 3 + BID_COOL_OFF_MS).status, 'bidding');
+  const t = NOW + 4 + BID_COOL_OFF_MS;
+  award(job(j.id) as Job, t);
+  assert.equal(coolOff(j.id).rounds, 1);
+  assert.equal(coolOff(j.id).until, t + BID_COOL_OFF_MS);
+
+  // A retry (failed back to open) starts it again too.
+  const cur = job(j.id) as Job;
+  record('job.changed', { id: j.id, from: 'failed', to: 'open', job: cur });
+  assert.deepEqual(coolOff(j.id), { rounds: 0, until: null });
+
+  // And an award ends the run of empty rounds.
+  addAgent('taker', 'beta', 'ollama:qwen');
+  script({ taker: { price: 5, confidence: 0.9 } });
+  const win = getSettings().bidWindowSec * 1000;
+  const k = bidding('normal');
+  // The round closes with nobody's bid in: an empty round.
+  award(job(k.id) as Job, NOW + win);
+  openBidding(job(k.id) as Job, NOW + win + BID_COOL_OFF_MS);
+  award(job(k.id) as Job, NOW + 2 * win + BID_COOL_OFF_MS);
+  assert.equal(coolOff(k.id).rounds, 2);
+  const t2 = coolOff(k.id).until as number;
+  openBidding(job(k.id) as Job, t2);
+  await collectBids(job(k.id) as Job, t2);
+  assert.equal(award(job(k.id) as Job, t2 + 1)?.agentId, 'taker');
+  assert.deepEqual(coolOff(k.id), { rounds: 0, until: null });
+});

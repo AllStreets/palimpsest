@@ -56,7 +56,7 @@ import { handleSchoolApi, schoolScrub, voyageOut } from '../school/api.js';
 import { jobSchool } from '../school/decisions.js';
 import { providerUsages } from '../providers-usage.js';
 import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
-import { bidList } from './bids.js';
+import { bidList, coolOff } from './bids.js';
 import { MAX_RESUME_MS, SPEND_KINDS, treasury, type SpendKind } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
 import { job, listJobs, postManualJob, redact, repost, setScope, setTier, transition, withdrawable } from './jobs.js';
@@ -258,8 +258,17 @@ function jobDetail(j: Job): JobDetail {
     runs: runs.map(publicRun),
     inspections: runs.flatMap((r) => inspectionsOfRun(r.id)).map((i) => inspectionView(i, false)),
     ledger,
+    nextBids: nextBidsOf(j),
     school: jobSchool(j),
   };
+}
+
+/** When an open job's next round opens, while it cools off after rounds that awarded nothing. */
+function nextBidsOf(j: Job): JobDetail['nextBids'] {
+  if (j.status !== 'open') return null;
+  const c = coolOff(j.id);
+  if (c.until === null || c.until <= Date.now()) return null;
+  return { at: new Date(c.until).toISOString(), rounds: c.rounds };
 }
 
 function text(b: Record<string, unknown>, key: string, max: number, required: boolean): string | undefined {

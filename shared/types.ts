@@ -641,6 +641,12 @@ export interface JobDetail {
   inspections: InspectionView[];
   ledger: LedgerRow[];
   /**
+   * While the job waits out its cooling off after rounds that awarded
+   * nothing: when its next round of bids opens, and how many rounds in a row
+   * no firm took it. Null when it is not waiting.
+   */
+  nextBids: { at: string; rounds: number } | null;
+  /**
    * Phase 4: what the trusted nets say about this job, each null (or empty)
    * when the school is off or the net is not trusted: the appraiser on the
    * awarded bid, the router on each agent that may bid (highest first),

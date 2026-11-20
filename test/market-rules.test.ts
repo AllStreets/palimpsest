@@ -329,3 +329,17 @@ test('TIER_VALUE gives low < normal < high', () => {
   assert.ok(TIER_VALUE.low < TIER_VALUE.normal);
   assert.ok(TIER_VALUE.normal < TIER_VALUE.high);
 });
+
+test('a job that awards nothing cools off longer each round in a row: 10 minutes doubling, at most a day', async () => {
+  const { BID_COOL_OFF, coolOffMs } = await import('../shared/market-rules.js');
+  const MIN = 60_000;
+  assert.equal(BID_COOL_OFF.firstMs, 10 * MIN);
+  assert.equal(BID_COOL_OFF.capMs, 24 * 60 * MIN);
+  assert.equal(coolOffMs(1), 10 * MIN);
+  assert.equal(coolOffMs(2), 20 * MIN);
+  assert.equal(coolOffMs(3), 40 * MIN);
+  assert.equal(coolOffMs(8), 1280 * MIN);
+  assert.equal(coolOffMs(9), 24 * 60 * MIN, 'capped at 24 hours');
+  assert.equal(coolOffMs(500), 24 * 60 * MIN);
+  assert.equal(coolOffMs(0), 10 * MIN, 'a round always waits at least the first step');
+});

@@ -12,7 +12,7 @@ import { longDate } from './story';
 import { masterGuessLine, netsOnJob } from './school-words';
 import './market.css';
 import { clock } from './time-words';
-import { BID_TERMS } from './bid-words';
+import { BID_TERMS, nextBidsWords } from './bid-words';
 
 export interface JobPage {
   show(id: string): void;
@@ -44,12 +44,14 @@ function withdrawable(j: Job): boolean {
 }
 
 /** Where the job stands, in a sentence for the head. */
-function standing(j: Job, run: RunView | null, names: Names): string {
+function standing(j: Job, run: RunView | null, names: Names, nextBids: JobDetail['nextBids'] = null): string {
   const by = run ? `${names.agent(run.agentId)} of ${names.firm(run.firmId)}` : '';
   switch (j.status) {
     case 'proposed':
       return 'Proposed by the city. No firm bids on it until you accept it on the board.';
     case 'open':
+      // Cooling off after rounds no firm took: say so, and when the next round opens.
+      if (nextBids && Date.parse(nextBids.at) > Date.now()) return nextBidsWords(nextBids.rounds, nextBids.at, Date.now());
       return 'Open, waiting for its round of bids to open.';
     case 'bidding':
       return `Taking bids: ${closesIn(j.bidsCloseAt, Date.now())}.`;
@@ -636,6 +638,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
       if (sat) box.append(sat);
       sec.append(box);
     }
+    if (!live && j.status === 'open' && d.nextBids && Date.parse(d.nextBids.at) > Date.now()) sec.append(el('p', 'job-award-after', nextBidsWords(d.nextBids.rounds, d.nextBids.at, Date.now())));
     if (!rounds.length && !live) sec.append(el('p', 'detail-quiet', j.status === 'proposed' ? 'No round yet: firms bid once you accept it.' : 'No round yet: it opens for bids on the next round.'));
     return sec;
   }
@@ -798,13 +801,13 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     const title = cleanText(j.title, 200) || 'Untitled';
     if (sheet.title.textContent !== title) sheet.title.textContent = title;
     sheet.root.dataset.status = j.status;
-    sheet.sub.textContent = `${standing(j, run, names)} Worth ${money(j.value)} credits, ${j.tier} tier.`;
+    sheet.sub.textContent = `${standing(j, run, names, d.nextBids)} Worth ${money(j.value)} credits, ${j.tier} tier.`;
     const minute = Math.floor(Date.now() / 60_000);
     slots.head(JSON.stringify([j.status, j.tier, j.attempts, j.haltedFrom, asking, busy, error, liveRun()?.id ?? null]), () => headActions(j));
     slots.why(JSON.stringify([j.proposal ?? null, j.status === 'proposed' || j.status === 'open', audit?.id ?? null, audit?.findings.find((f) => f.id === j.proposal?.findingId) ?? null]), () => whySection(j, audit));
     slots.issue(JSON.stringify([j.title, j.body, j.url, j.issue, j.source]), () => issueSection(j));
     slots.terms(JSON.stringify([j.id, j.status === 'proposed' || j.status === 'open', j.scope, j.acceptance, j.status === 'proposed' || j.status === 'open' ? '' : j.body]), () => termsSection(j));
-    slots.bids(JSON.stringify([j.status, j.bidsCloseAt, d.bids, d.satOut, d.ledger.filter((r) => r.kind === 'job.awarded' || r.kind === 'bid.placed').length, d.runs.map((r) => r.outcome), firms.length]), () => bidsSection(j, d));
+    slots.bids(JSON.stringify([j.status, j.bidsCloseAt, d.bids, d.satOut, d.ledger.filter((r) => r.kind === 'job.awarded' || r.kind === 'bid.placed').length, d.runs.map((r) => r.outcome), firms.length, d.nextBids]), () => bidsSection(j, d));
     const clockEl = body.querySelector<HTMLElement>('.job-clock');
     if (clockEl) clockEl.textContent = closesIn(j.bidsCloseAt, Date.now());
     slots.work(JSON.stringify([d.runs, d.inspections.map((i) => i.id), firms.length, minute]), () => workSection(d));

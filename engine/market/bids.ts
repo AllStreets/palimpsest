@@ -29,7 +29,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { calibrated as calibrate, expectedValue, roundOpen } from '../../shared/market-rules.js';
+import { BID_COOL_OFF, calibrated as calibrate, coolOffMs, expectedValue, roundOpen } from '../../shared/market-rules.js';
 import type { Agent, Bid, FloorSize, Job, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
@@ -58,8 +58,8 @@ const EXAMPLE_MAX = 600;
 const MAX_VOTES = 7;
 /** What an agent whose plan call was queued past the close is told. */
 export const NO_SLOT = 'no slot before the window closed';
-/** How long a job that drew no bid at all (nobody eligible, or everyone sat out) waits before it opens for bids again. */
-export const BID_COOL_OFF_MS = 10 * 60_000;
+/** The first wait of a job whose round awarded nothing; each round in a row with no award doubles it, up to a day (coolOffMs). */
+export const BID_COOL_OFF_MS = BID_COOL_OFF.firstMs;
 
 const TIER_SIZE: Record<Tier, FloorSize> = { low: 'small', normal: 'medium', high: 'large' };
 
@@ -106,20 +106,54 @@ export function bidById(id: string): Bid | null {
 
 // ---------------------------------------------------------------- the window
 
-/** When the job's last round drew no bid at all, the time it may open for bids again; else null. */
+/**
+ * Where a job stands in its cooling off: how many rounds in a row awarded
+ * nothing, and until when it waits before the next (null when it need not
+ * wait). An award, his edit of the job (a `job.changed` that keeps its
+ * status: scope, acceptance or tier) or his retry (failed back to open)
+ * ends the run of empty rounds, and with it any wait.
+ */
+export function coolOff(jobId: string): { rounds: number; until: number | null } {
+  const rows = openDb()
+    .prepare(
+      `SELECT kind, json_extract(json, '$.chosen.id') AS chosen, json_extract(json, '$.coolOffUntil') AS until,
+              json_extract(json, '$.from') AS f, json_extract(json, '$.to') AS t
+       FROM ledger WHERE job_id = ? AND kind IN ('job.awarded', 'job.changed') ORDER BY id DESC`,
+    )
+    .iterate(jobId) as Iterable<{ kind: string; chosen: string | null; until: string | null; f: string | null; t: string | null }>;
+  let rounds = 0;
+  let until: number | null = null;
+  for (const r of rows) {
+    if (r.kind === 'job.changed') {
+      if (r.f === r.t || (r.f === 'failed' && r.t === 'open')) break;
+      continue;
+    }
+    if (r.chosen !== null) break;
+    if (rounds === 0 && typeof r.until === 'string' && Number.isFinite(Date.parse(r.until))) until = Date.parse(r.until);
+    rounds++;
+  }
+  return { rounds, until };
+}
+
+/** When the job may open for bids again after rounds that awarded nothing; else null. */
 export function coolingOffUntil(jobId: string): number | null {
-  const row = openDb()
-    .prepare("SELECT json FROM ledger WHERE kind = 'job.awarded' AND job_id = ? ORDER BY id DESC LIMIT 1")
-    .get(jobId) as { json: string } | undefined;
-  if (!row) return null;
-  const until = (JSON.parse(row.json) as { coolOffUntil?: unknown }).coolOffUntil;
-  return typeof until === 'string' && Number.isFinite(Date.parse(until)) ? Date.parse(until) : null;
+  return coolOff(jobId).until;
+}
+
+/** "10 minutes", "1 hour 20 minutes", "24 hours": a cooling off, in words. */
+function waitWords(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${m} ${m === 1 ? 'minute' : 'minutes'}`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return `${h} ${h === 1 ? 'hour' : 'hours'}${r ? ` ${r} ${r === 1 ? 'minute' : 'minutes'}` : ''}`;
 }
 
 /**
  * Opens the job for bids until `now + bidWindowSec`. A job whose last round
- * drew no bid at all stays open, unchanged, until its cool-off passes, so an
- * empty board does not churn every tick; callers read the returned status.
+ * awarded nothing stays open, unchanged, until its cool-off passes (longer
+ * for each such round in a row), so a job no firm will take does not churn
+ * every tick; callers read the returned status.
  */
 export function openBidding(j: Job, now: number = Date.now()): Job {
   const until = coolingOffUntil(j.id);
@@ -469,6 +503,9 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
   const ranked = schoolRanked ? schoolRanked.map((w) => w.bid) : phase2;
   const chosen = schoolRanked ? (schoolRanked.find((w) => w.ev > 0)?.bid ?? null) : plain;
   const moved = school !== null && (chosen?.id ?? null) !== (plain?.id ?? null);
+  // Rounds in a row with no award, this one included, and the wait they earn (economy change A).
+  const emptyRounds = chosen ? 0 : coolOff(cur.id).rounds + 1;
+  const wait = chosen ? 0 : coolOffMs(emptyRounds);
   const parts: string[] = [];
   if (chosen) {
     const w = schoolRanked?.find((x) => x.bid.id === chosen.id);
@@ -480,7 +517,8 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     const others = ranked.filter((b) => b !== chosen);
     if (others.length) parts.push(`Also considered: ${others.map(describe).join('; ')}.`);
   } else {
-    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.` : `No bids came in, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.`);
+    const again = `the job goes back on the board and opens again after ${waitWords(wait)}${emptyRounds > 1 ? ` (${emptyRounds} rounds in a row with no award)` : ''}.`;
+    parts.push(bids.length ? `No bid had a positive expected value, so ${again}` : `No bids came in, so ${again}`);
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
@@ -497,7 +535,9 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     at: new Date(now).toISOString(),
     // No award (nobody eligible, everyone sat out, or no bid worth its price): wait before the next
     // round, since the same firms would bid the same again and each Claude bid spends his plan.
-    coolOffUntil: chosen ? null : new Date(now + BID_COOL_OFF_MS).toISOString(),
+    // The wait doubles with each round in a row that awarded nothing, up to a day.
+    coolOffUntil: chosen ? null : new Date(now + wait).toISOString(),
+    noAwardRounds: emptyRounds,
     // Decision 14: the appraisals the award weighed, and whether they changed the choice (its later rows are then partly its own).
     ...(school ? { appraisals: Object.fromEntries(school.map((w) => [w.bid.id, w.bid.appraisal])) } : {}),
     ...(moved ? { appraiserMoved: true } : {}),
