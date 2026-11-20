@@ -1,0 +1,93 @@
+/*
+ * The screens' tokens as custom properties. tokens.ts holds the same values,
+ * and test/os-tokens.test.ts holds the two equal: change both together.
+ */
+:root {
+  /* Colour. Red is the lock's and the grant's alone. */
+  --os-ground: #090604;
+  --os-ink: #f5e9d9;
+  --os-ink2: #c9b49c;
+  --os-dim: #a48f78;
+  --os-amber: #ffb547;
+  --os-amber-hi: #ffd391;
+  --os-red: #ff5532;
+  --os-ice: #9fe3fb;
+  --os-ok: #9ee6b4;
+  --os-warn: #ffc861;
+  --os-fail: #ff7a5e;
+  --os-benched: #a9a3b8;
+  --os-ground-rgb: 9, 6, 4;
+  --os-amber-rgb: 255, 181, 71;
+  --os-red-rgb: 255, 85, 50;
+  --os-ice-rgb: 159, 227, 251;
+  /* The thinnest the panel's ground may be under text, and the tags' backplate on the city. */
+  --os-ground-alpha: 0.86;
+  --os-plate-alpha: 0.9;
+  /* The two faces. */
+  --os-display: 'Big Shoulders', 'Avenir Next Condensed', system-ui, sans-serif;
+  --os-mono: 'Azeret Mono', ui-monospace, Menlo, monospace;
+  /* Depth: the shadow each pane casts. */
+  --os-shadow-near: 16px 14px 26px -12px rgba(0, 0, 0, 0.85), 0 30px 80px rgba(0, 0, 0, 0.55);
+  --os-shadow-mid: 0 12px 28px -14px rgba(0, 0, 0, 0.9);
+  --os-shadow-far: 0 6px 16px -10px rgba(0, 0, 0, 0.7);
+  /* Glow by weight, static. */
+  --os-glow-look: 0 0 10px rgba(159, 227, 251, 0.35);
+  --os-glow-spend: inset 0 0 0 1px rgba(255, 181, 71, 0.5), 0 0 16px rgba(255, 181, 71, 0.16);
+  --os-glow-grant: 0 0 0 1px rgba(255, 120, 80, 0.9), 0 0 26px rgba(255, 85, 50, 0.55), 0 0 70px rgba(255, 85, 50, 0.22);
+  /* Motion. */
+  --os-fast: 140ms;
+  --os-base: 240ms;
+  --os-slow: 450ms;
+  --os-scan: 900ms;
+  --os-ease: cubic-bezier(0.2, 0.75, 0.15, 1);
+}
+
+/*
+ * The focus ring: four amber corner ticks, 1.5px thick, 3px clear of the key,
+ * on keyboard focus only. An element opts in with .os-focus; its ::after is
+ * the ring, and it is positioned (relative unless it says otherwise).
+ */
+:where(.os-focus) {
+  position: relative;
+}
+.os-focus:focus-visible {
+  outline: none;
+}
+.os-focus:focus-visible::after {
+  --os-arm: 6px;
+  --os-th: 1.5px;
+  content: '';
+  position: absolute;
+  inset: calc(-3px - var(--os-th));
+  pointer-events: none;
+  background:
+    linear-gradient(var(--os-amber), var(--os-amber)) top left / var(--os-arm) var(--os-th) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) top left / var(--os-th) var(--os-arm) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) top right / var(--os-arm) var(--os-th) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) top right / var(--os-th) var(--os-arm) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) bottom left / var(--os-arm) var(--os-th) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) bottom left / var(--os-th) var(--os-arm) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) bottom right / var(--os-arm) var(--os-th) no-repeat,
+    linear-gradient(var(--os-amber), var(--os-amber)) bottom right / var(--os-th) var(--os-arm) no-repeat;
+}
+/* Forced colours draw no backgrounds, so the ring falls back to a plain outline. */
+@media (forced-colors: active) {
+  .os-focus:focus-visible {
+    outline: 1.5px solid CanvasText;
+    outline-offset: 3px;
+  }
+}
+
+/* Text for screen readers alone: in the accessibility tree, off the screen. */
+.os-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
