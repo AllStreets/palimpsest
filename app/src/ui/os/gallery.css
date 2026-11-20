@@ -224,3 +224,74 @@
   color: var(--os-ink2);
   font-size: 12px;
 }
+
+/*
+ * The controls kind: one band per weight, lightest to heaviest, its name and
+ * what it is for, then its key at rest, focused, disabled and busy.
+ */
+.os-gallery-weight {
+  margin: 0 0 40px;
+}
+.os-gallery-wname {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 20px;
+}
+.os-gallery-wword {
+  color: var(--os-ink);
+  font-family: var(--os-display);
+  font-size: 20px;
+  font-weight: 700;
+}
+.os-gallery-states {
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  justify-content: start;
+  column-gap: 40px;
+  row-gap: 30px;
+  /* Room inside for the reticles and the ring, which stand outside each key. */
+  padding: 0 0 0 18px;
+}
+.os-gallery-weight[data-weight='grant'] .os-gallery-states {
+  grid-template-columns: repeat(2, max-content);
+  column-gap: 56px;
+  row-gap: 40px;
+  padding-top: 10px;
+}
+.os-gallery-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+.os-gallery-weight[data-weight='grant'] .os-gallery-state {
+  gap: 22px;
+}
+/* A 1280 window: spend's states in two columns, and the bands drawn closer, so the grant's four stand in the window. */
+@media (max-width: 1400px) {
+  .os-gallery[data-kind='controls'] .os-gallery-label {
+    margin-bottom: 16px;
+  }
+  .os-gallery-weight {
+    margin-bottom: 24px;
+  }
+  .os-gallery-wname {
+    margin-bottom: 12px;
+  }
+  .os-gallery-states {
+    row-gap: 18px;
+  }
+  .os-gallery-state {
+    gap: 10px;
+  }
+  .os-gallery-weight[data-weight='spend'] .os-gallery-states {
+    grid-template-columns: repeat(2, max-content);
+  }
+  .os-gallery-weight[data-weight='grant'] .os-gallery-states {
+    row-gap: 30px;
+  }
+  .os-gallery-weight[data-weight='grant'] .os-gallery-state {
+    gap: 18px;
+  }
+}

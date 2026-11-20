@@ -1,0 +1,317 @@
+/*
+ * The shaped control (control.ts): one key in four weights, by consequence.
+ * look is a cold word, decide a plain word in ticks, spend a lit amber key in
+ * a heavier reticle with its sum in a window, grant the one hot red key.
+ *
+ * The reticle is four child ticks (.os-key-tick), each moving on its own
+ * diagonal by transform. The key's ::before is its hover light, and its
+ * ::after is left to the .os-focus ring (tokens.css), set out past the
+ * reticle by --os-ring so the two never sit on one another.
+ *
+ * Every rule is .os-key[data-weight], so it outranks .textbtn's all: unset
+ * when weighKey dresses one of the Brief's own keys. Colour comes from the
+ * tokens alone, and red belongs to the grant alone (test/os-css.test.ts).
+ * Motion is transform and opacity only.
+ */
+
+.os-key[data-weight] {
+  /* Per weight: the ticks' ink, arm and thickness, how far out they stand, and where the focus ring stands. */
+  --os-tick: rgba(var(--os-amber-rgb), 0.7);
+  --os-arm: 5px;
+  --os-th: 1.5px;
+  --os-ret-out: 3px;
+  --os-ring: 7.5px;
+  --os-sheen: rgba(var(--os-amber-rgb), 0.08);
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 28px;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  appearance: none;
+  color: var(--os-ink2);
+  font-family: var(--os-display);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform var(--os-fast) var(--os-ease);
+}
+.os-key[data-weight]:focus-visible {
+  outline: none;
+}
+/* The ring stands clear of the key's own reticle, further out the heavier the key. */
+.os-key[data-weight].os-focus::after {
+  inset: calc(-1 * var(--os-ring));
+}
+/* A press sinks the key a pixel. */
+.os-key[data-weight]:not(:disabled, [aria-busy='true']):active {
+  transform: translateY(1px);
+}
+
+/* The hover light: a wash over the key's face, under its words, faded in. */
+.os-key[data-weight]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--os-sheen);
+  opacity: 0;
+  transition: opacity var(--os-fast) var(--os-ease);
+}
+.os-key[data-weight]:not(:disabled, [aria-busy='true']):hover::before {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- the reticle */
+
+.os-key-ret {
+  position: absolute;
+  inset: calc(-1 * var(--os-ret-out));
+  pointer-events: none;
+}
+.os-key-tick {
+  /* Which way out this corner lies: -1 or 1 on each axis. */
+  --dx: -1;
+  --dy: -1;
+  /* How far a tick moves when its key is aimed at: negative closes in. */
+  --os-pull: -2px;
+  position: absolute;
+  box-sizing: border-box;
+  width: var(--os-arm);
+  height: var(--os-arm);
+  border: 0 solid var(--os-tick);
+  transition:
+    transform var(--os-fast) var(--os-ease),
+    opacity var(--os-fast) var(--os-ease);
+}
+.os-key-tick[data-corner='tl'] {
+  top: 0;
+  left: 0;
+  border-top-width: var(--os-th);
+  border-left-width: var(--os-th);
+}
+.os-key-tick[data-corner='tr'] {
+  --dx: 1;
+  top: 0;
+  right: 0;
+  border-top-width: var(--os-th);
+  border-right-width: var(--os-th);
+}
+.os-key-tick[data-corner='bl'] {
+  --dy: 1;
+  bottom: 0;
+  left: 0;
+  border-bottom-width: var(--os-th);
+  border-left-width: var(--os-th);
+}
+.os-key-tick[data-corner='br'] {
+  --dx: 1;
+  --dy: 1;
+  bottom: 0;
+  right: 0;
+  border-bottom-width: var(--os-th);
+  border-right-width: var(--os-th);
+}
+/* Aimed at, by the pointer or the keyboard, the reticle closes in on its key. */
+.os-key[data-weight]:not(:disabled, [aria-busy='true']):is(:hover, :focus-visible) .os-key-tick {
+  transform: translate(calc(var(--dx) * var(--os-pull)), calc(var(--dy) * var(--os-pull)));
+}
+
+/* The sum, in its own dark window at the key's end. */
+.os-sum {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding: 0 10px;
+  background: rgba(var(--os-ground-rgb), 0.6);
+  box-shadow: inset 1px 0 0 rgba(var(--os-amber-rgb), 0.5);
+  color: var(--os-amber);
+  font-family: var(--os-mono);
+  font-size: 12px;
+  font-weight: 500;
+  text-shadow: none;
+}
+.os-key[data-weight]:has(.os-sum) {
+  padding-right: 0;
+}
+
+/* ---------------------------------------------------------------- look: a cold word */
+
+.os-key[data-weight='look'] {
+  --os-tick: var(--os-ice);
+  --os-arm: 4px;
+  --os-th: 1px;
+  --os-ret-out: 1px;
+  --os-ring: 6px;
+  --os-sheen: rgba(var(--os-ice-rgb), 0.07);
+  padding: 0 8px;
+  color: var(--os-ice);
+  font-weight: 500;
+}
+/* Its ticks are out of sight until it is aimed at, then they arrive from further out. */
+.os-key[data-weight='look'] .os-key-tick {
+  --os-pull: 0px;
+  opacity: 0;
+  transform: translate(calc(var(--dx) * 4px), calc(var(--dy) * 4px));
+}
+.os-key[data-weight='look']:not(:disabled, [aria-busy='true']):is(:hover, :focus-visible) .os-key-tick {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- decide: a plain word in ticks */
+
+.os-key[data-weight='decide'] {
+  --os-tick: rgba(var(--os-amber-rgb), 0.75);
+  --os-sheen: rgba(var(--os-amber-rgb), 0.1);
+  background: rgba(var(--os-amber-rgb), 0.04);
+  color: var(--os-ink2);
+}
+.os-key[data-weight='decide']:not(:disabled, [aria-busy='true']):hover {
+  color: var(--os-ink);
+}
+
+/* ---------------------------------------------------------------- spend: a lit amber key */
+
+.os-key[data-weight='spend'] {
+  --os-tick: var(--os-amber);
+  --os-arm: 7px;
+  --os-th: 2px;
+  --os-ret-out: 4px;
+  /* Far enough past the heavier reticle that the ring reads as a second, outer frame, not a thicker tick. */
+  --os-ring: 13px;
+  --os-sheen: rgba(var(--os-amber-rgb), 0.16);
+  height: 30px;
+  padding: 0 14px;
+  background: linear-gradient(to bottom, rgba(var(--os-amber-rgb), 0.24), rgba(var(--os-amber-rgb), 0.1));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--os-amber-rgb), 0.55),
+    var(--os-glow-spend);
+  color: var(--os-amber-hi);
+  font-weight: 700;
+  text-shadow: 0 0 8px rgba(var(--os-amber-rgb), 0.45);
+}
+
+/* ---------------------------------------------------------------- grant: the one hot key */
+
+.os-key[data-weight='grant'] {
+  --os-tick: var(--os-red);
+  --os-arm: 10px;
+  --os-th: 2px;
+  --os-ret-out: 7px;
+  --os-ring: 16px;
+  --os-sheen: linear-gradient(to bottom, rgba(var(--os-red-rgb), 0), color-mix(in srgb, var(--os-red), white 22%));
+  gap: 10px;
+  height: 40px;
+  padding: 0 20px 0 10px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--os-red), white 20%),
+    var(--os-red) 55%,
+    color-mix(in srgb, var(--os-red), black 12%)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--os-red), white 60%),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.3),
+    var(--os-glow-grant);
+  /* Dark on red: the ground's own ink, 6.3:1 on the red. */
+  color: var(--os-ground);
+  font-size: 19px;
+  font-weight: 800;
+}
+/* The reticle breathes: each tick out along its diagonal and back. */
+.os-key[data-weight='grant'] .os-key-tick {
+  filter: drop-shadow(0 0 3px rgba(var(--os-red-rgb), 0.8));
+  animation: os-breathe 2.4s ease-in-out infinite;
+}
+@keyframes os-breathe {
+  50% {
+    transform: translate(calc(var(--dx) * 4px), calc(var(--dy) * 4px));
+  }
+}
+
+/* The seal: a ring, a dashed ring that turns, cross ticks and a centre, in the key's dark ink. */
+.os-seal {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+}
+.os-seal circle,
+.os-seal path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+}
+.os-seal .os-seal-spin {
+  stroke-width: 2;
+  /* Eight dashes round a ring of radius 18. */
+  stroke-dasharray: 8 6.137;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: os-turn 6s linear infinite;
+}
+.os-seal .os-seal-dot {
+  fill: currentColor;
+  stroke: none;
+}
+@keyframes os-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------------------------------------------------------- disabled and busy: dim, same shape */
+
+.os-key[data-weight]:disabled,
+.os-key[data-weight][aria-disabled='true'],
+.os-key[data-weight][aria-busy='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+.os-key[data-weight][aria-busy='true'] {
+  cursor: progress;
+}
+/* A waiting grant holds its breath. */
+.os-key[data-weight]:is(:disabled, [aria-busy='true']) .os-key-tick,
+.os-key[data-weight]:is(:disabled, [aria-busy='true']) .os-seal-spin {
+  animation-play-state: paused;
+}
+
+/* ---------------------------------------------------------------- still: every mark at rest */
+
+@media (prefers-reduced-motion: reduce) {
+  .os-key[data-weight='grant'] .os-key-tick,
+  .os-seal .os-seal-spin {
+    animation: none;
+  }
+  .os-key[data-weight],
+  .os-key[data-weight]::before,
+  .os-key-tick {
+    transition: none;
+  }
+}
+
+/* Forced colours: the ticks and the sum's edge in the system's own ink; the key is a plain outlined button. */
+@media (forced-colors: active) {
+  .os-key[data-weight] {
+    border: 1px solid ButtonText;
+  }
+  .os-key-tick {
+    border-color: ButtonText;
+  }
+}

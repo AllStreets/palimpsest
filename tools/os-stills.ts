@@ -21,7 +21,7 @@ import { framings, launch, pageUrl, ready, redesignHome, settle, STILL_VIEW, toC
  * The kinds the gallery has built so far (gallery.ts GalleryKind); each later
  * task adds its own. Not imported from gallery.ts, which brings stylesheets.
  */
-const BUILT = ['type', 'panel'] as const;
+const BUILT = ['type', 'panel', 'controls'] as const;
 type GalleryKind = (typeof BUILT)[number];
 
 async function show(page: Page, kind: GalleryKind, w: number, h: number, wait: number): Promise<void> {

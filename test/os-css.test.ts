@@ -219,3 +219,38 @@ test('the reduced-motion lint wants animation none on the same class, not a ment
   assert.deepEqual(unansweredClasses([{ file: 'x.css', sheet }], `.a { animation: none; } .b, .c { animation-name: none; }`), []);
   assert.deepEqual(unansweredClasses([{ file: 'x.css', sheet }], `.c { animation: none; } .a { animation: none; }`), ['x.css .b']);
 });
+
+/** Every comma-separated selector in a rule's selector list. */
+const selectors = (sel: string): string[] => topLevel(sel);
+/** Red, or any ink that reads as red: the red token, the fail token, or a colour set by hand. */
+const RED = /var\(--os-red(?:-rgb)?\)/;
+const REDDISH = /var\(--os-(?:red|fail)(?:-rgb)?\)/;
+
+test('only the grant weight is red', () => {
+  const sheet = uncomment(read(join(OS, 'control.css')));
+  const all = rules(sheet).filter(([sel]) => !/^\s*(from|to|\d+%)/.test(sel));
+  const grant = "[data-weight='grant']";
+  // Every rule that names red names it for the grant alone, in every selector of its list.
+  for (const [sel, body] of all) {
+    if (!RED.test(body)) continue;
+    for (const s of selectors(sel)) assert.ok(s.includes(grant), `control.css ${s} is red but not the grant`);
+  }
+  // The grant does use the red token, so the rule above is not passing on an empty sheet.
+  assert.ok(
+    all.some(([sel, body]) => sel.includes(grant) && RED.test(body)),
+    'the grant is not drawn in var(--os-red)',
+  );
+  // And look, decide and spend each have rules, none of them red or fail, nor colour set by hand.
+  for (const w of ['look', 'decide', 'spend']) {
+    const own = all.filter(([sel]) => sel.includes(`[data-weight='${w}']`));
+    assert.ok(own.length > 0, `control.css has no rules for ${w}`);
+    for (const [sel, body] of own) assert.ok(!REDDISH.test(body), `control.css ${sel}: ${w} is red`);
+  }
+  // Colour comes from the tokens alone: no hex and no rgb() of numbers but black for shadows.
+  for (const [sel, body] of all) {
+    assert.ok(!/#[0-9a-f]{3,8}\b/i.test(body), `control.css ${sel} sets a colour by hex`);
+    for (const m of body.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g)) {
+      assert.deepEqual([m[1], m[2], m[3]], ['0', '0', '0'], `control.css ${sel} sets rgb(${m[1]}, ${m[2]}, ${m[3]}) by hand`);
+    }
+  }
+});

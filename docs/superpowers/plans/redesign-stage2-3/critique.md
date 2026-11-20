@@ -87,3 +87,40 @@ What the stills show:
 
 - Under reduced motion each stream column stops at a quarter of its fall, so the foot of the list has fewer streaks than its top. It is decoration under 20% opacity; not worth a different still layout.
 - The head's shadow onto the list is quiet over the panel's own dark ground. It shows clearly once rows scroll under the head (T6 onward will show it).
+
+## Task 6: the shaped control in its weights
+
+Stills: `stills/task-6/controls.webp`, `controls-1280.webp`, `controls-reduced-motion.webp` (the final round, round 3), `controls-1280-round1.webp`, `focus-spend-round2.webp`, and `focus-sheet.webp`, `hover-look.webp`, `hover-spend.webp`. The first three are from `tools/os-stills.ts controls`; the focus and hover crops are from a one-off scratch script on the same harness, which focuses each weight's `data-gallery-focus` key in turn (keyboard focus can be on one key only, so the gallery itself focuses the grant's). The GPU lock was held for every shoot. The `controls` kind shows each weight, lightest to heaviest, at rest, focused, disabled and busy, with `spend` carrying "60 cr".
+
+### Round 1
+
+What works:
+- **The grant reads heaviest at a glance.** It is the one filled red key: 40 px tall, Big Shoulders 800 at 19 px in the ground's dark ink, the seal at its left, a red reticle 7 px out with a red glow. Nothing else in the panel is red.
+- **Looking reads lighter than any framed key.** "Fly there" is a cold ice word in weight 500 with no frame at rest; decide has amber ticks and a faint fill; spend is a lit amber key with a 2 px reticle and its sum in a dark window.
+- The order of weight is legible down the page without the labels: word, framed word, lit key, hot key.
+- Disabled and busy keys dim to 0.45 and keep every part of their shape, reticle and sum included.
+
+Weaknesses:
+1. **At 1280 the grant's disabled and busy keys stand below the window's foot.** The gallery scrolls, so nothing clips, but a still at 1280 does not show the whole set.
+
+Changes: under 1400 px, the spend states go two by two and the bands, labels and state gaps draw closer.
+
+### Round 2
+
+1. At 1280 every key and its state label is in the window, grant's busy key included (`controls-1280.webp`).
+2. Focus, each weight in turn: the amber ring stands outside each key's own reticle. On look the ice ticks arrive from 4 px out and settle 1 px off the word, with the ring at 6 px: a lock-on, not a box. On decide the ticks close in by 2 px and the ring stands at 7.5 px. On the grant the ring stands at 16 px, clear of the breathing reticle at its widest (11 px).
+3. **On spend the ring sat 6 px outside an amber reticle of the same colour** and read as a thicker, blurred bracket rather than a second frame (`focus-spend-round2.webp`). The focused key looked heavier, not focused.
+4. Hover: look's ticks show and the face takes a faint ice wash; spend's reticle closes in and the face brightens. Both by opacity and transform only.
+
+Changes: the spend key's ring stands at 13 px.
+
+### Round 3 (final)
+
+- Spend focused now reads as two distinct frames: the key's own heavy reticle, and the thin amber ring well outside it (`focus-sheet.webp`).
+- At 1600 and 1280 the composition holds and nothing clips; the reduced-motion still is whole at 0.7 s, its reticle at rest and its seal still.
+
+### Left, below the anti-goal level
+
+- Disabled and busy look the same, as the brief asks ("they dim, and they keep their shape"). Busy shows a progress cursor and holds the grant's breath; a still cannot tell them apart.
+- The disabled grant is still red and filled at 0.45. It is still the grant, so the red rule holds, but it is the brightest dimmed thing on the screen.
+- When a caller sets an aria-label on a key (the Brief does), the sum in the window is not part of the name the reader hears. T17 should fold the sum into that label.

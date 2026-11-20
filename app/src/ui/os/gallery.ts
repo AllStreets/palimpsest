@@ -11,6 +11,7 @@ import './gallery.css';
 
 import { contrast, hex, over } from '../contrast.js';
 import { createSheet } from '../controls.js';
+import { osKey, WEIGHTS, type Weight } from './control.js';
 import { scanOnce, typeIn } from './motion.js';
 import { dressPanel } from './panel.js';
 import { COLOUR, GROUND, type ColourToken } from './tokens.js';
@@ -156,7 +157,53 @@ function panelSpecimen(host: HTMLElement): () => void {
   return () => panel.dispose();
 }
 
-const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen, panel: panelSpecimen };
+/** Each weight's key in the specimen, with what it is for. */
+const KEYS: Record<Weight, { label: string; sum?: string; for: string }> = {
+  look: { label: 'Fly there', for: 'Why, Diff, Fly there, Open PR' },
+  decide: { label: 'Dismiss', for: 'Dismiss, decline, revoke' },
+  spend: { label: 'Post', sum: '60 cr', for: 'Post, retry, resume, audit, tier' },
+  grant: { label: 'Let it act here', for: 'The autonomy grant alone' },
+};
+
+const STATES = ['at rest', 'focused', 'disabled', 'busy'] as const;
+
+/**
+ * The controls: each of the four weights, lightest to heaviest, at rest,
+ * focused, disabled and busy. Keyboard focus can be on one key only, so the
+ * grant's focused key takes it on mount; the others carry
+ * data-gallery-focus, for a still that focuses each in turn.
+ */
+function controlsSpecimen(host: HTMLElement): void {
+  host.append(el('p', 'os-gallery-label', 'Keys, lightest to heaviest'));
+  let first: HTMLButtonElement | null = null;
+  for (const w of WEIGHTS) {
+    const spec = KEYS[w];
+    const row = el('section', 'os-gallery-weight');
+    row.dataset.weight = w;
+    const head = el('p', 'os-gallery-wname');
+    head.append(el('span', 'os-gallery-wword', w[0].toUpperCase() + w.slice(1)), el('span', 'os-gallery-role', spec.for));
+    row.append(head);
+    const states = el('div', 'os-gallery-states');
+    for (const state of STATES) {
+      const cell = el('div', 'os-gallery-state');
+      const key = osKey(spec.label, w, () => {}, { sum: spec.sum });
+      if (state === 'disabled') key.disabled = true;
+      if (state === 'busy') key.setAttribute('aria-busy', 'true');
+      if (state === 'focused') {
+        key.dataset.galleryFocus = w;
+        if (w === 'grant') first = key;
+      }
+      cell.append(key, el('span', 'os-gallery-role', state));
+      states.append(cell);
+    }
+    row.append(states);
+    host.append(row);
+  }
+  // After layout, so the ring shows as keyboard focus does.
+  requestAnimationFrame(() => first?.focus({ preventScroll: true }));
+}
+
+const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen, panel: panelSpecimen, controls: controlsSpecimen };
 
 /** Shows one kind of the gallery over the city, and returns its unmount. */
 export function mountGallery(parent: HTMLElement, kind: GalleryKind): () => void {
