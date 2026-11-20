@@ -106,3 +106,9 @@ test('a fold of bid costs never crosses midnight', () => {
   assert.equal(lines.length, 2, 'each day keeps its own bidding line');
   assert.deepEqual(lines.map((l) => l.balance), [299, 298]);
 });
+
+test('a refund for a run the city ended reads in plain words on the books', () => {
+  const names = { agent: (id: string) => id, firm: (id: string) => id, job: (id: string) => ({ 'job-1': 'Fix the parser' })[id] ?? null };
+  const lines = bookLines([row('run', -20, 280, { jobId: 'job-1' }), row('refund', 20, 300, { jobId: 'job-1' }), row('refund', 5, 305)], names);
+  assert.deepEqual(lines.map((l) => l.text), ['Work on Fix the parser', 'Refund: the city ended the work on Fix the parser', 'Refund: the city ended the work']);
+});

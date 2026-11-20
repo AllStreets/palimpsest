@@ -587,3 +587,64 @@ test('the daily tick commissions a voyage for the richest firm that may, only wh
     uninstall();
   }
 });
+
+// ---------------------------------------------------------------- refunds of the engine's own faults (economy change C)
+
+/** A run stored as runs.ts stores one that has ended. */
+function endedRun(id: string, firmId: string, outcome: 'crashed' | 'killed' | 'failed' | 'capped' | 'merged', scar = false, endedAt = new Date(clock).toISOString()): void {
+  const r = { id, jobId: `job-${id}`, bidId: `bid-${id}`, agentId: 'priya-rao', firmId, repo: 'acme/widgets', model: LOCAL, branch: 'b', dir: null, baseSha: null, headSha: null, stage: 'done', outcome, endedReason: 'x', progress: {}, startedAt: endedAt, endedAt, prNumber: null, prUrl: null, mergeSha: null, inspectionId: null, scar, unattended: false, summary: null };
+  openDb().prepare('INSERT OR REPLACE INTO runs (id, job_id, repo, stage, json) VALUES (?, ?, ?, ?, ?)').run(id, r.jobId, r.repo, r.stage, JSON.stringify(r));
+}
+
+test('a run the engine ended (crashed or killed, no scar) gets its run charges back from the city, once', () => {
+  spend('quickset', 'bid', 3);
+  spend('quickset', 'run', 12, 'run-c');
+  spend('quickset', 'run', 8, 'run-c');
+  endedRun('run-c', 'quickset', 'crashed');
+  emit('run.ended', { runId: 'run-c', outcome: 'crashed', reason: 'The install failed' });
+  emit('run.ended', { runId: 'run-c', outcome: 'crashed', reason: 'The install failed' });
+  const refunds = creditRows('refund');
+  assert.equal(refunds.length, 1, 'refunded once');
+  assert.equal(refunds[0].firm_id, 'quickset');
+  assert.equal(refunds[0].run_id, 'run-c');
+  assert.equal(refunds[0].amount, 20);
+  assert.equal(balances().quickset, START_BALANCE - 3, 'the bid fee stays spent');
+  assert.equal(firm('quickset')?.balance, START_BALANCE - 3);
+  const m = moved('refund');
+  assert.equal(m.length, 1);
+  assert.equal(m[0].from, 'city');
+  assert.equal(m[0].to, 'quickset');
+  assert.equal(m[0].delta, 20);
+  assert.equal(m[0].runId, 'run-c');
+  assert.equal(replayBalances(entries()).quickset, START_BALANCE - 3, 'the ledger alone gives the same balance');
+
+  spend('kiln', 'run', 5, 'run-k');
+  endedRun('run-k', 'kiln', 'killed');
+  emit('run.ended', { runId: 'run-k', outcome: 'killed', reason: 'The engine is shutting down.' });
+  assert.equal(balances().kiln, START_BALANCE);
+});
+
+test("a run that failed, was capped, merged or scarred keeps its cost: those are the firm's own", () => {
+  for (const [id, outcome, scar] of [['run-f', 'failed', true], ['run-p', 'capped', false], ['run-m', 'merged', false], ['run-s', 'crashed', true], ['run-n', 'failed', false]] as const) {
+    spend('quickset', 'run', 4, id);
+    endedRun(id, 'quickset', outcome, scar);
+    emit('run.ended', { runId: id, outcome, reason: 'x' });
+  }
+  assert.equal(creditRows('refund').length, 0);
+  assert.equal(balances().quickset, START_BALANCE - 20);
+});
+
+test('a run the engine ended while the treasury was not listening is refunded when it starts', () => {
+  uninstall();
+  spend('quickset', 'run', 6, 'run-i');
+  endedRun('run-i', 'quickset', 'crashed');
+  emit('run.ended', { runId: 'run-i', outcome: 'crashed', reason: 'The engine stopped while the run was live.' });
+  // Long before: left to the restatement, never swept at start.
+  spend('kiln', 'run', 2, 'run-old');
+  endedRun('run-old', 'kiln', 'crashed', false, new Date(clock - 3 * 24 * HOUR).toISOString());
+  assert.equal(creditRows('refund').length, 0);
+  uninstall = installTreasury({ now: () => clock });
+  assert.equal(creditRows('refund').length, 1);
+  assert.equal(balances().quickset, START_BALANCE);
+  assert.equal(balances().kiln, START_BALANCE - 2);
+});

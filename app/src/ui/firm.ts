@@ -414,7 +414,7 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
         const t = el('time', 'books-time', clock(l.at));
         t.dateTime = l.at;
         const text = el('span', 'books-text');
-        if (l.jobId && (l.kind === 'pay' || l.kind === 'run' || l.kind === 'review-pay')) text.append(pageLink('books-job', l.text, 'job', l.jobId));
+        if (l.jobId && (l.kind === 'pay' || l.kind === 'run' || l.kind === 'review-pay' || l.kind === 'refund')) text.append(pageLink('books-job', l.text, 'job', l.jobId));
         else if (l.agentId && (l.kind === 'hire' || l.kind === 'sale')) text.append(pageLink('books-job', l.text, 'agent', l.agentId));
         else text.textContent = l.text;
         r.append(t, text, el('span', 'books-amt', signed(l.delta)), el('span', `books-bal${l.balance < 0 ? ' neg' : ''}`, figure(l.balance)));

@@ -83,6 +83,8 @@ function bookText(r: BookRow, count: number, names: StoryNames): string {
       return r.agentId ? `Bought ${names.agent(r.agentId)}’s tower` : 'Bought a dark tower';
     case 'commission':
       return 'Paid the school to sail a voyage';
+    case 'refund':
+      return title ? `Refund: the city ended the work on ${title}` : 'Refund: the city ended the work';
     default:
       return r.kind;
   }

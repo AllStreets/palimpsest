@@ -19,6 +19,10 @@
  * - `hire`: the hiring fee, to the city (debit).
  * - `sale`: a dark tower's price, from the buyer to the city (debit); the
  *   bankrupt seller gets nothing.
+ * - `refund`: the run charges of a run the engine itself ended (it ended
+ *   `crashed` or `killed` with no scar), from the city, once per run
+ *   (credit, economy change C). Bid fees and the costs of a run that failed,
+ *   was capped or scarred are never refunded.
  * - `commission`: the fee a firm pays the school to sail a voyage first
  *   (Phase 4 ruling 22), to the city, once, at commissioning (debit). It is
  *   the firm's whole cost: the voyage's own model calls and local minutes
@@ -34,7 +38,7 @@ import { job as storedJob, listJobs, transition } from './jobs.js';
 import { kill, liveRunIds, run as storedRun } from './runs.js';
 import { endTripsOf } from './trips.js';
 import { canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE } from '../../shared/market-rules.js';
-import type { Bid, Inspection, Job } from '../../shared/types.js';
+import type { Bid, Inspection, Job, Run } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { SPEND_KINDS } from './budget.js';
 import { emit, subscribe, type Event } from '../events.js';
@@ -42,10 +46,10 @@ import { COMMISSION } from '../../shared/school-rules.js';
 import { commissionDue, schoolHired } from '../school/hooks.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
 
-export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission';
+export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission' | 'refund';
 
 /** The direction of each kind for the firm named on the row. */
-export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1 };
+export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1, refund: 1 };
 const MONEY_KINDS = Object.keys(FIRM_SIGN) as MoneyKind[];
 const COST_KINDS: MoneyKind[] = ['bid', 'run'];
 /** How often the engine runs dailyTick. */
@@ -297,15 +301,61 @@ function payReviewer(insp: Inspection, now: number): void {
   transfer({ kind: 'review-pay', firmId: insp.reviewerFirmId, micro, jobId: insp.jobId, runId: insp.runId, inspectionId: insp.id, agentId: insp.reviewerAgentId }, now);
 }
 
+/** A run the engine ended, not the firm: it ended crashed or killed and laid no scar. */
+export function engineFault(r: Pick<Run, 'outcome' | 'scar'> | null | undefined): boolean {
+  return !!r && (r.outcome === 'crashed' || r.outcome === 'killed') && !r.scar;
+}
+
+/** Whether a run's charges have been given back: by a refund row, or by a restatement's correction that names it. */
+export function refunded(runId: string): boolean {
+  return Boolean(
+    openDb()
+      .prepare(
+        `SELECT 1 FROM credits WHERE (kind = 'refund' AND run_id = ?)
+           OR (kind = 'correction' AND EXISTS (SELECT 1 FROM json_each(credits.json, '$.refundedRuns') AS r WHERE r.value = ?)) LIMIT 1`,
+      )
+      .get(runId, runId),
+  );
+}
+
+/**
+ * Gives a run's charges back to its firm when the engine ended it (economy
+ * change C): every `run` row of the run, from the city, as one `refund` row
+ * and its `credits.moved`. Once per run; nothing for any other ending.
+ */
+export function refundEngineFault(runId: string, now: number = clock()): CreditsMoved | null {
+  const r = storedRun(runId);
+  if (!r || !engineFault(r) || refunded(runId)) return null;
+  const row = openDb()
+    .prepare("SELECT COALESCE(SUM(CAST(ROUND(amount * 1000000) AS INTEGER)), 0) AS micro FROM credits WHERE run_id = ? AND firm_id = ? AND kind = 'run'")
+    .get(runId, r.firmId) as { micro: number | bigint };
+  return transfer({ kind: 'refund', firmId: r.firmId, micro: Number(row.micro), runId, jobId: r.jobId, agentId: r.agentId, extra: { outcome: r.outcome } }, now);
+}
+
+/** How far back the start of the treasury looks for engine-ended runs it did not hear end (an engine restart fails its live runs before it listens). */
+const REFUND_SWEEP_MS = 24 * 3600_000;
+
+/** Refunds every engine-ended run of the last day not yet refunded; older ones are the restatement's (tools/restate-economy.ts). */
+function sweepRefunds(now: number): void {
+  const since = iso(now - REFUND_SWEEP_MS);
+  const rows = openDb()
+    .prepare("SELECT id FROM runs WHERE json_extract(json, '$.outcome') IN ('crashed', 'killed') AND json_extract(json, '$.endedAt') >= ?")
+    .all(since) as Array<{ id: string }>;
+  for (const { id } of rows) refundEngineFault(id, now);
+}
+
 function onEvent(e: Event): void {
   const now = clock();
   const d = e.data as Record<string, unknown>;
   switch (e.type) {
     case 'bid.placed':
     case 'bid.satOut':
-    case 'run.ended':
       // The cost rows are already written: settle them into the ledger, never charge again.
       settle(now);
+      return;
+    case 'run.ended':
+      settle(now);
+      if (typeof d.runId === 'string') refundEngineFault(d.runId, now);
       return;
     case 'job.changed': {
       const j = d.job as Job | undefined;
@@ -326,6 +376,11 @@ function onEvent(e: Event): void {
 export function installTreasury(o: { now?: () => number } = {}): () => void {
   clock = o.now ?? (() => Date.now());
   cursor = settledThrough();
+  try {
+    sweepRefunds(clock());
+  } catch (err) {
+    console.error(`palimpsest: the treasury could not refund the runs the engine ended: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const off = subscribe((e) => {
     try {
       onEvent(e);
