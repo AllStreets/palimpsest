@@ -116,3 +116,15 @@ At least three rounds per screen. Use the frontend-design skill. The Brief begin
 - Exact colours and glow, within the colour goal.
 - Panel geometry, motion timing and control shapes.
 - How readouts attach to the city: which subjects get anchored readouts, and how they track the camera.
+
+## The locked direction (Connor, Nov 20)
+
+Connor picked Direction C, "Targeting", from three directions (A Phosphor, B Hologram, C Targeting). He took it with four changes he saw and approved in a second round. Reference: branch `redesign-brief-c` at 1020db1, stills in docs/superpowers/plans/redesign-stage1/c/ on that branch.
+
+- **The HUD.** The panel is warm black, marked by amber corner brackets and a range rail. A red lock-on is used only for the heaviest action, the autonomy grant, both in the list and on its tower in the city. Controls are targeting reticles. The data-stream texture behind lists stays subtle.
+- **Type.** Big Shoulders for display, Azeret Mono for readouts. No tracked capitals (test/no-tracked-caps.test.ts).
+- **One set of labels.** While a screen is open, the city's plates give way to the screen's pins. A district with nothing on the screen gets a quiet pin. The plates return when the screen closes.
+- **Depth.** Three panes with transform-only parallax: a nearer header, the list, and a back pane. No backdrop-filter on large areas.
+- **The top bar** is in this language on every screen.
+- **Leader lines** route in right angles and never cross a pin (`routeLeader`).
+- **Copy** is cut hard, as in B. A row is a headline plus figures, money sits on the key that spends it, and the full sentence is behind Why.
