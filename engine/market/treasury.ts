@@ -23,6 +23,10 @@
  *   `crashed` or `killed` with no scar), from the city, once per run
  *   (credit, economy change C). Bid fees and the costs of a run that failed,
  *   was capped or scarred are never refunded.
+ * - `correction`: a restatement of past charges under rules changed since
+ *   (tools/restate-economy.ts, once), from the city (credit). Its json names
+ *   the runs whose charges it gave back (`refundedRuns`), so they are never
+ *   refunded again.
  * - `commission`: the fee a firm pays the school to sail a voyage first
  *   (Phase 4 ruling 22), to the city, once, at commissioning (debit). It is
  *   the firm's whole cost: the voyage's own model calls and local minutes
@@ -46,10 +50,10 @@ import { COMMISSION } from '../../shared/school-rules.js';
 import { commissionDue, schoolHired } from '../school/hooks.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
 
-export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission' | 'refund';
+export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission' | 'refund' | 'correction';
 
 /** The direction of each kind for the firm named on the row. */
-export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1, refund: 1 };
+export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1, refund: 1, correction: 1 };
 const MONEY_KINDS = Object.keys(FIRM_SIGN) as MoneyKind[];
 const COST_KINDS: MoneyKind[] = ['bid', 'run'];
 /** How often the engine runs dailyTick. */
@@ -78,13 +82,28 @@ export interface CreditsMoved {
   agentId: string | null;
   at: string;
   /** A commission's fee (ruling 22): `reason: 'commission'` and the voyage it paid for. */
-  reason?: 'commission';
+  reason?: 'commission' | 'restatement';
   voyageId?: string;
+  /** A restatement's correction: the runs whose charges it gave back. */
+  refundedRuns?: string[];
+  /** A restatement's correction that started the firm's 72 hours below zero again from its own time. */
+  restartClock?: boolean;
+}
+
+/** What a restatement's correction carries on its row and its `credits.moved`. */
+export interface RestatementNote {
+  reason: 'restatement';
+  refundedRuns: string[];
+  restartClock: boolean;
+  window: { from: string; to: string };
+  parts: { bids: number; refunds: number };
 }
 
 let clock: () => number = () => Date.now();
 /** The highest credits row id already settled into the ledger. */
 let cursor = 0;
+/** Whether `cursor` has been read from the ledger in this process (installTreasury, or the first settle of a tool that never installs it). */
+let primed = false;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const msOf = (t: number | Date | string) => (typeof t === 'number' ? t : typeof t === 'string' ? Date.parse(t) : t.getTime());
@@ -152,6 +171,11 @@ function move(m: CreditsMoved): void {
  * up to date. Bids that sat out were charged too, so they settle here as well.
  */
 export function settle(now: number = clock()): void {
+  // A process that never installed the treasury (a one-time tool) must not settle the ledger's rows a second time.
+  if (!primed) {
+    cursor = Math.max(cursor, settledThrough());
+    primed = true;
+  }
   atomically(() => {
     const rows = openDb()
       .prepare('SELECT id, firm_id, run_id, kind, amount FROM credits WHERE id > ? ORDER BY id')
@@ -202,7 +226,7 @@ function updateBooks(now: number): void {
 
 /** Writes a money row the treasury itself moves (pay, review-pay, hire, sale) and its ledger entry. */
 function transfer(
-  o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; micro: number; runId?: string | null; jobId?: string | null; inspectionId?: string | null; agentId?: string | null; extra?: object; note?: { reason: 'commission'; voyageId: string } },
+  o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; micro: number; runId?: string | null; jobId?: string | null; inspectionId?: string | null; agentId?: string | null; extra?: object; note?: { reason: 'commission'; voyageId: string } | RestatementNote },
   now: number,
 ): CreditsMoved | null {
   if (!(o.micro > 0)) return null;
@@ -332,6 +356,26 @@ export function refundEngineFault(runId: string, now: number = clock()): Credits
   return transfer({ kind: 'refund', firmId: r.firmId, micro: Number(row.micro), runId, jobId: r.jobId, agentId: r.agentId, extra: { outcome: r.outcome } }, now);
 }
 
+/**
+ * A restatement's correction (tools/restate-economy.ts): `credits` move from
+ * the city to the firm as one `correction` row and its `credits.moved`.
+ * With `restartClock` and the firm still below zero after it, its 72 hours
+ * start again from `now`. Null when there is nothing to move.
+ */
+export function bookCorrection(firmId: string, credits: number, note: RestatementNote, now: number = clock()): CreditsMoved | null {
+  return atomically(() => {
+    const m = transfer({ kind: 'correction', firmId, micro: toMicro(credits), note }, now);
+    if (note.restartClock) restartNegativeClock(firmId, now);
+    return m;
+  });
+}
+
+/** Starts a firm's 72 hours below zero again from `now`, while it is below zero. */
+export function restartNegativeClock(firmId: string, now: number = clock()): void {
+  const bal = balances()[firmId];
+  if (typeof bal === 'number' && bal < 0) setFirmBooks(firmId, bal, iso(now));
+}
+
 /** How far back the start of the treasury looks for engine-ended runs it did not hear end (an engine restart fails its live runs before it listens). */
 const REFUND_SWEEP_MS = 24 * 3600_000;
 
@@ -376,6 +420,7 @@ function onEvent(e: Event): void {
 export function installTreasury(o: { now?: () => number } = {}): () => void {
   clock = o.now ?? (() => Date.now());
   cursor = settledThrough();
+  primed = true;
   try {
     sweepRefunds(clock());
   } catch (err) {

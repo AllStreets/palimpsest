@@ -213,7 +213,7 @@ function moveMoney(s: MarketState, d: Data): void {
   if (!f) return;
   // As the treasury writes the books: below zero since the first movement that took it there.
   f.balance = bal;
-  f.negativeSince = bal < 0 ? (f.negativeSince ?? str(d.at)) : null;
+  f.negativeSince = bal < 0 ? (d.restartClock === true ? str(d.at) : (f.negativeSince ?? str(d.at))) : null;
 }
 
 function layFloor(s: MarketState, towerId: string, floor: Floor): void {

@@ -112,3 +112,8 @@ test('a refund for a run the city ended reads in plain words on the books', () =
   const lines = bookLines([row('run', -20, 280, { jobId: 'job-1' }), row('refund', 20, 300, { jobId: 'job-1' }), row('refund', 5, 305)], names);
   assert.deepEqual(lines.map((l) => l.text), ['Work on Fix the parser', 'Refund: the city ended the work on Fix the parser', 'Refund: the city ended the work']);
 });
+
+test('a restatement of the books reads in plain words', () => {
+  const names = { agent: (id: string) => id, firm: (id: string) => id, job: () => null };
+  assert.deepEqual(bookLines([row('correction', 873.5, -111)], names).map((l) => l.text), ['Restated: last week’s bids and work charged again under the new rules']);
+});
