@@ -434,7 +434,6 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
     const score = kindScore(a);
     const n = cell('c-n', el('span', 'kind-score', score.text));
     if (score.reason) {
-      n.append(el('span', 'kind-score-why', score.reason));
       n.title = score.reason;
     }
     r.append(n);
