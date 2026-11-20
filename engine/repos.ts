@@ -25,6 +25,10 @@ function fnv1a32(str: string): number {
 /** One owner or name segment as GitHub allows it: letters, digits, '.', '_' and '-', never a leading '-'. */
 const SEGMENT = /^(?!-)[A-Za-z0-9_.-]+$/;
 
+/** GitHub's length caps: an owner is at most 39 characters, a repo name at most 100. */
+const MAX_OWNER = 39;
+const MAX_NAME = 100;
+
 /** The message for a name that is not owner/name. */
 export const BAD_NAME = 'Expected owner/name, each made of letters, digits, ".", "_" or "-", not starting with "-".';
 
@@ -35,7 +39,10 @@ export const BAD_NAME = 'Expected owner/name, each made of letters, digits, ".",
  */
 export function isValidFullName(fullName: string): boolean {
   const parts = fullName.split('/');
-  return parts.length === 2 && parts.every((p) => SEGMENT.test(p) && p !== '.' && p !== '..');
+  if (parts.length !== 2) return false;
+  const [owner, name] = parts;
+  if (owner.length > MAX_OWNER || name.length > MAX_NAME) return false;
+  return parts.every((p) => SEGMENT.test(p) && p !== '.' && p !== '..');
 }
 
 /** A root architectural style for `fullName`, stable across calls (same name, same style). */
