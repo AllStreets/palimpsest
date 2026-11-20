@@ -59,6 +59,38 @@ export function mutable(path: string): boolean {
 
 // ---------------------------------------------------------------- what is code
 
+/** True when a `/` at `i` begins a regex: the previous significant token is not an operand. */
+function regexAllowed(text: string, i: number): boolean {
+  let j = i - 1;
+  while (j >= 0 && (text[j] === ' ' || text[j] === '\t' || text[j] === '\r')) j--;
+  if (j < 0 || text[j] === '\n') return true;
+  const p = text[j];
+  if ('(,=:[!&|?{;+-*%<>~^'.includes(p)) return true;
+  if (/[\w$]/.test(p)) {
+    let k = j;
+    while (k >= 0 && /[\w$]/.test(text[k])) k--;
+    return text.slice(k + 1, j + 1) === 'return';
+  }
+  return false;
+}
+
+/** Index of the last character (flags included) of the regex literal starting at `i`, or -1 if the line holds no closing `/`. */
+function regexEnd(text: string, i: number): number {
+  let inClass = false;
+  for (let k = i + 1; k < text.length && text[k] !== '\n'; k++) {
+    const c = text[k];
+    if (c === '\\') k++;
+    else if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) {
+      let e = k;
+      while (/[A-Za-z]/.test(text[e + 1] ?? '')) e++;
+      return e;
+    }
+  }
+  return -1;
+}
+
 /**
  * For each line, which characters are code: false inside a string, a
  * template's text or a comment. A template's `${...}` is code.
@@ -93,6 +125,10 @@ export function codeMask(text: string, lang: Lang): boolean[][] {
           mark(false);
           mark(false);
           i++;
+        } else if (lang === 'js' && c === '/' && regexAllowed(text, i) && regexEnd(text, i) > i) {
+          const end = regexEnd(text, i);
+          for (let k = i; k <= end; k++) mark(false);
+          i = end;
         } else if (hashComments && c === '#') {
           s = { kind: 'line' };
           mark(false);
