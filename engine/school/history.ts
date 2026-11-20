@@ -68,6 +68,8 @@ export type TestCheck = (repo: Repo, sha: string, signal: AbortSignal) => Promis
 
 /** At most this many test checks per call: each is an install and a suite, and the gate is read before each. */
 export const CHECKS_PER_CALL = 10;
+/** No new test check starts once a call has run this long (a check already started finishes). */
+export const CHECK_BUDGET_MS = 3 * 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SHA = /^[0-9a-f]{40}$/;
@@ -329,7 +331,9 @@ export async function verifiedChanges(repo: Repo, now: number, o: { check?: bool
       if (command) {
         let check = rows.get(c.sha)?.check ?? null;
         if (check && check.command !== command) check = null;
-        if (!check && o.check && checks < CHECKS_PER_CALL && !signal.aborted && (await gateNow('heavy', clock())).ok) {
+        // `now` is when the call began, so clock() - now is the time spent; no new check starts once it reaches the budget.
+        let at = 0;
+        if (!check && o.check && checks < CHECKS_PER_CALL && !signal.aborted && (at = clock()) - now < CHECK_BUDGET_MS && (await gateNow('heavy', at)).ok) {
           checks++;
           const got = await (testCheck ?? realTestCheck)(repo, c.sha, signal);
           if (got) {

@@ -17,7 +17,7 @@ import { record } from '../engine/ledger.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { getRepo } from '../engine/repos.js';
 import { resetGateCache } from '../engine/school/gate.js';
-import { setTestCheck, verifiedChanges, verifiedCounts, type VerifiedChange } from '../engine/school/history.js';
+import { CHECK_BUDGET_MS, setTestCheck, verifiedChanges, verifiedCounts, type VerifiedChange } from '../engine/school/history.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Inspection, Repo } from '../shared/types.js';
@@ -262,6 +262,25 @@ test('a pass that starts inside the window stops starting checks once its clock 
   assert.equal(checked.length, 1, 'only the check begun inside the window ran');
   assert.ok(calls >= 2, 'every check re-read the clock');
   assert.ok(list.every((x) => x.sha !== w.failed || x.kind !== 'commit'), 'an unchecked commit is not verified');
+});
+
+test('no new test check starts once the call has run past CHECK_BUDGET_MS', async () => {
+  const w = world();
+  let calls = 0;
+  // the first read is at the call's start; every later one is past the budget
+  const clock = () => NOW + (calls++ === 0 ? 0 : CHECK_BUDGET_MS + 1);
+  await verifiedChanges(w.repo, NOW, { check: true, clock });
+  assert.equal(checked.length, 1, 'only the check begun inside the budget ran');
+});
+
+test('checks run normally under CHECK_BUDGET_MS', async () => {
+  const w = world();
+  let calls = 0;
+  const clock = () => NOW + 1000 * ++calls;
+  await verifiedChanges(w.repo, NOW, { check: true, clock });
+  assert.ok(checked.length > 1, 'several checks ran');
+  assert.ok(checked.includes(w.c40));
+  assert.ok(checked.includes(w.failed));
 });
 
 test('with no test check declared, a surviving commit is verified without one', async () => {
