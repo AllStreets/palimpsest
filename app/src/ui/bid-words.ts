@@ -46,11 +46,12 @@ export const BID_TERMS: ReadonlyArray<{ term: string; name: string; means: strin
  * A job cooling off after rounds no firm took, in a sentence for its page:
  * "No firm took it last round. Next bids at 21:40."
  */
-export function nextBidsWords(rounds: number, at: string, now: number): string {
+export function nextBidsWords(rounds: number, at: string, now: number, budgetHeld = false): string {
   const when = new Date(at);
   const day = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((day(when) - day(new Date(now))) / 86_400_000);
   const time = days <= 0 ? `at ${clock(when)}` : days === 1 ? `tomorrow at ${clock(when)}` : `${when.toLocaleDateString('en-GB', { weekday: 'long' })} at ${clock(when)}`;
+  if (budgetHeld) return `No firm could bid last round: the budget held them. Next bids ${time}.`;
   const took = rounds > 1 ? `No firm took it in the last ${rounds} rounds.` : 'No firm took it last round.';
   return `${took} Next bids ${time}.`;
 }

@@ -584,6 +584,7 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
 
     // ------------------------------------------------------------ Phase 4: the school
     case 'school.enabled':
+    case 'budget.opened':
     case 'merge.followup':
       // A setting and a fact for the durability net's rows; no table holds them. A follow-up
       // never halts and never scars, so it touches neither floors nor halts here.

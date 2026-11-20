@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
-import { award, better, BID_COOL_OFF_MS, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
+import { award, better, BID_COOL_OFF_MS, NO_SLOT, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
 import { acquire, LOCAL_PLAN_FLOOR, noteSseClients, PLAN_ESTIMATE, planFloor, resetBudget, treasury, type Lease } from '../engine/market/budget.js';
 import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fake-provider.js';
 import { job, postManualJob, settleJobEffects } from '../engine/market/jobs.js';
@@ -775,4 +775,118 @@ test('a benched firm places no bids and is charged nothing, and bids again once 
   // Back above the line, it bids again.
   addFirm('deep', { balance: -149.5, slot: 900 });
   assert.deepEqual(eligibleAgents(bidding()).map((a) => a.id).sort(), ['afloat', 'sunk']);
+});
+
+// ---------------------------------------------------------------- cooling off, when the budget held firms out
+
+/** Night, with the night cap at nothing: every Claude firm is refused for the budget, a local firm still bids. */
+function nightHeld(): void {
+  reading();
+  noteSseClients(0, NOW - 40 * MIN);
+  patchSettings({ nightCapPct: 0 });
+}
+
+/** One round on `j` from `t`: the agents bid, the window closes, the award runs. Returns the time the award ran. */
+async function round(j: Job, t: number, first = false): Promise<number> {
+  const opened = first ? (job(j.id) as Job) : openBidding(job(j.id) as Job, t);
+  assert.equal(opened.status, 'bidding', 'the round opened');
+  await collectBids(opened, t);
+  const closed = t + getSettings().bidWindowSec * 1000 + 1;
+  award(job(j.id) as Job, closed);
+  return closed;
+}
+
+test('a round that the budget held a firm out of does not escalate the wait', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  nightHeld();
+  addAgent('claudia', 'alpha', 'claude:sonnet');
+  addAgent('local', 'beta', 'ollama:qwen');
+  // The one local firm bids far above the job's worth, so no bid is worth its price.
+  script({ local: { price: 500, confidence: 0.9 } });
+  const j = bidding('normal');
+  let t = NOW;
+  for (let k = 1; k <= 4; k++) {
+    const at = await round(j, t, k === 1);
+    const e = entries().filter((x) => x.kind === 'job.awarded').at(-1)!.data as { budgetHeld?: boolean; noAwardRounds: number; coolOffUntil: string; why: string };
+    assert.equal(e.budgetHeld, true);
+    assert.equal(e.noAwardRounds, 0, 'a held round is not counted');
+    assert.equal(Date.parse(e.coolOffUntil) - at, BID_COOL_OFF_MS, 'and waits the base ten minutes');
+    assert.match(e.why, /budget held/);
+    assert.deepEqual(coolOff(j.id), { rounds: 0, until: at + BID_COOL_OFF_MS, budgetHeld: true });
+    t = at + BID_COOL_OFF_MS;
+  }
+});
+
+test('a real empty round still escalates', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  addAgent('local', 'beta', 'ollama:qwen');
+  script({ local: { price: 500, confidence: 0.9 } });
+  const j = bidding('normal');
+  let t = NOW;
+  const waits: number[] = [];
+  for (let k = 1; k <= 3; k++) {
+    const at = await round(j, t, k === 1);
+    const c = coolOff(j.id);
+    assert.equal(c.rounds, k);
+    assert.equal((entries().filter((x) => x.kind === 'job.awarded').at(-1)!.data as { budgetHeld?: boolean }).budgetHeld, false);
+    waits.push(Math.round(((c.until as number) - at) / MIN));
+    t = c.until as number;
+  }
+  assert.deepEqual(waits, [10, 20, 40]);
+});
+
+test('old rounds the ledger recorded without budgetHeld are read back from their sat-out reasons', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  addAgent('local', 'beta', 'ollama:qwen');
+  const j = bidding('normal');
+  const at = new Date(NOW).toISOString();
+  const night = { agentId: 'claudia', reason: 'night: Unattended Claude use this week is 20.0% of the 20% night cap.' };
+  // Three rounds with the budget holding Claude out, written as the overnight ones were (a long wait recorded).
+  for (const [k, hours] of [[1, 1], [2, 3], [3, 9]] as const) {
+    record('job.awarded', { jobId: j.id, tier: 'normal', considered: [], satOut: [night], chosen: null, why: 'x', at, coolOffUntil: new Date(NOW + hours * HOUR).toISOString(), noAwardRounds: k });
+  }
+  assert.deepEqual(coolOff(j.id), { rounds: 0, until: NOW + BID_COOL_OFF_MS, budgetHeld: true });
+  // A sit-out for no free slot is not the budget: that round counts.
+  record('job.awarded', { jobId: j.id, tier: 'normal', considered: [], satOut: [{ agentId: 'claudia', reason: NO_SLOT }], chosen: null, why: 'x', at, coolOffUntil: at, noAwardRounds: 1 });
+  assert.equal(coolOff(j.id).rounds, 1);
+});
+
+test('raising a cap reopens cooling jobs at their next tick, held or not', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  addAgent('local', 'beta', 'ollama:qwen');
+  const real = bidding('normal');
+  let t = NOW;
+  for (let k = 0; k < 4; k++) {
+    award(job(real.id) as Job, t + 121_000);
+    t = coolOff(real.id).until as number;
+    if (k < 3) openBidding(job(real.id) as Job, t);
+  }
+  const waits = coolOff(real.id);
+  assert.equal(waits.rounds, 4);
+  const soon = NOW + 5 * MIN;
+  assert.equal(openBidding(job(real.id) as Job, soon).status, 'open', 'cooling');
+
+  patchSettings({ nightCapPct: 40 });
+  assert.equal(openBidding(job(real.id) as Job, soon).status, 'bidding', 'the change reopened it');
+  // The count is kept: the next empty round waits the next step.
+  award(job(real.id) as Job, soon + 121_000);
+  assert.equal(coolOff(real.id).rounds, 5);
+  // And a round that ends after the change cools again (the change is not a standing key).
+  assert.equal(openBidding(job(real.id) as Job, soon + 122_000).status, 'open');
+});
+
+test('a held job reopens as soon as a blocked kind of firm can bid again', async () => {
+  const { coolOff } = await import('../engine/market/bids.js');
+  nightHeld();
+  addAgent('claudia', 'alpha', 'claude:sonnet');
+  addAgent('local', 'beta', 'ollama:qwen');
+  script({ local: { price: 500, confidence: 0.9 } });
+  const j = bidding('normal');
+  const at = await round(j, NOW, true);
+  assert.equal(coolOff(j.id).budgetHeld, true);
+  // Still night and still held: not before the ten minutes.
+  assert.equal(openBidding(job(j.id) as Job, at + MIN).status, 'open');
+  // The window resets (the night wears off here by the cap going to a level that allows a bid), without a settings write.
+  openDb().prepare("UPDATE settings SET json = '40' WHERE key = 'nightCapPct'").run();
+  assert.equal(openBidding(job(j.id) as Job, at + MIN).status, 'bidding');
 });

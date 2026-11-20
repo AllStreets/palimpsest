@@ -91,5 +91,11 @@ export function patchSettings(p: Partial<Settings>): Settings {
   const next = getSettings();
   if (was === true && !next.school.enabled) onSchoolOff?.(Date.now());
   else if (was === false && next.school.enabled) record('school.enabled', { on: true, at: new Date().toISOString() });
+  // The caps moved: jobs cooling off after rounds the budget may have held firms out of reopen at their next tick.
+  const moved = Object.keys(p).filter((k) => BUDGET_KEYS.has(k));
+  if (moved.length) record('budget.opened', { why: 'settings', keys: moved, at: new Date().toISOString() });
   return next;
 }
+
+/** The settings that open or close the budget to a bid. */
+const BUDGET_KEYS = new Set(['dayCapPct', 'nightCapPct', 'todayCapPct', 'hardStopPct', 'anthropicApi', 'resumeStaleUntil']);

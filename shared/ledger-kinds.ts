@@ -87,6 +87,8 @@ export const LEDGER_KINDS = [
   'autonomy.acted',
   'graduate.made',
   'merge.followup',
+  // Nov 20: the budget opened up (its caps changed through Settings), so cooling jobs reopen at their next tick.
+  'budget.opened',
 ] as const;
 
 export type LedgerKind = (typeof LEDGER_KINDS)[number];

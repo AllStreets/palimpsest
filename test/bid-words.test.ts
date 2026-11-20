@@ -38,4 +38,5 @@ test('a job cooling off says plainly that no firm took it and when bids open nex
   assert.equal(nextBidsWords(1, new Date(2026, 10, 19, 21, 40).toISOString(), now), 'No firm took it last round. Next bids at 21:40.');
   assert.equal(nextBidsWords(4, new Date(2026, 10, 19, 23, 20).toISOString(), now), 'No firm took it in the last 4 rounds. Next bids at 23:20.');
   assert.equal(nextBidsWords(9, new Date(2026, 10, 20, 21, 0).toISOString(), now), 'No firm took it in the last 9 rounds. Next bids tomorrow at 21:00.');
+  assert.equal(nextBidsWords(0, new Date(2026, 10, 19, 21, 40).toISOString(), now, true), 'No firm could bid last round: the budget held them. Next bids at 21:40.');
 });

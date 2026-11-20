@@ -475,3 +475,14 @@ test("replay rebuilds the nets exactly from nets.ts's own entries, and the nets 
   openDb().prepare("UPDATE nets SET current = 1 WHERE net = 'master' AND version = 1").run();
   assert.ok(verifyReplay().diffs.some((d) => /master v1/.test(d)));
 });
+
+test('replay takes a held round and a budget.opened entry, and the market stays as it was', () => {
+  const strip = (x: object) => JSON.stringify({ ...x, lastId: 0 });
+  const before = strip(replay(entries()));
+  record('job.awarded', { jobId: 'job-held', tier: 'normal', considered: [], satOut: [{ agentId: 'a', reason: 'night: held' }], chosen: null, why: 'x', at: '2026-11-19T22:00:00.000Z', coolOffUntil: '2026-11-19T22:10:00.000Z', noAwardRounds: 0, budgetHeld: true });
+  record('budget.opened', { why: 'settings', keys: ['nightCapPct'], at: '2026-11-20T17:00:00.000Z' });
+  const s = replay(entries());
+  assert.deepEqual(s.unknown, []);
+  assert.equal(strip(s), before);
+  assert.equal(verifyReplay().ok, true, verifyReplay().diffs.join('\n'));
+});

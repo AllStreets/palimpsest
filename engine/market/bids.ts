@@ -38,7 +38,7 @@ import { query, record } from '../ledger.js';
 import { appraise } from '../school/hooks.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
-import { acquire, charge, creditsFor, PLAN_ESTIMATE, planFloor, unattended } from './budget.js';
+import { acquire, callPaused, charge, creditsFor, PLAN_ESTIMATE, planFloor, unattended } from './budget.js';
 import { agent as agentById, firm, listAgents } from './firms.js';
 import { job as storedJob, transition } from './jobs.js';
 import { EXCHANGE, siteOf, startTrip, whereIs } from './trips.js';
@@ -107,33 +107,85 @@ export function bidById(id: string): Bid | null {
 
 // ---------------------------------------------------------------- the window
 
-/**
- * Where a job stands in its cooling off: how many rounds in a row awarded
- * nothing, and until when it waits before the next (null when it need not
- * wait). An award, his edit of the job (a `job.changed` that keeps its
- * status: scope, acceptance or tier) or his retry (failed back to open)
- * ends the run of empty rounds, and with it any wait.
- */
-export function coolOff(jobId: string): { rounds: number; until: number | null } {
-  const rows = openDb()
+/** The budget's own reasons for refusing a call (budget.ts `Paused`); `busy` (no free slot) is not one. */
+const BUDGET_REASON = /^(stopped|cap|hard|stale|night): /;
+
+/** Whether a sat-out reason is the budget holding the firm out of the round. */
+export function heldByBudget(reason: string): boolean {
+  return BUDGET_REASON.test(reason);
+}
+
+interface CoolState {
+  rounds: number;
+  until: number | null;
+  budgetHeld: boolean;
+  /** The agents the budget held out of the latest empty round. */
+  held: string[];
+}
+
+function coolState(jobId: string): CoolState {
+  const db = openDb();
+  const rows = db
     .prepare(
-      `SELECT kind, json_extract(json, '$.chosen.id') AS chosen, json_extract(json, '$.coolOffUntil') AS until,
+      `SELECT id, kind, json_extract(json, '$.chosen.id') AS chosen, json_extract(json, '$.coolOffUntil') AS until,
+              json_extract(json, '$.at') AS at, json_extract(json, '$.budgetHeld') AS bh, json_extract(json, '$.satOut') AS sat,
               json_extract(json, '$.from') AS f, json_extract(json, '$.to') AS t
        FROM ledger WHERE job_id = ? AND kind IN ('job.awarded', 'job.changed') ORDER BY id DESC`,
     )
-    .iterate(jobId) as Iterable<{ kind: string; chosen: string | null; until: string | null; f: string | null; t: string | null }>;
+    .iterate(jobId) as Iterable<{ id: number | bigint; kind: string; chosen: string | null; until: string | null; at: string | null; bh: number | null; sat: string | null; f: string | null; t: string | null }>;
   let rounds = 0;
   let until: number | null = null;
+  let budgetHeld = false;
+  let held: string[] = [];
+  let seen = false;
+  let lastId = 0;
   for (const r of rows) {
     if (r.kind === 'job.changed') {
       if (r.f === r.t || (r.f === 'failed' && r.t === 'open')) break;
       continue;
     }
     if (r.chosen !== null) break;
-    if (rounds === 0 && typeof r.until === 'string' && Number.isFinite(Date.parse(r.until))) until = Date.parse(r.until);
-    rounds++;
+    let sat: Array<{ agentId?: unknown; reason?: unknown }> = [];
+    try {
+      sat = r.sat ? (JSON.parse(r.sat) as typeof sat) : [];
+    } catch {
+      sat = [];
+    }
+    const heldHere = sat.filter((x) => typeof x.reason === 'string' && heldByBudget(x.reason));
+    // A round the budget held a firm out of does not count: the ledger says so (`budgetHeld`), or, for rounds written before it did, the sat-out reasons.
+    const isHeld = r.bh === null ? heldHere.length > 0 : r.bh === 1;
+    if (!seen) {
+      seen = true;
+      lastId = Number(r.id);
+      budgetHeld = isHeld;
+      held = heldHere.map((x) => String(x.agentId));
+      const at = typeof r.at === 'string' ? Date.parse(r.at) : NaN;
+      if (isHeld && Number.isFinite(at)) until = at + BID_COOL_OFF_MS;
+      else if (typeof r.until === 'string' && Number.isFinite(Date.parse(r.until))) until = Date.parse(r.until);
+    }
+    if (!isHeld) rounds++;
   }
-  return { rounds, until };
+  // The budget opened up (the caps changed through Settings) after the latest empty round: the wait is over, the count stays.
+  if (seen && until !== null) {
+    const opened = db.prepare("SELECT MAX(id) AS id FROM ledger WHERE kind = 'budget.opened'").get() as { id: number | bigint | null };
+    if (opened.id !== null && Number(opened.id) > lastId) until = null;
+  }
+  return { rounds, until, budgetHeld, held };
+}
+
+/**
+ * Where a job stands in its cooling off: how many rounds in a row awarded
+ * nothing, and until when it waits before the next (null when it need not
+ * wait). An award, his edit of the job (a `job.changed` that keeps its
+ * status: scope, acceptance or tier) or his retry (failed back to open)
+ * ends the run of empty rounds, and with it any wait. A round the budget
+ * held a firm out of is not counted and waits only the base ten minutes
+ * (`budgetHeld`); the budget opening up after the latest round (a
+ * `budget.opened` entry) ends the wait but keeps the count.
+ */
+export function coolOff(jobId: string): { rounds: number; until: number | null; budgetHeld?: true } {
+  const c = coolState(jobId);
+  return c.budgetHeld ? { rounds: c.rounds, until: c.until, budgetHeld: true } : { rounds: c.rounds, until: c.until };
 }
 
 /** When the job may open for bids again after rounds that awarded nothing; else null. */
@@ -157,10 +209,17 @@ function waitWords(ms: number): string {
  * every tick; callers read the returned status.
  */
 export function openBidding(j: Job, now: number = Date.now()): Job {
-  const until = coolingOffUntil(j.id);
-  if (until !== null && now < until) return storedJob(j.id) ?? j;
+  const c = coolState(j.id);
+  if (c.until !== null && now < c.until && !(c.budgetHeld && budgetOpenedFor(c.held, now))) return storedJob(j.id) ?? j;
   const closeAt = new Date(now + getSettings().bidWindowSec * 1000).toISOString();
   return transition(j, 'bidding', { bidsCloseAt: closeAt, awardedBid: null });
+}
+
+/** Whether any agent the budget held out of the last round could now start a plan call: a window reset, a cap raised or a blocked kind of firm able again. */
+function budgetOpenedFor(agentIds: readonly string[], now: number): boolean {
+  const models = new Set(listAgents().filter((a) => agentIds.includes(a.id)).map((a) => a.model));
+  for (const m of models) if (callPaused(m, PLAN_ESTIMATE, now) === null) return true;
+  return false;
 }
 
 /** Agents that may bid: working, in an active firm that is not benched and the job has not excluded, bidding on its tier. */
@@ -508,8 +567,10 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
   const chosen = schoolRanked ? (schoolRanked.find((w) => w.ev > 0)?.bid ?? null) : plain;
   const moved = school !== null && (chosen?.id ?? null) !== (plain?.id ?? null);
   // Rounds in a row with no award, this one included, and the wait they earn (economy change A).
-  const emptyRounds = chosen ? 0 : coolOff(cur.id).rounds + 1;
-  const wait = chosen ? 0 : coolOffMs(emptyRounds);
+  // A round the budget held a firm out of does not count: the same firms might bid once it opens, so it waits only the base ten minutes.
+  const budgetHeld = !chosen && satOut.some((s) => heldByBudget(s.reason));
+  const emptyRounds = chosen ? 0 : coolOff(cur.id).rounds + (budgetHeld ? 0 : 1);
+  const wait = chosen ? 0 : budgetHeld ? BID_COOL_OFF_MS : coolOffMs(emptyRounds);
   const parts: string[] = [];
   if (chosen) {
     const w = schoolRanked?.find((x) => x.bid.id === chosen.id);
@@ -521,8 +582,9 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     const others = ranked.filter((b) => b !== chosen);
     if (others.length) parts.push(`Also considered: ${others.map(describe).join('; ')}.`);
   } else {
-    const again = `the job goes back on the board and opens again after ${waitWords(wait)}${emptyRounds > 1 ? ` (${emptyRounds} rounds in a row with no award)` : ''}.`;
+    const again = `the job goes back on the board and opens again after ${waitWords(wait)}${emptyRounds > 1 && !budgetHeld ? ` (${emptyRounds} rounds in a row with no award)` : ''}.`;
     parts.push(bids.length ? `No bid had a positive expected value, so ${again}` : `No bids came in, so ${again}`);
+    if (budgetHeld) parts.push('The budget held some firms out of this round, so it does not count toward the longer waits.');
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
@@ -542,6 +604,8 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     // The wait doubles with each round in a row that awarded nothing, up to a day.
     coolOffUntil: chosen ? null : new Date(now + wait).toISOString(),
     noAwardRounds: emptyRounds,
+    // The budget held a firm out of this empty round: it is not counted and waits the base ten minutes; replay and coolOff read it back.
+    budgetHeld,
     // Decision 14: the appraisals the award weighed, and whether they changed the choice (its later rows are then partly its own).
     ...(school ? { appraisals: Object.fromEntries(school.map((w) => [w.bid.id, w.bid.appraisal])) } : {}),
     ...(moved ? { appraiserMoved: true } : {}),

@@ -51,7 +51,7 @@ function standing(j: Job, run: RunView | null, names: Names, nextBids: JobDetail
       return 'Proposed by the city. No firm bids on it until you accept it on the board.';
     case 'open':
       // Cooling off after rounds no firm took: say so, and when the next round opens.
-      if (nextBids && Date.parse(nextBids.at) > Date.now()) return nextBidsWords(nextBids.rounds, nextBids.at, Date.now());
+      if (nextBids && Date.parse(nextBids.at) > Date.now()) return nextBidsWords(nextBids.rounds, nextBids.at, Date.now(), nextBids.budgetHeld);
       return 'Open, waiting for its round of bids to open.';
     case 'bidding':
       return `Taking bids: ${closesIn(j.bidsCloseAt, Date.now())}.`;
@@ -638,7 +638,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
       if (sat) box.append(sat);
       sec.append(box);
     }
-    if (!live && j.status === 'open' && d.nextBids && Date.parse(d.nextBids.at) > Date.now()) sec.append(el('p', 'job-award-after', nextBidsWords(d.nextBids.rounds, d.nextBids.at, Date.now())));
+    if (!live && j.status === 'open' && d.nextBids && Date.parse(d.nextBids.at) > Date.now()) sec.append(el('p', 'job-award-after', nextBidsWords(d.nextBids.rounds, d.nextBids.at, Date.now(), d.nextBids.budgetHeld)));
     if (!rounds.length && !live) sec.append(el('p', 'detail-quiet', j.status === 'proposed' ? 'No round yet: firms bid once you accept it.' : 'No round yet: it opens for bids on the next round.'));
     return sec;
   }

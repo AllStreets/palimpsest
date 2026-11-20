@@ -268,7 +268,7 @@ function nextBidsOf(j: Job): JobDetail['nextBids'] {
   if (j.status !== 'open') return null;
   const c = coolOff(j.id);
   if (c.until === null || c.until <= Date.now()) return null;
-  return { at: new Date(c.until).toISOString(), rounds: c.rounds };
+  return { at: new Date(c.until).toISOString(), rounds: c.rounds, ...(c.budgetHeld ? { budgetHeld: true } : {}) };
 }
 
 function text(b: Record<string, unknown>, key: string, max: number, required: boolean): string | undefined {
