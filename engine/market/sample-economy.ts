@@ -102,7 +102,7 @@ import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
 import { analysesSettled, earnedFloors, getRepo, holdAuditTrigger, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
 import { assertSampleHome, SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, sampleReading, SAMPLE_TREES, useSampleFolders } from '../sample.js';
-import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
+import { award, bidList, coolOff, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
 import { charge, unattended } from './budget.js';
@@ -916,6 +916,23 @@ class Pipeline {
     if (failed.attempts < 2) transition(failed, 'open', { runId: null, awardedBid: null, bidsCloseAt: null });
     return ended;
   }
+
+  /**
+   * The engine ends the run, not the firm (a restart): what it had spent stays charged until the
+   * treasury's run.ended listener gives it back, no scar is laid, the job returns to the board with
+   * its attempt kept and no firm excluded.
+   */
+  kill(r: Run, credits: number, reason: string): Run {
+    const charged = charge({ runId: r.id, firmId: r.firmId, model: r.model, kind: 'run', usage: usageOf(r.model, credits), unattended: r.unattended, at: Date.now(), minCredits: credits });
+    const turns = Math.round(this.between(6, 14));
+    const progress = { ...r.progress, toolCalls: turns * 2, turns, credits: charged, weightedTokens: r.model.startsWith('ollama:') ? 0 : Math.round(charged * tokensPerCredit()) };
+    const ended: Run = { ...r, progress, outcome: 'killed', endedReason: reason, endedAt: iso(), stage: 'done', scar: false };
+    saveRun(ended);
+    record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'killed', reason, summary: null, run: ended });
+    emit('run.ended', { runId: r.id, outcome: 'killed', reason });
+    transition(storedJob(r.jobId)!, 'open', { runId: null, awardedBid: null, bidsCloseAt: null });
+    return ended;
+  }
 }
 
 // ---------------------------------------------------------------- the event queue
@@ -1548,6 +1565,7 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
   const y = new Pipeline(rng('sample-yesterday'));
   scheduleAudits(now, start, q);
   scheduleYesterday(now, y, q);
+  scheduleBench(now, q);
   scheduleBriefs(now, q);
   await q.drain(time, now);
   time.set(now);
@@ -1959,7 +1977,7 @@ interface VoyagePlan {
 }
 
 /** The view of a voyage under way at generation `g`, its race unscored, `runs` done. */
-function sailingView(p: VoyagePlan, g: number, runs: number, status: 'sailing' | 'paused', o: { reason?: string | null; pausedAt?: string | null } = {}): VoyageView {
+function sailingView(p: VoyagePlan, g: number, runs: number, status: 'sailing' | 'paused', o: { reason?: string | null; pausedAt?: string | null; lastRunAt?: string | null } = {}): VoyageView {
   return {
     id: p.id,
     arena: p.arena,
@@ -1977,6 +1995,7 @@ function sailingView(p: VoyagePlan, g: number, runs: number, status: 'sailing' |
     repo: p.repo,
     reason: o.reason ?? null,
     pausedAt: o.pausedAt ?? null,
+    lastRunAt: o.lastRunAt ?? (runs > 0 ? iso() : null),
     champion: null,
     vsLocal: [],
     claim: false,
@@ -2299,6 +2318,10 @@ function seedSchool(now: number, start: number, q: Queue): void {
   });
   q.push(ago(6 * HOUR), () => {
     putTrain('train.started', running(TRAIN.sailing2, 'voyage', Date.now()), { voyageId: sailing.id });
+    announceVoyage('voyage.generation', sailingView(sailing, 2, 137, 'sailing'));
+  });
+  // A run finished a few minutes ago, so the voyage reads as moving (its count stays where it was).
+  q.push(ago(7 * MIN), () => {
     announceVoyage('voyage.generation', sailingView(sailing, 2, 137, 'sailing'));
   });
   // Two of its parents on their way to the university (ruling 28), once the engine has its plot.
@@ -3093,6 +3116,105 @@ function scheduleYesterday(now: number, y: Pipeline, q: Queue): void {
     const j = openBidding(accepted, Date.now());
     y.round(j, agentOf('dagny-hollis'), [agentOf('ines-ashlar'), agentOf('oskar-kiln')]);
   });
+}
+
+/** Where Kiln Brothers' books are left after the runaway run: well past the bench line, so its 72 hours stay paused. */
+const BENCH_LEFT = -190;
+
+/**
+ * The new economy, on its own seed so the history above is unchanged.
+ *
+ * One quarry job goes badly for Kiln Brothers: Bruno Kiln wins it, the engine restarts under his run (its charges
+ * come back as a refund), he wins it again and runs away with the credits on the local model until the firm sits
+ * past the bench line. The city pays it its stipend at the pass that follows, and he withdraws the job.
+ * Kiln's credits are local ones, so the plan's windows never see them.
+ *
+ * A second job, no firm takes: three rounds in a row award nothing, so it is cooling off at the seed time.
+ */
+function scheduleBench(now: number, q: Queue): void {
+  const y = new Pipeline(rng('sample-bench'));
+  const ago = (ms: number) => now - ms;
+  const agentOf = (id: string) => storedAgent(id)!;
+  let runaway: Job;
+  let first: Run;
+  let second: Run;
+  const round = (at: number, then: (j: Job, bid: Bid) => void): void => {
+    q.push(at, () => {
+      const j = openBidding(storedJob(runaway.id)!, Date.now());
+      const bid = y.round(j, agentOf('bruno-kiln'), [agentOf('ines-ashlar')]);
+      q.push(Date.parse(j.bidsCloseAt!) + 5_000, () => {
+        y.award(j, bid);
+        then(j, bid);
+      });
+    });
+  };
+  q.push(ago(30 * HOUR), () => {
+    runaway = postManualJob({ repo: REPO.Q, title: 'Cost model: stop the planner choosing nested loops on skewed joins', tier: 'high', body: 'Cost model: stop the planner choosing nested loops on skewed joins.\n\nKeep the change inside the scope and show it with a test.' });
+  });
+  round(ago(30 * HOUR) + 15_000, (j, bid) => {
+    const t = Date.now();
+    q.push(t + 40_000, () => {
+      first = y.begin(storedJob(j.id)!, bid);
+    });
+    q.push(t + 100_000, () => {
+      first = y.install(first);
+    });
+    q.push(t + 3 * MIN, () => {
+      first = y.working(first);
+    });
+    q.push(ago(28 * HOUR), () => {
+      first = y.kill(first, 11.2, 'The engine restarted while the run was working.');
+    });
+  });
+  round(ago(5 * HOUR), (j, bid) => {
+    const t = Date.now();
+    q.push(t + 40_000, () => {
+      second = y.begin(storedJob(j.id)!, bid);
+    });
+    q.push(t + 100_000, () => {
+      second = y.install(second);
+    });
+    q.push(t + 3 * MIN, () => {
+      second = y.working(second);
+    });
+    // It never settled: a long run that spent past its plan until Kiln Brothers was past the bench line.
+    q.push(ago(3 * MIN), () => {
+      settle(Date.now());
+      const spend = round2(Math.max(5, (firm('kiln')?.balance ?? 0) - BENCH_LEFT));
+      writeLog(second.id, [
+        { at: iso(Date.now() - 4 * HOUR), kind: 'system', text: 'tool loop qwen3-coder:30b: six tools, at most 40 turns' },
+        { at: iso(Date.now() - 3 * HOUR), kind: 'tool', text: 'read_file src/planner/cost.rs' },
+        { at: iso(Date.now() - 2 * HOUR), kind: 'assistant', text: 'Each estimate I add moves the join order on the other fixtures. I am going back to the cost of a skewed key.' },
+        { at: iso(Date.now() - 20 * MIN), kind: 'assistant', text: 'The third version passes the skewed case and fails five others. I cannot hold both.' },
+        { at: iso(), kind: 'result', text: 'No change made: the estimate that fixes the skewed join breaks the planner tests that were passing.' },
+      ]);
+      second = y.giveUp(second, spend);
+    });
+    // He withdrew it, and the city's pass that follows pays the benched firm its stipend.
+    q.push(ago(2 * MIN), () => {
+      transition(storedJob(j.id)!, 'withdrawn', {}, { by: 'him' });
+    });
+    q.push(ago(MIN), () => bankruptcyTick(Date.now()));
+  });
+
+  // A job nobody takes: three rounds in a row award nothing, waits of 10 and 20 minutes between them, then 40 minutes still to run.
+  let nobody: Job;
+  const t1 = ago(41 * MIN);
+  q.push(t1 - 30_000, () => {
+    nobody = postManualJob({ repo: REPO.A, title: 'Chain of custody: sign each transfer with a hardware key', tier: 'high', body: 'Chain of custody: sign each transfer with a hardware key.\n\nKeep the change inside the scope and show it with a test.' });
+  });
+  const empty = (open: number, last: boolean): void => {
+    q.push(open, () => {
+      const j = openBidding(storedJob(nobody.id)!, Date.now());
+      q.push(Date.parse(j.bidsCloseAt!) + 5_000, () => {
+        award(j, Date.parse(j.bidsCloseAt!) + 1_000);
+        if (last && !coolOff(j.id).until) throw new Error('sample economy: the third empty round set no cooling off');
+      });
+    });
+  };
+  empty(t1, false);
+  empty(t1 + 12 * MIN + 10_000, false);
+  empty(t1 + 34 * MIN + 20_000, true);
 }
 
 /**

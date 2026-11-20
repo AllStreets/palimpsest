@@ -18,8 +18,9 @@ import { subscribe } from '../engine/events.js';
 import { getRunner, realRunner, realSpawner, setRunner, setSpawner, type Runner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { query } from '../engine/ledger.js';
-import { listAgents, quarters, firm } from '../engine/market/firms.js';
-import { bidList } from '../engine/market/bids.js';
+import { listAgents, listFirms, quarters, firm } from '../engine/market/firms.js';
+import { voyages as storedVoyages } from '../engine/school/voyage-table.js';
+import { bidList, coolOff } from '../engine/market/bids.js';
 import { acceptProposed, CITY_MARKER, listJobs, postManualJob } from '../engine/market/jobs.js';
 import { listMilestones, weekTour } from '../engine/market/milestones.js';
 import { resetProviders } from '../engine/market/providers.js';
@@ -31,7 +32,7 @@ import { installTreasury } from '../engine/market/treasury.js';
 import { openaiUsage } from '../engine/providers-usage.js';
 import { connect, disconnect, earnedFloors, getRepo, listRepos, patchRepo } from '../engine/repos.js';
 import { SAMPLE_INSTALLED, SAMPLE_ISSUES, SAMPLE_MARKER, sampleCodexHome, sampleGh, samplePRs } from '../engine/sample.js';
-import { proposalKey } from '../shared/market-rules.js';
+import { benched, proposalKey, STIPEND } from '../shared/market-rules.js';
 import type { BriefItemKind, JobStatus, RunLogLine, Silhouette, Trip, Verdict } from '../shared/types.js';
 import { seedSample } from '../tools/sample.js';
 import { boardSections } from '../app/src/ui/board.js';
@@ -272,6 +273,33 @@ test('the economy seeds every job status and replays clean', async () => {
   // Sites for every run in a live stage.
   assert.deepEqual(new Set(economySites().map((s) => s.stage)), new Set(['framing', 'inspecting']));
 
+  const v = verifyReplay();
+  assert.ok(v.ok, v.diffs.join('\n'));
+});
+
+test('the sample shows the new economy: a benched firm, a job cooling off, a refund, a stipend and a voyage that just ran', async () => {
+  await seed();
+  // Kiln Brothers sits on the bench, not bankrupt, and its books hold a refund and a stipend.
+  const kiln = firm('kiln')!;
+  assert.equal(kiln.status, 'active');
+  assert.ok(benched(kiln), `kiln is at ${kiln.balance}`);
+  assert.ok(kiln.benchedSince, 'its bench start is kept');
+  assert.equal(kiln.negativeSince !== null, true);
+  const kinds = (openDb().prepare("SELECT kind, amount FROM credits WHERE firm_id = 'kiln' AND kind IN ('refund', 'stipend')").all() as Array<{ kind: string; amount: number }>);
+  assert.ok(kinds.some((k) => k.kind === 'refund' && k.amount > 0), 'a refund row');
+  assert.ok(kinds.some((k) => k.kind === 'stipend' && k.amount === STIPEND), 'a stipend row');
+  assert.equal(query({ kind: 'firm.benched' }).filter((e) => (e.data as { firmId: string }).firmId === 'kiln').length, 1);
+  // The other trading firms are not benched.
+  assert.deepEqual(listFirms().filter((f) => benched(f)).map((f) => f.id), ['kiln']);
+  assert.equal(listFirms().filter((f) => f.status === 'bankrupt').length, 1);
+  // A job is cooling off after rounds nobody took, still waiting at the seed time.
+  const cooling = listJobs().filter((j) => j.status === 'open' && (coolOff(j.id).until ?? 0) > NOW);
+  assert.equal(cooling.length, 1);
+  assert.ok(coolOff(cooling[0].id).rounds >= 3, `${coolOff(cooling[0].id).rounds} empty rounds`);
+  // The sailing voyage ran a few minutes ago.
+  const sailing = storedVoyages().find((v) => v.status === 'sailing')!;
+  assert.ok(sailing.lastRunAt, 'a last run is kept');
+  assert.ok(NOW - Date.parse(sailing.lastRunAt!) < 15 * 60_000 && NOW >= Date.parse(sailing.lastRunAt!), sailing.lastRunAt!);
   const v = verifyReplay();
   assert.ok(v.ok, v.diffs.join('\n'));
 });
