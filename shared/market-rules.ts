@@ -11,6 +11,7 @@ import type { BudgetWindow, CheckResult, Era, Job, JobStatus, ModelRef, Repo, Re
  * true minus. Never three places, never a minus on nothing.
  */
 export function creditsText(n: number): string {
+  if (!Number.isFinite(n)) return '0';
   const cents = Math.round(n * 100);
   if (cents === 0) return '0';
   const abs = Math.abs(cents);
@@ -26,6 +27,7 @@ export function creditsText(n: number): string {
  * the points stand in one line down the column.
  */
 export function creditsFixed(n: number): string {
+  if (!Number.isFinite(n)) return '0.00';
   const cents = Math.round(n * 100);
   const abs = Math.abs(cents);
   const grouped = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -398,10 +400,12 @@ function lastSegment(path: string): string {
 }
 
 /** The deny pattern `path` matches, or null. A pattern without a slash matches the file name at any depth; `.git` and `.claude` folders are out at any depth. */
-export function denied(path: string): string | null {
+export function denied(rawPath: string): string | null {
+  const path = rawPath.toLowerCase(); // macOS disks ignore case; every pattern is lower case
   const parts = path.split('/');
   if (parts.includes('.git')) return '.git/**';
   if (parts.slice(0, -1).includes('.claude')) return '.claude/**';
+  if (parts.slice(0, -1).includes('.env')) return '.env';
   for (const d of denyRes) if (d.re.test(path) || (d.anywhere && d.re.test(lastSegment(path)))) return d.g;
   return null;
 }

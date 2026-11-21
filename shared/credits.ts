@@ -41,11 +41,14 @@ export function weightedTokens(u: TokenUsage, model: string): number {
 
 /** Credits for Claude usage: weighted tokens over tokens per percent, in tenths of a percent. */
 export function claudeCredits(weighted: number, tokensPerPct: number): number {
-  return Math.round((weighted / tokensPerPct / CREDIT_PCT) * 1e9) / 1e9;
+  if (!Number.isFinite(weighted) || weighted < 0) return 0;
+  const per = Number.isFinite(tokensPerPct) && tokensPerPct > 0 ? tokensPerPct : DEFAULT_TOKENS_PER_PCT;
+  return Math.round((weighted / per / CREDIT_PCT) * 1e9) / 1e9;
 }
 
 /** Credits for a local model run: seconds * (0.001 + 0.0001 * modelGB). */
 export function localCredits(seconds: number, modelGB: number): number {
+  if (!Number.isFinite(seconds) || seconds < 0 || !Number.isFinite(modelGB) || modelGB < 0) return 0;
   return Math.round(seconds * (0.001 + 0.0001 * modelGB) * 1e9) / 1e9;
 }
 

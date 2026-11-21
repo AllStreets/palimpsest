@@ -167,7 +167,10 @@ export async function schoolChecks(page: Page, check: Check, shots: string): Pro
     if (sailing) {
       const row = sheet.locator(`.voyage-row[data-voyage="${sailing.id}"]`);
       const line = ((await row.locator('.voyage-line').textContent()) ?? '').trim();
-      check(line === `Sailing: generation ${sailing.generation} of ${sailing.of}, ${sailing.runs.done} of ${sailing.runs.of} runs. A voyage spans several nights.`, `the sailing voyage reads its generation and runs (${line})`);
+      // The last-run clause (34eb255) carries a clock-relative age and a rate, so it is matched by shape, and required once the voyage has a last run.
+      const place = `Sailing: generation ${sailing.generation} of ${sailing.of}, ${sailing.runs.done} of ${sailing.runs.of} runs\\.`;
+      const pulse = sailing.lastRunAt ? ' Last run [^.]+ ago(, about \\d+ runs an hour)?\\.' : '';
+      check(new RegExp(`^${place}${pulse} A voyage spans several nights\\.$`).test(line), `the sailing voyage reads its generation and runs (${line})`);
       // The engine races on: the next generation is announced as voyages.ts announces one, and the row moves with it.
       const { voyage: stored } = await import('../engine/school/voyage-table.js');
       const { openDb } = await import('../engine/db.js');
@@ -290,7 +293,7 @@ export async function schoolEmptyChecks(browser: Browser, origin: string, check:
     }
     check(/No arena/.test(await text(page, '.school-sec[data-sec="arenas"] .school-empty')), `no arena, and why (${await text(page, '.school-sec[data-sec="arenas"] .school-empty')})`);
     check(/No voyage/.test(await text(page, '.school-sec[data-sec="voyages"] .school-empty')), `no voyage, and why (${await text(page, '.school-sec[data-sec="voyages"] .school-empty')})`);
-    check((await text(page, '.school-sec[data-sec="graduates"] .lora-line')) === '0 of 100 verified changes', `0 of 100 verified changes (${await text(page, '.school-sec[data-sec="graduates"] .lora-line')})`);
+    check((await text(page, '.school-sec[data-sec="graduates"] .lora-line')) === 'Not counted yet, 100 usable changes needed', `before any count, the LoRA says it is not counted yet and what it needs (${await text(page, '.school-sec[data-sec="graduates"] .lora-line')})`);
     check(/is not downloaded\.$/.test(await text(page, '.school-sec[data-sec="graduates"] .lora-base')), `the base model is not downloaded (${await text(page, '.school-sec[data-sec="graduates"] .lora-base')})`);
     check((await text(page, '.school-sec[data-sec="training"] .trainer-line')) === 'The trainer is not set up on this Mac.', `the trainer is not set up (${await text(page, '.school-sec[data-sec="training"] .trainer-line')})`);
     check((await sheet.locator('.school-sec[data-sec="master"] .kind-row').count()) === 6 && (await sheet.locator('.school-sec[data-sec="master"] .kind-row .kind-line', { hasText: 'No decision of this kind has had a prediction yet.' }).count()) === 6, 'every kind says no decision has had a prediction yet');
@@ -696,7 +699,7 @@ export async function schoolSettingsChecks(page: Page, check: Check, shots: stri
     {
       const u = getSettings().school.trainNowUntil;
       const d = u ? new Date(u) : null;
-      check(!!d && ((await until.textContent()) ?? '').trim() === `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`, 'the time is the engine’s, three hours on');
+      check(!!d && ((await until.textContent()) ?? '').trim() === `until ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, 'the time is the engine’s, three hours on');
     }
     {
       const g = (await api<SchoolView>(page, '/api/school')).gate.heavy;

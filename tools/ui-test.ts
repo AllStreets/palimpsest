@@ -2868,9 +2868,18 @@ async function peopleChecks(page: Page): Promise<void> {
   // Dagny on the tram: she walks to the stop, waits on the platform, and boards.
   await callDebug(page, 'd.peopleHold(true)');
   const id = 'dagny-hollis';
-  const tripId = await sendPerson(page, id, [560, -300], [600, 200]);
+  // The city's network is laid again a step at a time as it grows; a trip routed on the new network while the fleet still runs the
+  // old one finds no tram at its stop and walks its leg instead (people.ts vehicleFor). So wait for the city to stand first, and,
+  // if she still walks the whole way (idle, no leg left), send her again once: the second route is on the settled network.
+  for (let i = 0; i < 40 && (await callDebug<number>(page, 'd.rebuilding()')) > 0; i++) await page.waitForTimeout(500);
+  let tripId = await sendPerson(page, id, [560, -300], [600, 200]);
   check(!!tripId, 'a persona is sent on a tram trip');
   let f = await runUntil(page, id, (x) => x.mode === 'tram' && x.stage === 'wait');
+  if (f && f.stage === 'idle' && f.mode === null) {
+    console.log(`info  she walked the whole way past a tram that was not there (${JSON.stringify(f)}); sent again on the settled network`);
+    tripId = await sendPerson(page, id, [560, -300], [600, 200]);
+    f = await runUntil(page, id, (x) => x.mode === 'tram' && x.stage === 'wait');
+  }
   check(!!f && f.mode === 'tram' && f.stage === 'wait' && !!f.ride, `she walks to the stop and waits for the tram (${f?.mode}, ${f?.stage})`);
   if (f?.ride) {
     // The tram coming in: the still a few seconds before it stands at the stop.
@@ -4665,6 +4674,11 @@ async function main(): Promise<void> {
     const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates', 'perfpass'].includes(process.env.UI_ONLY ?? '');
     if (brandOnly && ready) {
       await brandChecks(page);
+      // The every-screen and palette checks expect firms and agents (the firms screen's rows, the palette's tally and firm), so the economy is laid over the city first, as the full run has it by then.
+      const { seedEconomy } = await import('../engine/market/sample-economy.js');
+      await seedEconomy(Date.now(), { holdSale: true });
+      await page.reload();
+      await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
       await everyScreenChecks(page, consoleErrors);
     } else if (process.env.UI_ONLY === 'textures' && ready) {
       await textureChecks(browser, page);
