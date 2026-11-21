@@ -278,3 +278,38 @@ The 18.40 is not cost. With nothing drawing, Chromium's uncapped mode has no dam
 ### Left, below the anti-goal level
 
 - The log's last visible line is cut by the panel's foot. It is a scroller, so it is honest, but a short fade would read softer.
+
+## Stage 2 gate
+
+Run at 4a52e48 (the screens redesign merged with main's ui-test fixes). Stills: `stills/task-13/` (type, panel, controls, readouts, pins, terminal, topbar; the 1280 and reduced-motion variants were shot and read, not committed).
+
+### Checks
+
+| Gate | Result |
+|---|---|
+| npm test | 2387 pass, 0 fail, 2 skipped (2389) |
+| typecheck, build | clean |
+| ui-test (full) | "ui-test passed" |
+| Home guard (perf, high) | 630 calls, 8.77M triangles (under 850 and 12M) |
+| Home guard (perf, medium) | 514 calls, 5.44M triangles |
+| Perf live home, 10 s | mean 16.67 ms, 0 of 599 over 20.8 ms |
+| City alone, uncapped, high | main 8.70 / 8.70 ms, branch 8.60 / 8.70 (two sittings), within 3% |
+| City alone, uncapped, medium | main 4.70 / 4.80, branch 5.40 / 4.80 |
+| Brief open, uncapped, high | main 7.80 / 7.80, branch 7.80 / 7.80 (0%) |
+| Brief open, uncapped, medium | main 4.70 / 4.50, branch 4.70 / 4.60 (0 to +2%) |
+| Terminal, capped 60 Hz | 16.70 ms, p95 16.80, both tiers, same as city |
+| Terminal, city draws while held | zero: ui-test "the city holds still behind the open terminal" passes |
+
+The first medium branch city-alone run read 5.40 ms (+15%). It was one noisy sitting: run again in the opposite order, branch 4.80 against main 4.80 (4.70 in the first pass), so within 3%. Recorded rather than dropped. The Brief is unchanged so far, so its row is a pure check of the layer's idle cost.
+
+Uncapped terminal rows (18.40 ms) are not used, per the Task 12 ruling.
+
+### Set critique
+
+The six primitives read as one language: Big Shoulders for names and headlines, Azeret Mono for figures, one amber ink, corner brackets on every key, pane and pin, hairline rules, a single red reserved for the grant. The key weights climb visibly from look (bare text) to decide (outlined) to spend (outlined with its sum) to grant (the only filled red). The readouts are instruments (rangefinder with its limit mark, tick-bar agreement, claims strip), not tiles or cards: no rounded boxes, no shadows, no gradients. Nothing reads as a dashboard kit. No anti-goal failure, nothing fixed here.
+
+### Left open (below the gate)
+
+- The deferred minors from Tasks 1 to 12 stay open (motion lint scope, os-stills out dir before home check, stills dated by new Date(), kind list duplicated, scanOnce timer, lean on a still pointer, permanent will-change on panel panes, fixed 18 stream columns, the --os-sheen type mix, disabled hover wash, label capitalisation, districts() allocation, pin lift layout rewrites, T12 hold race and stale text).
+- The terminal gate has no direct draw counter; it relies on the ui-test held flag.
+- Branches redesign-brief-a and redesign-brief-b, with their worktrees, are not yet deleted (the deletion was blocked by the permission classifier).
