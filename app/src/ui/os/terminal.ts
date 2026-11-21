@@ -23,17 +23,17 @@ export interface Terminal {
   isOpen(): boolean;
 }
 
-/** What terminal mode asks of the city while it is open: a lower render scale, if the blur costs too much (Task 12). */
+/** What terminal mode asks of the city while it is open: to hold still behind it (Task 12). */
 export interface TerminalCity {
-  setRenderScale(s: number): void;
+  hold(on: boolean): void;
 }
 
 /**
- * The render scale the city drops to while the terminal is open: half, which the 6px blur hides. The blur alone
- * cost 14% on high and 43% on medium over the Brief open, measured uncapped (Task 12); at half scale the city
- * draws a quarter of the pixels, and the blur stays within the frame budget.
+ * Why the city holds still behind the terminal: any filter on the city host costs the compositor a full-window
+ * pass at device resolution each time the city draws (14% on high and 43% on medium over the Brief open, measured
+ * uncapped, Task 12), blur or not. Held, the city draws nothing new and the filtered layer stands still. Blurred
+ * and dimmed to 0.3 far behind, a still city loses nothing, and the Mac saves the power.
  */
-export const TERMINAL_RENDER_SCALE = 0.5;
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] => {
   const n = document.createElement(tag);
@@ -46,9 +46,8 @@ let made = 0;
 
 /**
  * Builds the terminal, hidden, in `parent`. `onClose` is called by Escape and
- * by Close. Given `city`, the city draws at TERMINAL_RENDER_SCALE while the
- * terminal is open (from when the blur has eased in), and at full scale again
- * when it closes.
+ * by Close. Given `city`, the city holds still while the terminal is open
+ * (from when the blur has eased in) and draws again the moment it closes.
  */
 export function createTerminal(parent: HTMLElement, onClose: () => void, city?: TerminalCity): Terminal {
   const id = `os-terminal-${++made}`;
@@ -82,7 +81,7 @@ export function createTerminal(parent: HTMLElement, onClose: () => void, city?: 
   let open = false;
   let opener: HTMLElement | null = null;
   let cancelType: () => void = () => {};
-  let scaleTimer: ReturnType<typeof setTimeout> | undefined;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
 
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === 'Escape') {
@@ -117,10 +116,10 @@ export function createTerminal(parent: HTMLElement, onClose: () => void, city?: 
       body.scrollTop = 0;
       root.hidden = false;
       document.documentElement.setAttribute('data-os-mode', 'terminal');
-      // Once the blur has eased in, so the softer city never shows sharp; at once when still.
-      clearTimeout(scaleTimer);
-      if (city && stillMotion()) city.setRenderScale(TERMINAL_RENDER_SCALE);
-      else if (city) scaleTimer = setTimeout(() => city.setRenderScale(TERMINAL_RENDER_SCALE), MOTION.slow);
+      // Once the blur has eased in, so the city stops on a blurred frame; at once when still.
+      clearTimeout(holdTimer);
+      if (city && stillMotion()) city.hold(true);
+      else if (city) holdTimer = setTimeout(() => open && city.hold(true), MOTION.slow);
       cancelType = typeIn(typed, text);
       body.focus({ preventScroll: true });
     },
@@ -132,8 +131,8 @@ export function createTerminal(parent: HTMLElement, onClose: () => void, city?: 
       document.removeEventListener('keydown', onKey, true);
       root.hidden = true;
       document.documentElement.removeAttribute('data-os-mode');
-      clearTimeout(scaleTimer);
-      city?.setRenderScale(1);
+      clearTimeout(holdTimer);
+      city?.hold(false);
       const back = opener;
       opener = null;
       if (back?.isConnected) back.focus({ preventScroll: true });

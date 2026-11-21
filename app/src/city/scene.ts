@@ -28,7 +28,7 @@ import type { Lot } from './lots.js';
 import { configureMaterials, firstTexturesIn, texturesSettled } from './materials.js';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor, type DropReading } from './governor.js';
-import { renderRatio } from './render-scale.js';
+import { renderHold } from './hold.js';
 import { setFacadeRooms } from './facade.js';
 import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers, shadowBoxMoves } from './lod.js';
@@ -156,10 +156,13 @@ export interface City {
   /** The repos of the districts standing now, as last set by setPlots. */
   districts(): string[];
   /**
-   * Draws at `s` (a quarter to one) of the tier's own pixel ratio: the screens lower it while the city stands far
-   * behind them, blurred (terminal mode, screens redesign Task 12), and set 1 again after.
+   * Holds the city still (true): nothing is updated or drawn, and the last frame stays on the canvas, but for one
+   * frame after each resize. false draws every frame again. Terminal mode holds it while the city stands blurred
+   * far behind (screens redesign Task 12).
    */
-  setRenderScale(s: number): void;
+  hold(on: boolean): void;
+  /** Whether the city is held now (tests). */
+  held(): boolean;
   /** Shows the open and bidding jobs on the exchange's tote board. */
   setBoard(jobs: ReadonlyArray<BoardJob>): void;
   /** The engine's kill switch: the exchange's fountain runs only while it is off. */
@@ -413,10 +416,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   // 1.75 on retina keeps 60 fps at full window size on the M5 Pro; the difference from 2 is not visible through the post chain.
-  // The screens may lower it while the city stands blurred behind them (setRenderScale).
-  let renderScale = 1;
-  renderer.setPixelRatio(renderRatio(quality, devicePixelRatio, renderScale));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, quality === 'high' ? 1.75 : 1));
   renderer.setSize(width(), height());
+  // The hold (hold.ts): while a screen hides the city, it stops drawing but for a frame owed to each resize.
+  const stillness = renderHold();
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
@@ -1728,6 +1731,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   }
 
   const resize = (): void => {
+    // Held, the resized canvas is drawn once (the hold is declared with the loop, below).
+    stillness.owe();
     renderer.setSize(width(), height());
     rig.setAspect(width() / height());
     relimit(false);
@@ -2080,7 +2085,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const fromHome = camera.position.distanceTo(toV(limits.home.eye)) < Math.max(1, limits.homeDistance * 0.05);
     const saw: QualityDrop = { ...reading, fromHome };
     quality = 'medium';
-    renderer.setPixelRatio(renderRatio(quality, devicePixelRatio, renderScale));
+    renderer.setPixelRatio(1);
     renderer.setSize(width(), height());
     post.dispose();
     river.setQuality('medium');
@@ -2126,6 +2131,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
+    // Held: the clock is kept running so the frame after the release is an ordinary one (the governor never sees
+    // the held time as one long frame), and nothing else moves or draws.
+    if (!stillness.draws()) {
+      clock.getDelta();
+      return;
+    }
     const t0 = traced ? performance.now() : 0;
     const raw = clock.getDelta();
     const dt = Math.min(raw, 0.05);
@@ -2294,17 +2305,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     onFrame: (fn) => frameHooks.add(fn),
     frameHooks: () => frameHooks.size(),
     districts: () => occNow.districts.map((d) => d.repo),
-    setRenderScale(s) {
-      const ratio = renderRatio(quality, devicePixelRatio, s);
-      renderScale = s;
-      if (ratio === renderer.getPixelRatio()) return;
-      renderer.setPixelRatio(ratio);
-      renderer.setSize(width(), height());
-      // The post chain takes its ratio when it is built, so it is built again at the new one, as the quality drop
-      // does; its programs are already compiled and cached. The lens starts again from rest.
-      post.dispose();
-      post = createPost(renderer, scene, camera, quality, [river.pass(camera)]);
-    },
+    hold: (on) => stillness.set(on),
+    held: () => stillness.held(),
     agentFrame,
     setInset(px) {
       insetTarget = Math.max(0, Math.min(px, width() * 0.6));

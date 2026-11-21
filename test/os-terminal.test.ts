@@ -10,8 +10,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, test } from 'node:test';
 
-import { createTerminal, TERMINAL_RENDER_SCALE } from '../app/src/ui/os/terminal.js';
-import { renderRatio } from '../app/src/city/render-scale.js';
+import { renderHold } from '../app/src/city/hold.js';
+import { createTerminal } from '../app/src/ui/os/terminal.js';
 
 type Listener = (e: unknown) => void;
 
@@ -155,7 +155,7 @@ afterEach(() => {
   delete g.matchMedia;
 });
 
-function setup(city?: { setRenderScale(s: number): void }) {
+function setup(city?: { hold(on: boolean): void }) {
   const opener = new Fake('button');
   doc.body.append(opener);
   opener.focus();
@@ -266,59 +266,94 @@ test('Tab goes round the log and Close, and never leaves the dialog', () => {
   assert.equal(doc.activeElement, close);
 });
 
-test('given a city, it draws at half scale while open and at full scale after', () => {
-  const scales: number[] = [];
-  const { t } = setup({ setRenderScale: (s) => scales.push(s) });
+/** A city that records its hold calls and says whether it is held now. */
+function holdingCity(): { hold(on: boolean): void; calls: boolean[]; held(): boolean } {
+  const calls: boolean[] = [];
+  return { calls, hold: (on) => void calls.push(on), held: () => calls.at(-1) === true };
+}
+
+test('given a city, it holds still while open and draws again on close (still motion: at once)', () => {
+  const city = holdingCity();
+  const { t } = setup(city);
   t.open('Run log', []);
-  assert.deepEqual(scales, [TERMINAL_RENDER_SCALE]);
-  assert.equal(TERMINAL_RENDER_SCALE, 0.5);
+  assert.deepEqual(city.calls, [true]);
   t.close();
-  assert.deepEqual(scales, [0.5, 1]);
+  assert.deepEqual(city.calls, [true, false]);
+  assert.equal(city.held(), false);
 });
 
-test('the render ratio: the tier\'s own ratio times the scale, never above it, never below a quarter', () => {
-  assert.equal(renderRatio('high', 2, 1), 1.75);
-  assert.equal(renderRatio('high', 1, 1), 1);
-  assert.equal(renderRatio('medium', 2, 1), 1);
-  assert.equal(renderRatio('high', 2, 0.5), 0.875);
-  assert.equal(renderRatio('medium', 2, 0.5), 0.5);
-  assert.equal(renderRatio('high', 2, 3), 1.75);
-  assert.equal(renderRatio('medium', 2, 0), 0.25);
+test('Escape, Close and a second close never leave the city held', () => {
+  const city = holdingCity();
+  let term: ReturnType<typeof createTerminal> | null = null;
+  const opener = new Fake('button');
+  doc.body.append(opener);
+  opener.focus();
+  // The gallery's wiring: onClose closes.
+  term = createTerminal(doc.body as unknown as HTMLElement, () => term!.close(), city);
+  term.open('Run log', []);
+  press('Escape');
+  assert.equal(city.held(), false, 'Escape releases');
+  term.open('Run log', []);
+  (term.el as unknown as Fake).find('os-terminal-close')!.click();
+  assert.equal(city.held(), false, 'Close releases');
+  term.close();
+  assert.equal(city.held(), false);
 });
 
-test('the city exposes setRenderScale, and the screens reach it through OsCity', () => {
-  const scene = readFileSync(new URL('../app/src/city/scene.ts', import.meta.url), 'utf8');
-  assert.match(scene, /setRenderScale\(s: number\): void;/, 'City declares setRenderScale');
-  assert.match(scene, /renderRatio\(quality, devicePixelRatio, renderScale\)/, 'scene.ts sets its ratio through renderRatio');
-  const pins = readFileSync(new URL('../app/src/ui/os/pins.ts', import.meta.url), 'utf8');
-  assert.match(pins, /setRenderScale\(s: number\): void;/, 'OsCity declares setRenderScale');
-  const main = readFileSync(new URL('../app/src/main.ts', import.meta.url), 'utf8');
-  assert.match(main, /setRenderScale: \(s\) => city\.setRenderScale\(s\)/, 'main.ts wires it into the OsCity');
-});
-
-test('with motion, the city drops to half scale only once the blur has eased in, and not at all if closed first', async () => {
+test('with motion, the city holds only once the blur has eased in, and never if closed first', async () => {
   g.matchMedia = () => ({ matches: false });
   g.requestAnimationFrame = () => 0;
   g.cancelAnimationFrame = () => {};
   try {
-    const scales: number[] = [];
-    const { t } = setup({ setRenderScale: (s) => scales.push(s) });
+    const city = holdingCity();
+    const { t } = setup(city);
     t.open('Run log', []);
-    assert.deepEqual(scales, [], 'full scale while the blur eases in');
+    assert.deepEqual(city.calls, [], 'the city moves while the blur eases in');
     await new Promise((r) => setTimeout(r, 500));
-    assert.deepEqual(scales, [0.5]);
+    assert.deepEqual(city.calls, [true]);
     t.close();
     t.open('Again', []);
     t.close();
     await new Promise((r) => setTimeout(r, 500));
-    assert.deepEqual(scales, [0.5, 1, 1], 'a close before the blur is in cancels the drop');
+    assert.deepEqual(city.calls, [true, false, false], 'a close before the blur is in cancels the hold');
+    assert.equal(city.held(), false);
   } finally {
     delete g.requestAnimationFrame;
     delete g.cancelAnimationFrame;
   }
 });
 
-test('the gallery hands the city to its terminal, for the half-scale fallback', () => {
+test('the hold: released draws every tick; held draws nothing but one frame owed to each resize', () => {
+  const h = renderHold();
+  assert.equal(h.held(), false);
+  h.owe();
+  assert.deepEqual([h.draws(), h.draws()], [true, true], 'a resize while released owes nothing extra');
+  h.set(true);
+  assert.deepEqual([h.draws(), h.draws()], [false, false]);
+  h.owe();
+  h.owe();
+  assert.deepEqual([h.draws(), h.draws()], [true, false], 'resizes between ticks owe one frame');
+  h.owe();
+  h.set(false);
+  assert.deepEqual([h.draws(), h.draws()], [true, true], 'released, every tick draws again');
+  h.set(true);
+  assert.equal(h.draws(), false, 'a frame owed before the release is not carried into the next hold');
+});
+
+test('the city holds through hold.ts, its loop skips when held, a resize owes a frame, and OsCity carries it', () => {
+  const scene = readFileSync(new URL('../app/src/city/scene.ts', import.meta.url), 'utf8');
+  assert.match(scene, /hold\(on: boolean\): void;/, 'City declares hold');
+  assert.match(scene, /setAnimationLoop\(\(\) => \{\s*(\/\/[^\n]*\n\s*)*if \(!stillness\.draws\(\)\) \{\s*clock\.getDelta\(\);\s*return;/, 'the loop returns first thing when held, keeping its clock');
+  assert.match(scene, /const resize = \(\): void => \{\s*(\/\/[^\n]*\n\s*)*stillness\.owe\(\);/, 'a resize owes a frame');
+  assert.ok(!/setRenderScale|renderRatio/.test(scene), 'the half-scale fallback is gone');
+  const pins = readFileSync(new URL('../app/src/ui/os/pins.ts', import.meta.url), 'utf8');
+  assert.match(pins, /hold\(on: boolean\): void;/, 'OsCity declares hold');
+  const main = readFileSync(new URL('../app/src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /hold: \(on\) => city\.hold\(on\)/, 'main.ts wires it into the OsCity');
+});
+
+test('the gallery hands the city to its terminal, and closes it on unmount', () => {
   const src = readFileSync(new URL('../app/src/ui/os/gallery.ts', import.meta.url), 'utf8');
   assert.match(src, /createTerminal\(document\.body, \(\) => term\.close\(\), city\)/);
+  assert.match(src, /return \(\) => \{\s*term\.close\(\);/);
 });

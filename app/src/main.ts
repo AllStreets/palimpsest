@@ -299,6 +299,8 @@ interface DebugHandle {
   showSites(on: boolean): void;
   /** Shows one kind of the screens layer's gallery over the city (tools/os-stills.ts), loading it on first use; null takes it down. */
   osGallery(kind: GalleryKind | null): void;
+  /** Whether the city is held still now (terminal mode, Task 12). */
+  cityHeld(): boolean;
 }
 
 declare global {
@@ -467,7 +469,7 @@ async function main(): Promise<void> {
     towerFrame: (repo) => city.towerFrame(repo),
     onFrame: (fn) => city.onFrame(fn),
     districts: () => city.districts(),
-    setRenderScale: (s) => city.setRenderScale(s),
+    hold: (on) => city.hold(on),
   };
 
   /**
@@ -523,6 +525,7 @@ async function main(): Promise<void> {
         if (ask === galleryAsk) galleryDown = m.mountGallery(document.body, kind, osCity);
       });
     },
+    cityHeld: () => city.held(),
     quarters: 0,
     opened: '',
     frameHooks: () => city.frameHooks(),

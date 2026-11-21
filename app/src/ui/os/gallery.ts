@@ -405,12 +405,12 @@ function runLog(): HTMLElement[] {
 
 /**
  * Terminal mode: a look key that opens it, and the terminal open over the city with a sample run's 80-line log.
- * Escape and Close close it and hand focus back to the key; the key opens it again. Unmounting closes it. The city
- * is handed in, so it draws at half scale while the terminal is open.
+ * Escape and Close close it and hand focus back to the key; the key opens it again. Unmounting closes it, so the
+ * city is never left held. The city is handed in, so it holds still while the terminal is open.
  */
 function terminalSpecimen(host: HTMLElement, city?: OsCity): () => void {
   host.classList.add('is-terminal');
-  // The city draws at half scale while the terminal stands over it: the frames gate's fallback (Task 12).
+  // The city holds still while the terminal stands over it (Task 12).
   const term = createTerminal(document.body, () => term.close(), city);
   const open = (): void => term.open('Run 41 on harbor-ledger: the nightly export', runLog());
   const opener = osKey('Run log', 'look', open, { className: 'os-gallery-opener' });

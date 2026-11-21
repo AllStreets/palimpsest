@@ -169,7 +169,7 @@ function makeCity(towers: Record<string, number | null>): OsCity & { hooks: Set<
     camera,
     hooks,
     frames,
-    setRenderScale: () => {},
+    hold: () => {},
     towerFrame(repo) {
       frames.set(repo, (frames.get(repo) ?? 0) + 1);
       const x = towers[repo];

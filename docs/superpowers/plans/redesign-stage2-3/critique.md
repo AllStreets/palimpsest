@@ -258,7 +258,22 @@ Changes: filler lines carry no tone (only the steps that pass or fail are toned)
 
 Medians in ms, percentages against main's Brief row of the same pair. A third branch run between the pairs gave 9.50 high and 6.00 medium at half scale.
 
-The gate fails at both tiers, with the named fallback in. A probe (high, screens framing) showed why: any filter on the city host costs the same, blur or not (12.5 ms with the full filter, 11.2 ms with only brightness and saturate, against 7.7 to 8.0 ms with none). The cost is the compositor drawing the full-window layer through a filter at device resolution, not the blur kernel and not the city's own drawing, so halving the render scale wins back only 0.4 to 1 ms. The half scale is kept (the 6px blur hides it, and it is the cheaper of the two), and the gate is handed back to the controller: the next lever would be holding the city's frames while the terminal stands over it, so the filtered layer is drawn once.
+With the named half-scale fallback in, the gate still failed at both tiers. A probe (high, screens framing) showed why: any filter on the city host costs the same, blur or not (12.5 ms with the full filter, 11.2 ms with only brightness and saturate, against 7.7 to 8.0 ms with none). The cost is the compositor drawing the full-window layer through a filter at device resolution, not the blur kernel and not the city's own drawing, so halving the render scale wins back only 0.4 to 1 ms. The half scale is kept (the 6px blur hides it, and it is the cheaper of the two), and the gate is handed back to the controller: the next lever would be holding the city's frames while the terminal stands over it, so the filtered layer is drawn once.
+
+### Fix round 1: the city holds still behind the terminal
+
+Ruling: stop redrawing the city while the terminal is open. The half-scale fallback is removed (it rebuilt the post chain and restarted the lens). `City.hold(on)` skips the whole update and draw while held, keeps the clock running, and draws one frame after each resize; the terminal holds the city once the blur has eased in (MOTION.slow; at once when still) and releases it on every close. The stills are reshot held (`terminal.webp`, `terminal-1280.webp`, `terminal-reduced-motion.webp`): the frozen city reads exactly as the moving one did, blurred and dim far behind.
+
+Frames, uncapped, same sitting (main at 9b31df4 first, then the branch), medians in ms:
+
+| | main Brief | branch Brief | terminal, held |
+|---|---|---|---|
+| high | 7.90 | 8.00 | 18.40 (p95 18.80) |
+| medium | 4.60 | 4.60 | 18.40 (p95 18.80) |
+
+City alone: main 8.70 high, 4.90 medium; branch 8.60 and 5.00.
+
+The 18.40 is not cost. With nothing drawing, Chromium's uncapped mode has no damage to pace frames by, and the requestAnimationFrame interval falls to its idle cadence: the same 18.4 to 18.5 ms with the city held and no filter at all, at both tiers alike. Capped at 60 Hz (the probe), the city, the held terminal and the held city without a filter all sit at 16.70 ms, p95 16.70. The uncapped interval stops measuring work once there is none to do; the work per held frame is nothing but composite.
 
 ### Left, below the anti-goal level
 

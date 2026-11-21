@@ -698,7 +698,7 @@ export async function pinsChecks(page: Page, errors: string[]): Promise<void> {
 // ---------------------------------------------------------------- terminal mode (screens redesign Task 12)
 
 /** What terminal mode shows: the mode on <html>, the city host's drawn filter, where focus is, and the panel's edges. */
-async function terminalState(page: Page): Promise<{ mode: string | null; filter: string; focus: string; top: number; bottom: number; lines: number; shown: boolean }> {
+async function terminalState(page: Page): Promise<{ mode: string | null; filter: string; focus: string; top: number; bottom: number; lines: number; shown: boolean; held: boolean }> {
   return page.evaluate(() => {
     const term = document.querySelector<HTMLElement>('.os-terminal');
     const r = term?.getBoundingClientRect();
@@ -712,6 +712,7 @@ async function terminalState(page: Page): Promise<{ mode: string | null; filter:
       bottom: r ? Math.round(innerHeight - r.bottom) : -1,
       lines: term?.querySelectorAll('.os-terminal-body > *').length ?? 0,
       shown: !!term && !term.hidden && getComputedStyle(term).display !== 'none',
+      held: (window as unknown as { __palimpsest: { cityHeld(): boolean } }).__palimpsest.cityHeld(),
     };
   });
 }
@@ -743,6 +744,7 @@ export async function terminalChecks(page: Page, errors: string[]): Promise<void
   check(s.top === 64 && s.bottom === 16, `the panel stands 64 px under the top and 16 px over the foot (${s.top}, ${s.bottom})`);
   check(s.lines === 80, `the sample run log shows its 80 lines (${s.lines})`);
   check(s.focus === 'terminal', `focus is in the terminal while it is open (${s.focus})`);
+  check(s.held, 'the city holds still behind the open terminal');
   await page.screenshot({ path: join(SHOTS, 'terminal.png') });
 
   await page.keyboard.press('Escape');
@@ -751,6 +753,7 @@ export async function terminalChecks(page: Page, errors: string[]): Promise<void
   check(s.mode === null && !s.shown, `Escape takes terminal mode off (data-os-mode=${s.mode}, shown ${s.shown})`);
   check(s.focus === 'opener', `Escape hands focus back to the opener (${s.focus})`);
   check(s.filter === 'none', `closed, the city host has no filter (${s.filter})`);
+  check(!s.held, 'Escape lets the city draw again');
 
   // Opened again from its opener, and closed with the Close key.
   await page.keyboard.press('Enter');
@@ -760,15 +763,16 @@ export async function terminalChecks(page: Page, errors: string[]): Promise<void
   await page.locator('.os-terminal .os-terminal-close').click();
   await page.waitForTimeout(100);
   s = await terminalState(page);
-  check(s.mode === null && s.focus === 'opener' && s.filter === 'none', `Close takes it off and hands focus back (data-os-mode=${s.mode}, focus ${s.focus}, ${s.filter})`);
+  check(s.mode === null && s.focus === 'opener' && s.filter === 'none' && !s.held, `Close takes it off, hands focus back and lets the city draw (data-os-mode=${s.mode}, focus ${s.focus}, ${s.filter}, held ${s.held})`);
 
   // Unmounted while open: the mode leaves with it.
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(700);
+  check((await terminalState(page)).held, 'opened again, the city holds once the blur is in');
   await gallery(page, null);
   await page.waitForTimeout(100);
   s = await terminalState(page);
-  check(s.mode === null && s.filter === 'none' && (await page.locator('.os-terminal').count()) === 0, `unmounted while open, no mode, filter or panel is left (data-os-mode=${s.mode}, ${s.filter})`);
+  check(s.mode === null && s.filter === 'none' && !s.held && (await page.locator('.os-terminal').count()) === 0, `unmounted while open, no mode, filter, hold or panel is left (data-os-mode=${s.mode}, ${s.filter}, held ${s.held})`);
   const fresh = errors.slice(before);
   check(fresh.length === 0, `the terminal raised no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
 }
