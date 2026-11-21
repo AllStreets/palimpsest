@@ -295,3 +295,21 @@
     gap: 18px;
   }
 }
+
+/* The readouts: each instrument in its own band. */
+.os-gallery-readout {
+  margin-bottom: 40px;
+}
+.os-gallery-readout .os-gallery-label {
+  margin-bottom: 16px;
+}
+.os-gallery-figrow {
+  display: flex;
+  gap: 40px;
+  margin-bottom: 22px;
+}
+.os-gallery-ranges {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+}

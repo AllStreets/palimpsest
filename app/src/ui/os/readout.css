@@ -1,0 +1,282 @@
+/*
+ * Readouts and instruments (readout.ts). Figures are the mono in tabular
+ * numerals (.os-figs, tokens.css); labels are the display face in sentence
+ * case, held to one line. Every word stands on the panel itself in a token's
+ * ink, and test/os-readout.test.ts holds each at 4.5:1 there. Red is the
+ * lock's and the grant's alone, so a miss or a broken claim is drawn hollow
+ * in the fail ink, never filled. Nothing here moves.
+ */
+
+.os-label {
+  font-family: var(--os-display);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--os-dim);
+}
+
+/* ---------------------------------------------------------------- a line of readouts */
+
+.os-readouts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 18px;
+  row-gap: 4px;
+}
+.os-readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.os-readout-v {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--os-ink);
+}
+.os-readout-k {
+  font-family: var(--os-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--os-dim);
+}
+
+/* ---------------------------------------------------------------- a head figure */
+
+.os-figure {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.os-figure-v {
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 0.9;
+  color: var(--os-ink);
+}
+.os-figure[data-tone='hot'] .os-figure-v {
+  color: var(--os-amber-hi);
+  text-shadow: 0 0 18px rgba(var(--os-amber-rgb), 0.45);
+}
+
+/* ---------------------------------------------------------------- the rangefinder */
+
+.os-range {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 180px;
+}
+.os-range-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+.os-range-read {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+.os-range-fig {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--os-ink);
+}
+.os-range-limit {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--os-dim);
+}
+.os-range.is-over .os-range-fig,
+.os-range.is-over .os-range-limit {
+  color: var(--os-warn);
+}
+/* The scale: a ruled baseline, a major tick every tenth and a minor every fortieth. */
+.os-range-scale {
+  position: relative;
+  height: 10px;
+  background:
+    repeating-linear-gradient(to right, rgba(var(--os-amber-rgb), 0.45) 0 1px, transparent 1px 10%) bottom / 100% 10px no-repeat,
+    repeating-linear-gradient(to right, rgba(var(--os-amber-rgb), 0.22) 0 1px, transparent 1px 2.5%) bottom / 100% 4px no-repeat,
+    linear-gradient(rgba(var(--os-amber-rgb), 0.3), rgba(var(--os-amber-rgb), 0.3)) bottom / 100% 1px no-repeat;
+}
+/* The run is the whole scale, drawn in to its reading by transform. */
+.os-range-run {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 4px;
+  transform: scaleX(var(--os-run, 0));
+  transform-origin: left center;
+  background: linear-gradient(to right, rgba(var(--os-amber-rgb), 0.35), var(--os-amber));
+  box-shadow: 0 0 10px rgba(var(--os-amber-rgb), 0.5);
+}
+.os-range.is-over .os-range-run {
+  background: linear-gradient(to right, rgba(var(--os-amber-rgb), 0.35), var(--os-warn));
+}
+/* The head: a small down-pointing mark at the run's end. */
+.os-range-head {
+  position: absolute;
+  left: var(--os-head);
+  bottom: 5px;
+  width: 0;
+  height: 0;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-bottom: 0;
+  border-top: 5px solid var(--os-amber-hi);
+}
+/* The cap: a bracket standing on the scale, opening back toward the run. */
+.os-range-cap {
+  position: absolute;
+  left: var(--os-cap);
+  bottom: -3px;
+  width: 4px;
+  height: 16px;
+  margin-left: -4px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--os-ink);
+  border-left: 0;
+}
+.os-range.is-over .os-range-cap {
+  border-color: var(--os-warn);
+}
+
+/* ---------------------------------------------------------------- tick scales */
+
+/* One pitch on every strip: --os-ticks (set from readout.ts) is the count, so ten ticks stand a fifth of fifty. */
+.os-ticks {
+  display: block;
+  width: calc(var(--os-ticks, 0) * 5px);
+  height: 18px;
+  overflow: visible;
+}
+.os-ticks rect.on {
+  fill: var(--os-amber);
+}
+.os-ticks.here rect.on {
+  fill: var(--os-amber-hi);
+}
+.os-ticks rect.off {
+  fill: none;
+  stroke: var(--os-fail);
+  stroke-width: 1;
+}
+
+/* The autonomy ask's two scales, each its own row: its count, then its strip over its label. */
+.os-agree {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 16px;
+  row-gap: 14px;
+  align-items: start;
+}
+.os-agree-row {
+  display: contents;
+}
+.os-agree-row > .os-ticks {
+  grid-column: 2;
+  margin-top: 2px;
+}
+.os-agree-row > .os-label {
+  grid-column: 2;
+  margin-top: -8px;
+}
+.os-agree-v {
+  grid-row: span 2;
+  justify-self: end;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--os-ink);
+}
+.os-agree-row[data-scale='here'] .os-agree-v {
+  color: var(--os-amber-hi);
+}
+
+/* ---------------------------------------------------------------- a segmented bar */
+
+.os-segs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.os-seg-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+}
+.os-seg {
+  flex: var(--os-share, 1) 1 0;
+  min-width: 4px;
+  box-sizing: border-box;
+  background: var(--os-ok);
+}
+.os-seg[data-key='partial'] {
+  background: var(--os-warn);
+}
+.os-seg[data-key='stubbed'] {
+  background: var(--os-benched);
+}
+.os-seg[data-key='missing'] {
+  background: none;
+  border: 1.5px solid var(--os-dim);
+}
+.os-seg[data-key='broken'] {
+  background: none;
+  border: 1.5px solid var(--os-fail);
+}
+.os-seg-keys {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 16px;
+  row-gap: 4px;
+}
+.os-seg-key {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+/* The key's swatch, the segment's own fill or outline in small. */
+.os-seg-key::before {
+  content: '';
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  background: var(--os-ok);
+}
+.os-seg-key[data-key='partial']::before {
+  background: var(--os-warn);
+}
+.os-seg-key[data-key='stubbed']::before {
+  background: var(--os-benched);
+}
+.os-seg-key[data-key='missing']::before {
+  background: none;
+  border: 1.5px solid var(--os-dim);
+}
+.os-seg-key[data-key='broken']::before {
+  background: none;
+  border: 1.5px solid var(--os-fail);
+}
+.os-seg-n {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--os-ink);
+}
+.os-seg-word {
+  font-family: var(--os-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--os-dim);
+}

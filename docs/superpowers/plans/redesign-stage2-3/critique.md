@@ -128,3 +128,32 @@ Changes: the spend key's ring stands at 13 px.
 ### Review fix: the keys' words on their own faces
 
 A new test (`test/os-tokens.test.ts`) reads each weight's ink and fill from control.css through the tokens and holds the words at 4.5:1 on their own face, at every gradient end, over the panel at its thinnest on white. It found one failure: the dimmed grant's dark ink on red at 0.45 opacity was 2.04:1. The dimmed grant no longer dims by opacity. Its face darkens to 40% red in the ground, its glow goes out, its words turn ink2 (5.48:1), and its reticle dims to 0.45. The re-shot `controls`, `controls-1280` and `controls-reduced-motion` show it: still the grant's shape and the only red face, plainly not lit, its words legible.
+
+## Task 7: readouts and figures
+
+Stills: `stills/task-7/readouts.webp`, `readouts-1280.webp` and `readouts-reduced-motion.webp` (round 2, final), and `readouts-round1.webp`, all from `tools/os-stills.ts readouts` with the GPU lock held. The `readouts` kind shows a row of head figures (6 waiting, hot; 11 merged; 963.24 credits) with a line of readouts under it (one readout with an empty figure, left out), two rangefinders (five-hour at 44.83% under a 50% limit, and seven-day at 62%, over it), the two agreement scales (48 of 50 over every repo, and 10 of 10 here), and a claims bar with all five verdicts.
+
+### Round 1
+
+What works:
+- **The two scales cannot contradict each other** (stage 1 round 1's fault 5). Each is its own row with its own count: "48/50" over its strip of 50, and "10/10" over a strip of 10. The two share one tick pitch, 5 px, so ten here stands a fifth as long as fifty everywhere and plainly is not a slice of it. The misses are drawn as two hollow ticks at the newest end of the 50 alone. Here is lit in amberHi and every repo in amber, so they read as two measures.
+- **Labels hold to one line** (stage 1 round 2's wrap). "Last 50, every repo" and "Last 10, here" sit under their strips, `white-space: nowrap`, at 1600 and 1280. "Here" is not squeezed into a strip's width any more.
+- Figures are Azeret in tabular numerals and labels Big Shoulders in sentence case, all through. The hot figure is amberHi with a soft glow, and nothing on the page is red: the cap is an ink bracket, and misses and broken claims are hollow in the fail ink.
+- The rangefinder's run, head and cap read at a glance. The run is drawn in by `transform: scaleX`, so a later reveal can move it on the compositor.
+- At 1280 everything fits, and the reduced-motion still is whole at once (nothing here moves).
+
+Weaknesses:
+1. **An over reading barely says it is over.** Only the "62%" turns warn. The run passes the bracket, but the words "limit 50%" stay dim, so the line reads as a number and a limit rather than a limit broken.
+2. The "missing" segment is a dim outline on the panel and could be taken for empty track. The key under the bar names it, so it stays.
+
+Changes: on an over reading the limit's words turn warn with the figure, as the bracket already does.
+
+### Round 2 (final)
+
+- Seven-day now reads "62% limit 50%" all in warn, with a warn bracket the run has passed. It is over without a word "over" and without red.
+- Nothing else moved. 1600, 1280 and reduced motion hold.
+
+### Left, below the anti-goal level
+
+- The agreement scales need the size of the run here, not only the count agreed. `agreementScales` takes `hereOf` (10 or fewer) beside `here`, so fewer than 10 decisions show as a shorter strip ("3/4", "Last 4, here"), and none says "None here yet". Task 15's `BriefFigures` autonomy shape has `here` alone, so T15 must add `hereOf` (or T17 must find it) for the ask to be honest.
+- The rangefinder's aria-label follows the ruled format ("seven-day window 62%, limit 50%"), which does not say "over" in words; the figures say it.

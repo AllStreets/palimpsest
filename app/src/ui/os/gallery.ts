@@ -14,6 +14,7 @@ import { createSheet } from '../controls.js';
 import { osKey, WEIGHTS, type Weight } from './control.js';
 import { scanOnce, typeIn } from './motion.js';
 import { dressPanel } from './panel.js';
+import { agreementScales, figure, rangefinder, readoutRow, segmentBar } from './readout.js';
 import { COLOUR, GROUND, type ColourToken } from './tokens.js';
 
 export type GalleryKind = 'type' | 'panel' | 'controls' | 'readouts' | 'pins' | 'terminal';
@@ -203,7 +204,53 @@ function controlsSpecimen(host: HTMLElement): void {
   requestAnimationFrame(() => first?.focus({ preventScroll: true }));
 }
 
-const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen, panel: panelSpecimen, controls: controlsSpecimen };
+/** The five verdicts an audit gives its claims, for the claims bar. */
+const CLAIMS: Array<{ key: string; n: number }> = [
+  { key: 'real', n: 18 },
+  { key: 'partial', n: 4 },
+  { key: 'missing', n: 2 },
+  { key: 'stubbed', n: 1 },
+  { key: 'broken', n: 1 },
+];
+
+/**
+ * The readouts: a row of head figures with a line of readouts under it, two
+ * rangefinders (the seven-day one over its cap), the autonomy ask's two
+ * agreement scales (48 of 50 over every repo, 10 of 10 here), and an audit's
+ * claims bar with all five verdicts.
+ */
+function readoutsSpecimen(host: HTMLElement): void {
+  const section = (label: string, cls: string): HTMLElement => {
+    const s = el('section', `os-gallery-readout ${cls}`);
+    s.append(el('p', 'os-gallery-label', label));
+    host.append(s);
+    return s;
+  };
+  const figs = section('Figures', 'is-figures');
+  const row = el('div', 'os-gallery-figrow');
+  row.append(figure('6', 'wait on you', 'hot'), figure('11', 'merged'), figure('963.24', 'credits'));
+  figs.append(row);
+  const line = readoutRow([
+    { v: '#312', k: 'PR' },
+    { v: '4.10', k: 'credits' },
+    { v: 'merged', tone: 'ok' },
+    { v: '', k: 'left out' },
+  ]);
+  if (line) figs.append(line);
+
+  const ranges = section('Rangefinders', 'is-ranges');
+  const pair = el('div', 'os-gallery-ranges');
+  pair.append(rangefinder('five-hour', 44.83, 50), rangefinder('seven-day', 62, 50));
+  ranges.append(pair);
+
+  const agree = agreementScales({ agreed: 48, of: 50, here: 10, hereOf: 10 });
+  if (agree) section('Agreement', 'is-agree').append(agree);
+
+  const claims = segmentBar(CLAIMS, CLAIMS.map((c) => `${c.n} ${c.key}`).join(', '));
+  if (claims) section('Claims', 'is-claims').append(claims);
+}
+
+const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen, panel: panelSpecimen, controls: controlsSpecimen, readouts: readoutsSpecimen };
 
 /** Shows one kind of the gallery over the city, and returns its unmount. */
 export function mountGallery(parent: HTMLElement, kind: GalleryKind): () => void {
