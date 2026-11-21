@@ -286,6 +286,20 @@
 .os-key[data-weight][aria-busy='true'] {
   cursor: progress;
 }
+/*
+ * A dimmed grant cannot dim by opacity: its dark ink on red at 0.45 falls to
+ * 2:1 over the panel. Its face darkens instead, its glow goes out, and its
+ * words turn light (5.4:1); its reticle dims with the rest. Same shape.
+ */
+.os-key[data-weight='grant']:is(:disabled, [aria-disabled='true'], [aria-busy='true']) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--os-red) 40%, var(--os-ground));
+  box-shadow: inset 0 0 0 1px rgba(var(--os-red-rgb), 0.45);
+  color: var(--os-ink2);
+}
+.os-key[data-weight='grant']:is(:disabled, [aria-disabled='true'], [aria-busy='true']) .os-key-ret {
+  opacity: 0.45;
+}
 /* A waiting grant holds its breath. */
 .os-key[data-weight]:is(:disabled, [aria-busy='true']) .os-key-tick,
 .os-key[data-weight]:is(:disabled, [aria-busy='true']) .os-seal-spin {

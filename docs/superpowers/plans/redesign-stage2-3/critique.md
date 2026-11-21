@@ -122,5 +122,9 @@ Changes: the spend key's ring stands at 13 px.
 ### Left, below the anti-goal level
 
 - Disabled and busy look the same, as the brief asks ("they dim, and they keep their shape"). Busy shows a progress cursor and holds the grant's breath; a still cannot tell them apart.
-- The disabled grant is still red and filled at 0.45. It is still the grant, so the red rule holds, but it is the brightest dimmed thing on the screen.
+- (Fixed in review, below.) The disabled grant was red and filled at 0.45 opacity.
 - When a caller sets an aria-label on a key (the Brief does), the sum in the window is not part of the name the reader hears. T17 should fold the sum into that label.
+
+### Review fix: the keys' words on their own faces
+
+A new test (`test/os-tokens.test.ts`) reads each weight's ink and fill from control.css through the tokens and holds the words at 4.5:1 on their own face, at every gradient end, over the panel at its thinnest on white. It found one failure: the dimmed grant's dark ink on red at 0.45 opacity was 2.04:1. The dimmed grant no longer dims by opacity. Its face darkens to 40% red in the ground, its glow goes out, its words turn ink2 (5.48:1), and its reticle dims to 0.45. The re-shot `controls`, `controls-1280` and `controls-reduced-motion` show it: still the grant's shape and the only red face, plainly not lit, its words legible.
