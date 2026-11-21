@@ -4665,6 +4665,11 @@ async function main(): Promise<void> {
     const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates', 'perfpass'].includes(process.env.UI_ONLY ?? '');
     if (brandOnly && ready) {
       await brandChecks(page);
+      // The every-screen and palette checks expect firms and agents (the firms screen's rows, the palette's tally and firm), so the economy is laid over the city first, as the full run has it by then.
+      const { seedEconomy } = await import('../engine/market/sample-economy.js');
+      await seedEconomy(Date.now(), { holdSale: true });
+      await page.reload();
+      await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
       await everyScreenChecks(page, consoleErrors);
     } else if (process.env.UI_ONLY === 'textures' && ready) {
       await textureChecks(browser, page);
