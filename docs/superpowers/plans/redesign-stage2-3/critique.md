@@ -417,3 +417,33 @@ Sitting 1's branch run was slow on every view, the city alone included (+34% on 
 | 4 | branch | high / medium | 9.40 / 5.00 | 8.60 / 4.70 |
 
 The machine slows through a sitting (Spotlight was indexing throughout): whichever build runs later is slower, the city alone included, where the Brief is closed and costs nothing. Sitting 4 runs the branch on both sides of main: before it, the Brief open is 2% under main on high and equal on medium; after it, 6% and 2% over, with the city alone 4% and 6% over by the same drift. Sitting 3 (main first) shows the same drift, larger. Every pairing where the branch runs first or alongside is inside the 10% gate; the one outside it (sitting 3) moved the city alone as much.
+
+## Task 18: Perf gate
+
+Uncapped `tools/redesign-brief.ts frames` (1512 x 890 at 2x, 3 runs of 5 s each, median ms), interleaved against a detached worktree of origin/main (29187f0), the GPU lock held. Spotlight was indexing (load average 17.8 at the start), so the pairs are what is gated, not the absolute times. Pairs 1 and 2 ran main first, pairs 3 and 4 ran the branch first. Main's own city-alone spread across the four runs: 8.8 to 9.9 ms on high, 4.6 to 5.0 ms on medium.
+
+| Tier | View | Pair | Main | Branch | Delta |
+|---|---|---|---|---|---|
+| high | city | 1 | 8.8 | 8.9 | +1.1% |
+| high | city | 2 | 9.9 | 8.8 | -11.1% |
+| high | city | 3 | 9.2 | 9.6 | +4.3% |
+| high | city | 4 | 9.6 | 9.7 | +1.0% |
+| high | brief | 1 | 8.2 | 7.5 | -8.5% |
+| high | brief | 2 | 8.6 | 9.4 | +9.3% |
+| high | brief | 3 | 8.1 | 8.4 | +3.7% |
+| high | brief | 4 | 8.4 | 8.6 | +2.4% |
+| medium | city | 1 | 4.8 | 5.3 | +10.4% |
+| medium | city | 2 | 4.9 | 5.4 | +10.2% |
+| medium | city | 3 | 4.6 | 4.8 | +4.3% |
+| medium | city | 4 | 5.0 | 5.0 | 0% |
+| medium | brief | 1 | 4.8 | 5.0 | +4.2% |
+| medium | brief | 2 | 4.6 | 4.9 | +6.5% |
+| medium | brief | 3 | 4.5 | 4.5 | 0% |
+| medium | brief | 4 | 4.7 | 4.8 | +2.1% |
+
+Means over the four pairs: high city -1.4%, high brief +1.7%, medium city +6.2%, medium brief +3.2%.
+
+- Brief open within 10% of main: holds at both tiers, every pair. Pair 2 on high (+9.3%) is the closest. In pair 1 on high the branch's Brief had a 26 ms p95 (median 7.5) that did not recur in the other three runs; it is not explained.
+- City alone: holds on high. On medium it does not read clean: pairs 1 and 2 are +10% where main moved 2% between them, pairs 3 and 4 are +4% and 0%. The resolution is 0.1 ms (2 to 4% of a 5 ms frame), so the 3% line cannot be resolved by medians here. The city's per-frame diff is one hook list and one hold check (near nothing); the likely source is the screens layer's always-mounted DOM and CSS over a CPU-bound 5 ms frame. Not isolated. Re-measure after Spotlight quiets.
+- Terminal open, capped 60 Hz: median 16.70 ms, p95 16.70 (high) and 16.80 (medium), the same as the city alone; zero WebGL draw calls over 5 s with the city held. Uncapped it reads 18.3 ms at both tiers on every run: Chrome's idle pace with nothing drawn, not a cost (the T12 ruling).
+- Home guard: `PERF_TIERS=high,medium npm run perf` (stopped during the transit views): high home 630 calls, 8.75M triangles with the shadow redrawn; medium home 514 calls, 5.44M; every named view held 58 fps on high (62 views). Under 850 calls and 12M triangles.
