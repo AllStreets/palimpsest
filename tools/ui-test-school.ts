@@ -167,7 +167,10 @@ export async function schoolChecks(page: Page, check: Check, shots: string): Pro
     if (sailing) {
       const row = sheet.locator(`.voyage-row[data-voyage="${sailing.id}"]`);
       const line = ((await row.locator('.voyage-line').textContent()) ?? '').trim();
-      check(line === `Sailing: generation ${sailing.generation} of ${sailing.of}, ${sailing.runs.done} of ${sailing.runs.of} runs. A voyage spans several nights.`, `the sailing voyage reads its generation and runs (${line})`);
+      // The last-run clause (34eb255) carries a clock-relative age and a rate, so it is matched by shape, and required once the voyage has a last run.
+      const place = `Sailing: generation ${sailing.generation} of ${sailing.of}, ${sailing.runs.done} of ${sailing.runs.of} runs\\.`;
+      const pulse = sailing.lastRunAt ? ' Last run [^.]+ ago(, about \\d+ runs an hour)?\\.' : '';
+      check(new RegExp(`^${place}${pulse} A voyage spans several nights\\.$`).test(line), `the sailing voyage reads its generation and runs (${line})`);
       // The engine races on: the next generation is announced as voyages.ts announces one, and the row moves with it.
       const { voyage: stored } = await import('../engine/school/voyage-table.js');
       const { openDb } = await import('../engine/db.js');
