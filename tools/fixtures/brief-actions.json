@@ -1,0 +1,50 @@
+{
+  "ref": "origin/main",
+  "commit": "29187f0c6b711d047f6afa2d81ae491aa6c62233",
+  "actions": [
+    "accept",
+    "tier",
+    "dismiss",
+    "why",
+    "diff",
+    "fly",
+    "retry",
+    "resume",
+    "open-pr",
+    "cap",
+    "audit",
+    "tour",
+    "grant",
+    "decline",
+    "revoke"
+  ],
+  "effect": {
+    "accept": "act",
+    "tier": "tier",
+    "dismiss": "act",
+    "why": "why",
+    "diff": "diff",
+    "fly": "fly",
+    "retry": "act",
+    "resume": "act",
+    "open-pr": "open-pr",
+    "cap": "cap",
+    "audit": "act",
+    "tour": "tour",
+    "grant": "act",
+    "decline": "act",
+    "revoke": "act"
+  },
+  "uiLooks": [
+    "diff",
+    "fly",
+    "open-pr",
+    "why"
+  ],
+  "engineLooks": [
+    "why",
+    "diff",
+    "fly",
+    "open-pr"
+  ]
+}

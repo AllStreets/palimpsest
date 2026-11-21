@@ -35,6 +35,7 @@ import { decline, grant, grants, kindWords, revoke } from './school/autonomy.js'
 import { repoAcceptShare } from './school/datasets.js';
 import { predict } from './school/decisions.js';
 import { getSettings, patchSettings } from './settings.js';
+import { LOOKS } from '../shared/brief-actions.js';
 import { briefHandled, FINISHING } from '../shared/brief-rules.js';
 
 const DAY_MS = 24 * 3_600_000;
@@ -44,9 +45,7 @@ const USAGE_MARGIN = 10;
 /** The actions that teach Triage something about what he wants (ruling 9), and (Phase 4) his answers on autonomy. */
 const TAUGHT: readonly BriefAction[] = ['dismiss', 'accept', 'tier', 'retry', 'cap', 'grant', 'decline', 'revoke'];
 /** The actions that finish an item: once taken, the item shows it and offers nothing else. A cap can be changed again. */
-/** Looking, not acting: recorded, but never covering what he did with the item (he may ask why after posting it). */
-const LOOKS: readonly BriefAction[] = ['why', 'diff', 'fly', 'open-pr'];
-/** Whether `next` should stand as the item's action over `was`. */
+/** Whether `next` should stand as the item's action over `was`: a look (LOOKS) never covers what he did with the item (he may ask why after posting it). */
 const covers = (was: BriefItem['acted'], next: BriefAction): boolean => !was || !LOOKS.includes(next) || LOOKS.includes(was.action);
 
 export interface BriefOptions {

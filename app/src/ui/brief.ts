@@ -20,6 +20,7 @@ import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
+import { EFFECT } from './brief-actions';
 import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, HANDLED_HEAD, itemSentence, kindWords, sinceLine, usageLine, waitingGroups } from './brief-words';
 import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
@@ -359,7 +360,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   function actionNode(item: BriefItem, a: BriefAction): HTMLElement | null {
     const label = actionLabel(a);
     const head = headOf(item);
-    if (a === 'open-pr') {
+    const effect = EFFECT[a];
+    if (effect === 'open-pr') {
       if (!isGithub(item.refs.prUrl)) return null;
       // The open is asked for before look() records it, so a re-render the record starts cannot lose the click.
       const link = externalLink(el('a', 'textbtn brief-act', label), item.refs.prUrl, () => look(item, 'open-pr'));
@@ -367,9 +369,10 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       link.setAttribute('aria-label', `${label}: ${head}, on GitHub`);
       return link;
     }
-    if (a === 'diff' && !item.refs.runId) return null;
+    if (effect === 'diff' && !item.refs.runId) return null;
     const b = textButton('brief-act', label, () => {
-      switch (a) {
+      // The action contract (brief-actions.ts): main's switch, by effect, call for call.
+      switch (EFFECT[a]) {
         case 'why':
           return toggleWhy(item);
         case 'tier':
@@ -390,8 +393,11 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
           return fly(item);
         case 'tour':
           return tour(item);
-        default:
+        case 'act':
           return void act(item, a);
+        case 'open-pr':
+          // Never a button: Open PR is the link above.
+          return;
       }
     });
     b.dataset.action = a;

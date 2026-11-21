@@ -17,13 +17,19 @@
  *
  * Saves brief.png, brief-why.png, brief-cap.png, brief-tour.png and
  * brief-empty.png at 1600 x 1000 for the quality rounds.
+ *
+ * The act calls the run's clicks make (POST /api/brief/items/:id/:action and
+ * its body) are recorded in order and held to tools/fixtures/brief-act-calls.json,
+ * the contract the Brief's rebuild must reproduce (screens redesign Task 14).
+ * The fixture is written when it is missing, or with BRIEF_ACT_CALLS=record.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import type { Browser, Page } from 'playwright';
+import type { Browser, Page, Request } from 'playwright';
 
-import type { Brief, BriefItem, Job, Milestone } from '../shared/types.js';
+import type { Brief, BriefAction, BriefItem, Job, Milestone, Tier } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
 
@@ -56,6 +62,51 @@ async function go(page: Page, hash: string): Promise<void> {
 
 const itemsOf = (b: Brief): BriefItem[] => [...b.sections.waiting, ...b.sections.overnight, ...b.sections.recommendations, ...b.sections.city];
 
+/** One act call the Brief made: POST /api/brief/items/:id/:action with its body. */
+export interface ActCall {
+  itemId: string;
+  action: string;
+  body: Record<string, unknown>;
+}
+
+/**
+ * The contract the Brief's rebuild must reproduce (screens redesign Task 14):
+ * the act calls this script's run makes, in order. An item's id names a job,
+ * a run or a week that differ from run to run, so the fixture keeps its kind
+ * (the id's prefix) and stars the rest; the run also checks the exact ids.
+ */
+export const ACT_CALLS = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'brief-act-calls.json');
+
+export const actCallShape = (c: ActCall): ActCall => ({ itemId: c.itemId.includes(':') ? `${c.itemId.slice(0, c.itemId.indexOf(':'))}:*` : c.itemId, action: c.action, body: c.body });
+
+/** Collects the act calls a page makes, by listening to its requests, not by asking the page. */
+function actRecorder(): { calls: ActCall[]; listen: (p: Page) => void; stop: () => void } {
+  const calls: ActCall[] = [];
+  const pages: Page[] = [];
+  const on = (r: Request): void => {
+    if (r.method() !== 'POST') return;
+    const m = /^\/api\/brief\/items\/([^/]+)\/([^/]+)$/.exec(new URL(r.url()).pathname);
+    if (!m) return;
+    let body: Record<string, unknown> = {};
+    try {
+      body = (r.postDataJSON() as Record<string, unknown> | null) ?? {};
+    } catch {
+      body = { unread: r.postData() };
+    }
+    calls.push({ itemId: decodeURIComponent(m[1]), action: decodeURIComponent(m[2]), body });
+  };
+  return {
+    calls,
+    listen: (p) => {
+      p.on('request', on);
+      pages.push(p);
+    },
+    stop: () => {
+      for (const p of pages) p.off('request', on);
+    },
+  };
+}
+
 async function camera(page: Page): Promise<number[]> {
   return page.evaluate(() => (window as unknown as { __palimpsest: { camera(): number[] } }).__palimpsest.camera());
 }
@@ -75,6 +126,13 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
   const { localDay } = await import('../shared/day.js');
   const before = page.viewportSize();
   await page.setViewportSize(SIZE);
+  // Every act call the script's clicks make, and the ones it means to make, in order (Task 14's contract).
+  const recorder = actRecorder();
+  recorder.listen(page);
+  const meant: ActCall[] = [];
+  const mean = (itemId: string, action: BriefAction, body: { tier?: Tier; pct?: number } = {}): void => {
+    meant.push({ itemId, action, body });
+  };
   try {
     // ------------------------------------------------------------ a new morning on the economy
     const today = localDay(Date.now());
@@ -155,6 +213,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       const why = row.locator('.brief-act[data-action="why"]');
       check((await why.getAttribute('aria-expanded')) === 'false', 'Ask why starts folded');
       await why.focus();
+      mean(auditProposal.id, 'why');
       await page.keyboard.press('Enter');
       const claim = await within(page, 5000, async () => /The README says|README/.test((await row.locator('.brief-why').textContent()) ?? '') && (await row.locator('.brief-why .why-claim-text').count()) === 1);
       check(claim, `Ask why (by keyboard) unfolds the claim under the proposal (${((await row.locator('.brief-why').textContent()) ?? '').slice(0, 80)})`);
@@ -171,6 +230,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     const toAccept = itemsOf(brief).find((i) => i.kind === 'proposal' && i.actions.includes('accept') && i.id !== auditProposal?.id) ?? auditProposal;
     if (toAccept) {
       const row = sheet.locator(`.brief-item[data-item="${toAccept.id}"]`);
+      mean(toAccept.id, 'accept');
       await row.locator('.brief-act[data-action="accept"]').click();
       const said = await within(page, 5000, async () => /^Posted as a job, \d{1,2}:\d\d$/.test(((await row.locator('.brief-acted').textContent()) ?? '').trim()));
       check(said, `Post as a job moves the proposal and the row says so (${((await row.locator('.brief-acted').textContent()) ?? '').trim()})`);
@@ -198,6 +258,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     check(!!failed, 'the failed job offers Dismiss');
     if (failed) {
       const row = sheet.locator(`.brief-item[data-item="${failed.id}"]`);
+      mean(failed.id, 'dismiss');
       await row.locator('.brief-act[data-action="dismiss"]').click();
       check(await within(page, 5000, async () => /^Dismissed, \d{1,2}:\d\d$/.test(((await row.locator('.brief-acted').textContent()) ?? '').trim())), 'Dismiss marks the failed job in place');
       check((await row.getAttribute('data-acted')) === 'dismiss', 'and quiets the row');
@@ -207,6 +268,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
 
     // ------------------------------------------------------------ a second window: the same items, and the first window's action within 2 s
     const second = await page.context().browser()!.newPage({ viewport: SIZE });
+    recorder.listen(second);
     const errors2: string[] = [];
     second.on('console', (m) => {
       if (m.type() === 'error') errors2.push(m.text());
@@ -227,6 +289,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       const row = sheet.locator(`.brief-item[data-item="${tierItem.id}"]`);
       await row.locator('.brief-act[data-action="tier"]').click();
       const want = tierItem.tier === 'low' ? 'high' : 'low';
+      mean(tierItem.id, 'tier', { tier: want });
       await row.locator(`.brief-tier [role="radio"][data-tier="${want}"]`).click();
       const t0 = Date.now();
       const seen = await within(second, 2000, async () => new RegExp(`^Tier set to ${want}, `).test(((await sheet2.locator(`.brief-item[data-item="${tierItem.id}"] .brief-acted`).textContent()) ?? '').trim()));
@@ -266,6 +329,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await page.keyboard.press('Enter');
       await within(page, 2000, async () => (await input.count()) === 1);
       await input.fill('60');
+      mean('usage', 'cap', { pct: 60 });
       await page.keyboard.press('Enter');
       check(await within(page, 5000, async () => /^Today's limit set to 60% by you, /.test(((await usageRow.locator('.brief-acted').textContent()) ?? '').trim())), `Enter sets today's limit to 60%, named as his (${((await usageRow.locator('.brief-acted').textContent()) ?? '').trim()})`);
       check(await within(page, 3000, async () => /today's limit of 60%, set by you until midnight/.test((await sheet.locator('.brief-usage').textContent()) ?? '')), 'the usage line says so');
@@ -279,6 +343,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       // Lowered again from the brief, back to the usual 50%.
       await usageRow.locator('.brief-act[data-action="cap"]').click();
       await usageRow.locator('input.brief-cap-input').fill('50');
+      mean('usage', 'cap', { pct: 50 });
       await usageRow.locator('.brief-cap-set').click();
       check(await within(page, 5000, async () => /^Today's limit set to 50% by you, /.test(((await usageRow.locator('.brief-acted').textContent()) ?? '').trim())), 'and lowers it again from the brief');
     }
@@ -294,6 +359,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     check(!!tourItem && !!mondayBrief.tour, `the engine's Monday brief offers the week's tour (${mondayBrief.tour?.stops ?? 0} stops)`);
     if (tourItem && mondayBrief.tour) {
       const tourPage = await page.context().browser()!.newPage({ viewport: SIZE });
+      recorder.listen(tourPage);
       await tourPage.setViewportSize(SIZE);
       await tourPage.route('**/api/brief', async (route) => {
         const res = await route.fetch();
@@ -315,6 +381,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       // record it: what is checked is that the brief asks it to, once the walk has started.
       const asked = tourPage.waitForRequest((r) => r.method() === 'POST' && /\/api\/brief\/items\/tour%3A[^/]+\/tour$/.test(r.url()), { timeout: 8000 }).then(() => true).catch(() => false);
       await row.locator('.brief-act[data-action="tour"]').focus();
+      mean(tourItem.id, 'tour');
       await tourPage.keyboard.press('Enter');
       const walking = await within(tourPage, 8000, async () => (await tourPage.evaluate(() => (window as unknown as { __palimpsest: { tour(): unknown } }).__palimpsest.tour())) !== null);
       check(walking, 'Walk through the week starts the tour in the city');
@@ -325,11 +392,27 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await tourPage.close();
     }
 
+    // ------------------------------------------------------------ Open PR: the link leaves for GitHub, and the look is recorded
+    // window.open is held for the click, so nothing leaves the machine, then put back. A string, as above, not a function.
+    const prItem = (await api<Brief>(page, '/api/brief')).sections.waiting.find((i) => i.kind === 'pr' && i.actions.includes('open-pr') && /^https:\/\/github\.com\//.test(i.refs.prUrl ?? ''));
+    check(!!prItem, 'a PR waiting for review offers Open PR');
+    if (prItem) {
+      await page.evaluate(`window.__open0 = window.open; window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; };`);
+      const link = sheet.locator(`.brief-item[data-item="${prItem.id}"] .brief-act[data-action="open-pr"]`);
+      check((await link.getAttribute('href')) === prItem.refs.prUrl, 'Open PR is a link to the PR');
+      mean(prItem.id, 'open-pr');
+      await link.click();
+      const opened = await within(page, 3000, async () => ((await page.evaluate('window.__opened')) as string[]).length === 1);
+      check(opened && ((await page.evaluate('window.__opened[0]')) as string) === prItem.refs.prUrl, 'and opens the PR');
+      await page.evaluate('window.open = window.__open0');
+    }
+
     // ------------------------------------------------------------ Fly to the floor: the brief gives way and the camera moves
     const merged = (await api<Brief>(page, '/api/brief')).sections.overnight.find((i) => i.kind === 'merged' && i.actions.includes('fly'));
     check(!!merged, 'a merged job offers Fly to the floor');
     if (merged) {
       const was = await camera(page);
+      mean(merged.id, 'fly');
       await sheet.locator(`.brief-item[data-item="${merged.id}"] .brief-act[data-action="fly"]`).click();
       check(await within(page, 3000, async () => (await page.evaluate(() => document.body.dataset.route)) === 'city'), 'Fly to the floor leaves the brief for the city');
       await page.waitForTimeout(2500);
@@ -337,6 +420,21 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       check(Math.hypot(now[0] - was[0], now[1] - was[1], now[2] - was[2]) > 1, 'and the camera moves to the floor');
       const flew = query({ kind: 'brief.action' }).filter((e) => (e.data as { itemId?: string }).itemId === merged.id).at(-1);
       check((flew?.data as { action?: string } | undefined)?.action === 'fly', 'and the ledger keeps that he flew');
+    }
+
+    // ------------------------------------------------------------ the act calls: what was meant, and main's contract
+    await page.waitForTimeout(300);
+    const made = recorder.calls;
+    check(JSON.stringify(made) === JSON.stringify(meant), `every click made exactly its act call, in order (${made.map((c) => c.action).join(', ')})`);
+    const shape = made.map(actCallShape);
+    writeFileSync(join(shots, 'brief-act-calls.json'), `${JSON.stringify(shape, null, 2)}\n`);
+    if (!existsSync(ACT_CALLS) || process.env.BRIEF_ACT_CALLS === 'record') {
+      mkdirSync(dirname(ACT_CALLS), { recursive: true });
+      writeFileSync(ACT_CALLS, `${JSON.stringify(shape, null, 2)}\n`);
+      check(made.length > 0, `the act calls are recorded as the contract (${ACT_CALLS})`);
+    } else {
+      const want = JSON.parse(readFileSync(ACT_CALLS, 'utf8')) as ActCall[];
+      check(JSON.stringify(shape) === JSON.stringify(want), `the act calls are main's contract (${shape.length} against ${want.length})`);
     }
 
     // ------------------------------------------------------------ T in the city: the week's tour walks
@@ -347,6 +445,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     await page.keyboard.press('Escape');
     await within(page, 3000, async () => (await page.evaluate(() => (window as unknown as { __palimpsest: { tour(): unknown } }).__palimpsest.tour())) === null);
   } finally {
+    recorder.stop();
     if (before) await page.setViewportSize(before);
   }
 }

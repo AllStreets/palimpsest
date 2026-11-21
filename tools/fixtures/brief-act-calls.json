@@ -1,0 +1,53 @@
+[
+  {
+    "itemId": "proposal:*",
+    "action": "why",
+    "body": {}
+  },
+  {
+    "itemId": "proposal:*",
+    "action": "accept",
+    "body": {}
+  },
+  {
+    "itemId": "failed:*",
+    "action": "dismiss",
+    "body": {}
+  },
+  {
+    "itemId": "proposal:*",
+    "action": "tier",
+    "body": {
+      "tier": "low"
+    }
+  },
+  {
+    "itemId": "usage",
+    "action": "cap",
+    "body": {
+      "pct": 60
+    }
+  },
+  {
+    "itemId": "usage",
+    "action": "cap",
+    "body": {
+      "pct": 50
+    }
+  },
+  {
+    "itemId": "tour:*",
+    "action": "tour",
+    "body": {}
+  },
+  {
+    "itemId": "pr:*",
+    "action": "open-pr",
+    "body": {}
+  },
+  {
+    "itemId": "merged:*",
+    "action": "fly",
+    "body": {}
+  }
+]
