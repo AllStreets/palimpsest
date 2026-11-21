@@ -290,7 +290,7 @@ export async function schoolEmptyChecks(browser: Browser, origin: string, check:
     }
     check(/No arena/.test(await text(page, '.school-sec[data-sec="arenas"] .school-empty')), `no arena, and why (${await text(page, '.school-sec[data-sec="arenas"] .school-empty')})`);
     check(/No voyage/.test(await text(page, '.school-sec[data-sec="voyages"] .school-empty')), `no voyage, and why (${await text(page, '.school-sec[data-sec="voyages"] .school-empty')})`);
-    check((await text(page, '.school-sec[data-sec="graduates"] .lora-line')) === '0 of 100 verified changes', `0 of 100 verified changes (${await text(page, '.school-sec[data-sec="graduates"] .lora-line')})`);
+    check((await text(page, '.school-sec[data-sec="graduates"] .lora-line')) === 'Not counted yet, 100 usable changes needed', `before any count, the LoRA says it is not counted yet and what it needs (${await text(page, '.school-sec[data-sec="graduates"] .lora-line')})`);
     check(/is not downloaded\.$/.test(await text(page, '.school-sec[data-sec="graduates"] .lora-base')), `the base model is not downloaded (${await text(page, '.school-sec[data-sec="graduates"] .lora-base')})`);
     check((await text(page, '.school-sec[data-sec="training"] .trainer-line')) === 'The trainer is not set up on this Mac.', `the trainer is not set up (${await text(page, '.school-sec[data-sec="training"] .trainer-line')})`);
     check((await sheet.locator('.school-sec[data-sec="master"] .kind-row').count()) === 6 && (await sheet.locator('.school-sec[data-sec="master"] .kind-row .kind-line', { hasText: 'No decision of this kind has had a prediction yet.' }).count()) === 6, 'every kind says no decision has had a prediction yet');
