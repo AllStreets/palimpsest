@@ -680,7 +680,8 @@ export async function pinsChecks(page: Page, errors: string[]): Promise<void> {
     .catch(() => false);
   check(back, `unmounted, the plates are back at full opacity within 600 ms (${await platesOpacity(page)})`);
   check((await frameHooks(page)) === 0, `unmounted, no frame hook is left (${await frameHooks(page)})`);
-  check((await page.locator('.os-pin').count()) === 0, 'unmounted, no pin is left in the page');
+  // The Brief keeps its own pins in the page, hidden while it is closed (Task 17): what counts is a pin standing.
+  check((await page.locator('.os-pins:not([hidden]) .os-pin').count()) === 0, 'unmounted, no pin is left standing in the page');
 
   // Five opens and closes in two seconds (Review Focus 3).
   for (let i = 0; i < 5; i++) {
@@ -690,7 +691,7 @@ export async function pinsChecks(page: Page, errors: string[]): Promise<void> {
     await page.waitForTimeout(200);
   }
   await page.waitForTimeout(600);
-  check((await frameHooks(page)) === 0 && (await platesOpacity(page)) === '1' && (await page.locator('.os-pin').count()) === 0, `five opens and closes in two seconds leave no hook, no pin and the plates whole (${await frameHooks(page)} hooks, plates ${await platesOpacity(page)})`);
+  check((await frameHooks(page)) === 0 && (await platesOpacity(page)) === '1' && (await page.locator('.os-pins:not([hidden]) .os-pin').count()) === 0, `five opens and closes in two seconds leave no hook, no pin and the plates whole (${await frameHooks(page)} hooks, plates ${await platesOpacity(page)})`);
   const fresh = errors.slice(before);
   check(fresh.length === 0, `the pins raised no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
 }
