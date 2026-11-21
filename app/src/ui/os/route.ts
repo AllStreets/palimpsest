@@ -69,12 +69,31 @@ const clearAll = (pts: Point[], avoid: Box[]): boolean => {
   return true;
 };
 
+/** Limits on a search, for a caller that routes inside a frame (pins.ts). */
+export interface RouteLimits {
+  /** How many routes it may weigh before it gives up and returns null, so a layout with no way through cannot hitch. */
+  maxConsiders?: number;
+  /** The most points a route may have; a longer one is no route. */
+  maxPoints?: number;
+}
+
 /**
  * The leader's route from the rail at `from` to the ring round `to`, keeping CLEAR from every box in `avoid`, with
- * channels tried between `top` and `bottom`. Null where no route is clear.
+ * channels tried between `top` and `bottom`. Null where no route is clear, where the search passes its budget, and
+ * where the tower stands left of the first stub, so the leader would double back on itself.
  */
-export function routeLeader(from: { x: number; y: number }, to: { x: number; y: number; r: number }, avoid: Box[], top: number, bottom: number): Point[] | null {
+export function routeLeader(
+  from: { x: number; y: number },
+  to: { x: number; y: number; r: number },
+  avoid: Box[],
+  top: number,
+  bottom: number,
+  limits: RouteLimits = {},
+): Point[] | null {
+  if (to.x < from.x + STUBS[0]) return null;
   const start: Point = [from.x, from.y];
+  const maxPoints = limits.maxPoints ?? Infinity;
+  let budget = limits.maxConsiders ?? Infinity;
 
   // How a channel arrives on the ring: its last point and its penalty, or null for a channel refused near it.
   const arrival = (c: number): { tail: Point[]; way: number } | null => {
@@ -99,7 +118,9 @@ export function routeLeader(from: { x: number; y: number }, to: { x: number; y: 
   let best: Point[] | null = null;
   let bestCost = Infinity;
   const consider = (raw: Point[], stub: number, way: number): void => {
+    budget--;
     const pts = tidy(raw);
+    if (pts.length > maxPoints) return;
     const cost = runLength(pts) + TURN * Math.max(0, pts.length - 2) + stub + way;
     // Ties keep the first found, so the same input always gives the same route.
     if (cost >= bestCost) return;
@@ -121,6 +142,7 @@ export function routeLeader(from: { x: number; y: number }, to: { x: number; y: 
 
   for (const dx of STUBS) {
     single(from.x + dx);
+    if (budget < 0) return null;
     if (best) return best;
   }
 
@@ -130,7 +152,10 @@ export function routeLeader(from: { x: number; y: number }, to: { x: number; y: 
     for (const x of [b.x0 - CLEAR, b.x1 + CLEAR]) if (x > from.x + STUBS[0] && x < to.x) columns.add(x);
   }
   const extra = [...columns].sort((a, b) => a - b);
-  for (const xa of extra) single(xa);
+  for (const xa of extra) {
+    single(xa);
+    if (budget < 0) return null;
+  }
   if (best) return best;
 
   // A detour: along one channel past what blocks it, then over to a second channel that reaches the ring.
@@ -147,6 +172,8 @@ export function routeLeader(from: { x: number; y: number }, to: { x: number; y: 
         const sofar = 2 * (xa - from.x) + Math.abs(c1 - from.y) + (to.x - to.r - xa) + 2 * TURN;
         if (sofar >= bestCost || blocked([xa, c1], [x2, c1], avoid)) continue;
         for (const c2 of turnChannels) {
+          // Each second channel weighed counts against the budget, whether or not it is pruned.
+          if (--budget < 0) return null;
           if (c2 === c1) continue;
           const arrive = arrival(c2);
           if (!arrive || sofar + Math.abs(c2 - c1) + arrive.way >= bestCost) continue;

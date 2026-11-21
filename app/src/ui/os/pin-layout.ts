@@ -105,16 +105,22 @@ export function lockGeometry(head: Projected, foot: Projected, frame: { width: n
   return { x: head.x, top: Math.max(LOCK.top, head.y - LOCK.headPad), base: Math.min(view.h - LOCK.bottom, foot.y + LOCK.footPad), half };
 }
 
-/** The lock's tag box: right of the brackets, or flipped up and left of the ring when it would pass the view's edge. */
-export function lockTagBox(lock: LockAt, view: View): { box: Box; flip: boolean } {
+/**
+ * The lock's tag box: right of the brackets, or flipped up and left of the ring when it would pass the view's edge.
+ * Its top never stands above `top` (the pane's top, Task 10): a tag that would drops to it whole.
+ */
+export function lockTagBox(lock: LockAt, view: View, top = -Infinity): { box: Box; flip: boolean } {
   const flip = lock.x + lock.half + LOCK_TAG.gap + LOCK_TAG.w > view.w - LOCK_TAG.edge;
+  let x0: number;
+  let y0: number;
   if (flip) {
-    const x1 = lock.x - lock.half - LOCK_TAG.flipGap;
-    const y1 = lock.top - LOCK_TAG.flipRise;
-    return { flip, box: { x0: x1 - LOCK_TAG.w, x1, y0: y1 - LOCK_TAG.h, y1 } };
+    x0 = lock.x - lock.half - LOCK_TAG.flipGap - LOCK_TAG.w;
+    y0 = lock.top - LOCK_TAG.flipRise - LOCK_TAG.h;
+  } else {
+    x0 = lock.x + lock.half + LOCK_TAG.gap;
+    y0 = lock.top - LOCK_TAG.rise;
   }
-  const x0 = lock.x + lock.half + LOCK_TAG.gap;
-  const y0 = lock.top - LOCK_TAG.rise;
+  y0 = Math.max(y0, top);
   return { flip, box: { x0, x1: x0 + LOCK_TAG.w, y0, y1: y0 + LOCK_TAG.h } };
 }
 

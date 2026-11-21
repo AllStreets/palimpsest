@@ -161,3 +161,42 @@ Changes: on an over reading the limit's words turn warn with the figure, as the 
 ### Review fix: over, said and shown
 
 Review found that over reached the reader only through a class and the eye mostly through colour. An over reading now ends its aria-label with ", over the limit" ("seven-day window 62%, limit 50%, over the limit"), and the label under the cap is unchanged. On the screen the word "over" stands in warn between the figure and the limit, in Big Shoulders 700. The readout.css contrast test covers it (warn, 4.5:1 or more on the thinnest panel). The re-shot `readouts`, `readouts-1280` and `readouts-reduced-motion` show "62% over limit 50%" on one line.
+
+## Task 10: city pins and the lock-on
+
+Stills: `stills/task-10/pins.webp`, `pins-1280.webp` and `pins-reduced-motion.webp` (round 3, final), with `pins-1280-round1.webp` and `pins-1280-round2.webp`, all from `tools/os-stills.ts pins` with the GPU lock held. The `pins` kind is the dressed panel with six sample rows over the screens framing. Three rows are targets over two districts: row 1 (harbor-ledger) takes the lock, row 2 (fieldnotes) is the grant, and row 4 shares fieldnotes, so its pin reads "02 +1". Row 6 names a district not built yet, which gets no pin. Every other standing district gets a quiet pin.
+
+### Round 1
+
+What works:
+- **One set of labels.** The city's own plates are gone while the pins show, and every tower is named once: two numbered pins, quiet names elsewhere.
+- **The leader** leaves the panel's rail at row 1, climbs at the pane's edge, crosses the sky above the skyline and drops onto the ring from above. It crosses no tag, stem or the telemetry.
+- **The lock tag is whole at 1280.** Near the right edge it flips up and left of the ring, and the leader comes down past its right edge.
+- Red appears only on the grant pin's mark, rule and number. The lock on an ordinary item is amber.
+- Nothing collides: quiet "assay-kit" and "kumo" stand close but apart.
+
+Weaknesses:
+1. **At 1280 the leader left at row 2, not row 1.** The row's middle was read once, before the faces arrived and the rows reflowed, and nothing read it again.
+2. The shared-district label never showed: the shared district was also the locked one, and a locked pin gives way to the lock.
+
+Changes: the row's middle is read again when the list's layout moves it (a ResizeObserver on the list and the active row, and the fonts' loadingdone). The shared row now shares the grant's district.
+
+### Round 2
+
+- The leader now leaves at row 1 at both sizes, and "02 +1" reads on the grant's pin.
+- But the districts were picked by where their towers projected at mount, while the camera was still easing into the framing. So the lock went to a short tower in the middle (blank-slate), and the stills changed between runs.
+
+Change: the gallery prefers the sample city's harbor-ledger, fieldnotes and quarry where they stand in view, and falls back to the projection pick.
+
+### Round 3 (final)
+
+- 1600, 1280 and reduced motion hold. The leader is a five-point route (rail, stub, sky channel, the tower's line, the ring). Reduced motion shows the same frame, with the brackets already closed.
+
+### The detour ruling
+
+The router can find seven-point detours: it changes channel once past a wall. Laid over a live skyline, a leader that steps twice through the sky reads as noise, not as a line naming one tower. It is also the case most likely to brush another tag's stem. So pins.ts caps the route at 5 points (`maxPoints: 5`), and where only a detour would do, the lock alone names the tower. The search is also capped at 20k considers (a pathological layout returns null in about 6 ms, against 315 ms uncapped).
+
+### Left, below the anti-goal level
+
+- The lock tag is a fixed 200 by 56, so a short name leaves dark room on the right. The fixed size is what the router keeps clear of; a measured size would need one more read.
+- The leader's stub, from the rail to the first column, runs under the panel's back pane, so the line seems to rise from the back pane's edge. It reads as leaving the pane, which is what the brief asks.

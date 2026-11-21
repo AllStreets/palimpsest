@@ -135,3 +135,18 @@ test('the tag offsets reach the sheet as custom properties, from the same consta
   assert.equal(props['--os-lock-tag-gap'], `${LOCK_TAG.gap}px`);
   for (const v of Object.values(props)) assert.match(v, /^-?\d+(\.\d+)?px$/);
 });
+
+test('lockTagBox holds the tag below the pane top, flipped or not (Task 10)', () => {
+  // Flipped near the top, the tag would stand above the window: it drops to the pane top, its size unchanged.
+  const high = { x: VIEW.w - 100, top: 78, base: 400, half: 30 };
+  const free = lockTagBox(high, VIEW);
+  assert.ok(free.box.y0 < 70, 'unclamped, it rises past the top');
+  const held = lockTagBox(high, VIEW, 70);
+  assert.equal(held.flip, true);
+  assert.equal(held.box.y0, 70);
+  assert.equal(held.box.y1 - held.box.y0, LOCK_TAG.h);
+  assert.equal(held.box.x1, free.box.x1);
+  // Below the top already, nothing moves.
+  const low = { x: 900, top: 286, base: 606, half: 40 };
+  assert.deepEqual(lockTagBox(low, VIEW, 70), lockTagBox(low, VIEW));
+});

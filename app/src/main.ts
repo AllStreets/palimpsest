@@ -66,6 +66,7 @@ import { createNotices } from './ui/notices';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
 import type { GalleryKind } from './ui/os/gallery';
+import type { OsCity } from './ui/os/pins';
 
 /** A vehicle as the debug handle reports it. */
 interface VehicleProbe {
@@ -455,6 +456,16 @@ async function main(): Promise<void> {
       return [c.r * 0.42, c.g * 0.42, c.b * 0.42];
     },
   });
+  /**
+   * The city as the screens' pins and lock-ons see it (screens redesign Task 10): built once, and handed to every
+   * screen that pins the city (the gallery now, the Brief in Task 17).
+   */
+  const osCity: OsCity = {
+    camera: city.camera,
+    towerFrame: (repo) => city.towerFrame(repo),
+    onFrame: (fn) => city.onFrame(fn),
+    districts: () => city.districts(),
+  };
 
   /**
    * A log of frame times, one requestAnimationFrame callback to the next, for
@@ -506,7 +517,7 @@ async function main(): Promise<void> {
       const ask = ++galleryAsk;
       if (!kind) return;
       void import('./ui/os/gallery').then((m) => {
-        if (ask === galleryAsk) galleryDown = m.mountGallery(document.body, kind);
+        if (ask === galleryAsk) galleryDown = m.mountGallery(document.body, kind, osCity);
       });
     },
     quarters: 0,

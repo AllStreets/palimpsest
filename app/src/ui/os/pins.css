@@ -1,0 +1,365 @@
+/*
+ * The city pins and the lock-on (pins.ts, Task 10): one set of labels over the live city while a screen is open.
+ * Every tag stands on the dark backplate (PLATE: the ground at --os-plate-alpha), so its words hold 4.5:1 on the
+ * brightest pixel of the city. Amber names, red is the grant's and the lock's on the grant alone, and quiet pins are
+ * dim. The tag offsets come from pin-layout.ts through custom properties set on .os-pins, never typed here.
+ * Everything moves by transform; the fades are opacity.
+ */
+
+/* One set of labels: while pins show, the city's own plates fade over MOTION.slow, and come back as they go. */
+.plates {
+  transition: opacity var(--os-slow) var(--os-ease);
+}
+html[data-os-pins='on'] .plates {
+  opacity: 0;
+}
+html[data-os-pins='on'] .plates * {
+  pointer-events: none !important;
+}
+
+.os-pins {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  font-family: var(--os-mono);
+}
+.os-pins[hidden] {
+  display: none;
+}
+
+/* The pane's frame, right of the panel and under the top bar; the telemetry stands at its foot. */
+.os-pins-frame {
+  position: absolute;
+  top: 70px;
+  bottom: 22px;
+  left: calc(var(--os-pane-left, 50vw) + 22px);
+  right: 22px;
+}
+.os-pins-tele {
+  position: absolute;
+  bottom: 14px;
+  left: 18px;
+  padding: 2px 6px 3px;
+  background: rgba(var(--os-ground-rgb), var(--os-plate-alpha));
+  color: var(--os-amber);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- a pin: a mark on the tower's head, a stem up, a tag */
+
+.os-pins-set {
+  position: absolute;
+  inset: 0;
+}
+.os-pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  transition: opacity var(--os-base) var(--os-ease);
+  will-change: transform;
+}
+.os-pin.on {
+  opacity: 1;
+}
+/* The locked district's pin gives way to the lock, which names its tower. */
+.os-pin.on.locked {
+  opacity: 0;
+}
+.os-pin-mark {
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--os-amber);
+  transform: rotate(45deg);
+  box-shadow: 0 0 8px rgba(var(--os-amber-rgb), 0.55);
+}
+.os-pin-tag {
+  position: absolute;
+  left: var(--os-pin-tag-x);
+  bottom: calc(var(--os-pin-tag-y) + var(--os-pin-lift, 0px));
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 7px;
+  row-gap: 1px;
+  padding: 3px 8px 4px 7px;
+  white-space: nowrap;
+  background: rgba(var(--os-ground-rgb), var(--os-plate-alpha));
+  box-shadow: inset 2px 0 0 var(--os-amber);
+}
+/* The stem: from the tag's foot back down to the mark, as long as the tag is lifted. */
+.os-pin-tag::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--os-pin-tag-x));
+  bottom: calc(-1 * (var(--os-pin-tag-y) + var(--os-pin-lift, 0px)));
+  box-sizing: border-box;
+  width: var(--os-pin-tag-x);
+  height: calc(var(--os-pin-tag-y) + var(--os-pin-lift, 0px));
+  border-left: 1px solid rgba(var(--os-amber-rgb), 0.7);
+  border-top: 1px solid rgba(var(--os-amber-rgb), 0.7);
+}
+.os-pin-n {
+  color: var(--os-amber);
+  font-size: 10px;
+  font-weight: 500;
+}
+.os-pin-name {
+  color: var(--os-ink);
+  font-family: var(--os-display);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+}
+.os-pin-fig {
+  grid-column: 2;
+  color: var(--os-amber-hi);
+  font-size: 10px;
+}
+.os-pin.grant .os-pin-mark {
+  border-color: var(--os-red);
+  box-shadow: 0 0 8px rgba(var(--os-red-rgb), 0.6);
+}
+.os-pin.grant .os-pin-tag {
+  box-shadow: inset 2px 0 0 var(--os-red);
+}
+.os-pin.grant .os-pin-n {
+  color: var(--os-red);
+}
+
+/* A quiet pin: a district with nothing waiting. A 6 px tick and its name, dim, never numbered, never lifted. */
+.os-pin.quiet .os-pin-mark {
+  left: -3px;
+  top: -3px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(var(--os-amber-rgb), 0.55);
+  box-shadow: none;
+}
+.os-pin.quiet .os-pin-tag {
+  display: block;
+  padding: 1px 6px 2px 5px;
+  box-shadow: inset 1px 0 0 rgba(var(--os-amber-rgb), 0.4);
+}
+.os-pin.quiet .os-pin-tag::before {
+  border-color: rgba(var(--os-amber-rgb), 0.35);
+}
+.os-pin.quiet .os-pin-name {
+  color: var(--os-dim);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ---------------------------------------------------------------- the leader, from the row's rail to the ring */
+
+.os-pins-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  opacity: 0;
+  transition: opacity var(--os-base) var(--os-ease);
+}
+.os-pins-lines.on {
+  opacity: 1;
+}
+.os-leader {
+  fill: none;
+  stroke: rgba(var(--os-amber-rgb), 0.95);
+  stroke-width: 1.25;
+}
+.os-leader-glow {
+  fill: none;
+  stroke: rgba(var(--os-amber-rgb), 0.16);
+  stroke-width: 5;
+}
+.os-leader-dot {
+  fill: var(--os-amber);
+}
+.os-pins-lines.grant .os-leader {
+  stroke: var(--os-red);
+}
+.os-pins-lines.grant .os-leader-glow {
+  stroke: rgba(var(--os-red-rgb), 0.2);
+}
+.os-pins-lines.grant .os-leader-dot {
+  fill: var(--os-red);
+}
+
+/* ---------------------------------------------------------------- the lock: brackets on the tower, a ring at its head, a tag */
+
+.os-lock {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  color: var(--os-amber);
+  transition: opacity var(--os-base) var(--os-ease);
+}
+.os-lock.on {
+  opacity: 1;
+}
+.os-lock.grant {
+  color: var(--os-red);
+}
+/* Each corner stands at its point (pins.ts sets the transform); its L reaches in from there. */
+.os-lock-c,
+.os-lock-ring,
+.os-lock-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+.os-lock-l {
+  position: absolute;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 0 solid currentColor;
+}
+.os-lock-c.tl .os-lock-l {
+  left: 0;
+  top: 0;
+  border-top-width: 2px;
+  border-left-width: 2px;
+  --os-dx: -26px;
+  --os-dy: -26px;
+}
+.os-lock-c.tr .os-lock-l {
+  right: 0;
+  top: 0;
+  border-top-width: 2px;
+  border-right-width: 2px;
+  --os-dx: 26px;
+  --os-dy: -26px;
+}
+.os-lock-c.bl .os-lock-l {
+  left: 0;
+  bottom: 0;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+  --os-dx: -26px;
+  --os-dy: 26px;
+}
+.os-lock-c.br .os-lock-l {
+  right: 0;
+  bottom: 0;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  --os-dx: 26px;
+  --os-dy: 26px;
+}
+/* On each new lock the brackets close in once; two names for one motion, so it restarts without a reflow. */
+.os-lock.acquire-a .os-lock-l {
+  animation: os-lock-close-a var(--os-slow) var(--os-ease) both;
+}
+.os-lock.acquire-b .os-lock-l {
+  animation: os-lock-close-b var(--os-slow) var(--os-ease) both;
+}
+@keyframes os-lock-close-a {
+  from {
+    opacity: 0;
+    transform: translate(var(--os-dx), var(--os-dy));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes os-lock-close-b {
+  from {
+    opacity: 0;
+    transform: translate(var(--os-dx), var(--os-dy));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.os-lock-ring::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--os-lock-ring-d) / -2);
+  top: calc(var(--os-lock-ring-d) / -2);
+  box-sizing: border-box;
+  width: var(--os-lock-ring-d);
+  height: var(--os-lock-ring-d);
+  border: 1.5px dashed currentColor;
+  border-radius: 50%;
+}
+.os-lock-ring::after {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+.os-lock-tag {
+  box-sizing: border-box;
+  width: var(--os-lock-tag-w);
+  height: var(--os-lock-tag-h);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 3px;
+  padding: 0 10px 0 11px;
+  overflow: hidden;
+  background: rgba(var(--os-ground-rgb), var(--os-plate-alpha));
+  box-shadow: inset 2px 0 0 currentColor;
+}
+.os-lock.flip .os-lock-tag {
+  box-shadow: inset -2px 0 0 currentColor;
+}
+.os-lock-n {
+  font-size: 11px;
+  font-weight: 600;
+}
+.os-lock-name {
+  overflow: hidden;
+  color: var(--os-ink);
+  font-family: var(--os-display);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.os-lock-fig {
+  grid-column: 2;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- reduced motion: every mark at rest */
+
+@media (prefers-reduced-motion: reduce) {
+  .os-lock.acquire-a .os-lock-l,
+  .os-lock.acquire-b .os-lock-l {
+    animation: none;
+  }
+  .plates,
+  .os-pin,
+  .os-lock,
+  .os-pins-lines {
+    transition: none;
+  }
+}

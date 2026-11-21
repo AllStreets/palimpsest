@@ -235,3 +235,72 @@ test('the contrast reader resolves what control.css writes', () => {
   // The base rule is found, and @media rules (forced colours) do not leak into it.
   assert.equal(decls(KEY).border, '0');
 });
+
+// ---------------------------------------------------------------- the pins' and the lock's tags on their backplate (Task 10)
+
+const PINS_CSS = readFileSync(new URL('../app/src/ui/os/pins.css', import.meta.url), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '');
+const pinRules = (): Array<[string, Record<string, string>]> =>
+  [...PINS_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => {
+    const out: Record<string, string> = {};
+    for (const d of m[2].split(';')) {
+      const i = d.indexOf(':');
+      if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim().replace(/\s+/g, ' ');
+    }
+    return [m[1].trim(), out];
+  });
+
+/** The backplate every tag stands on: the ground at PLATE's alpha, never thinner. */
+const PLATE_BG = 'rgba(var(--os-ground-rgb), var(--os-plate-alpha))';
+
+test('the pin, quiet pin, lock and telemetry tags all stand on the PLATE backplate', () => {
+  for (const sel of ['.os-pin-tag', '.os-lock-tag', '.os-pins-tele']) {
+    const bgs = pinRules().filter(([s]) => args(s).some((x) => x.split(/\s+/).at(-1) === sel)).map(([, d]) => d.background ?? d['background-color']);
+    assert.ok(bgs.length > 0 && bgs.every((b) => b === undefined || b === PLATE_BG), `${sel} backgrounds: ${bgs.join(' | ')}`);
+    assert.ok(bgs.includes(PLATE_BG), `${sel} stands on the plate`);
+  }
+  // No rule thins a tag's plate (a quiet pin included).
+  for (const [s, d] of pinRules()) {
+    if (!/-tag\b|os-pins-tele/.test(s)) continue;
+    const bg = d.background ?? d['background-color'];
+    assert.ok(bg === undefined || bg === PLATE_BG, `${s} sets its plate to ${bg}`);
+  }
+});
+
+test('every word on the pins and the lock holds 4.5:1 on the plate over the brightest city, red included', () => {
+  const plate = over(BRIGHTEST, PLATE.rgb, PLATE.alpha);
+  const inks = new Set<string>();
+  for (const [s, d] of pinRules()) {
+    if (!d.color) continue;
+    assert.match(d.color, /^var\(--os-[\w-]+\)$/, `${s} sets its words in ${d.color}, not a token`);
+    const p = paint(d.color);
+    assert.equal(p.a, 1);
+    const r = contrast(p.rgb, plate);
+    assert.ok(r >= 4.5, `${s}: ${d.color} is ${r.toFixed(2)}:1 on the plate`);
+    inks.add(d.color);
+  }
+  assert.ok(inks.has('var(--os-red)'), 'red words (the grant and the lock) are measured too');
+  // Shown, nothing is faded below full: the measured ink is the ink drawn.
+  for (const [s, d] of pinRules()) {
+    if (/\.on\b/.test(s) && d.opacity !== undefined && !/\.locked\b/.test(s)) assert.equal(Number(d.opacity), 1, `${s} fades to ${d.opacity}`);
+  }
+});
+
+test('red on the pins is the grant\'s and the lock\'s alone', () => {
+  for (const [s, d] of pinRules()) {
+    const uses = Object.values(d).some((v) => /--os-red\b|--os-red-rgb/.test(v));
+    if (uses) assert.ok(/grant|os-lock/.test(s), `${s} uses red`);
+  }
+});
+
+test('pins.css holds the plates\' handoff: they fade over MOTION.slow while pins show', () => {
+  const rules = pinRules();
+  const base = rules.find(([s]) => s === '.plates');
+  assert.ok(base, 'a .plates rule');
+  assert.match(base[1].transition ?? '', /^opacity var\(--os-slow\)/);
+  const on = rules.find(([s]) => s === "html[data-os-pins='on'] .plates");
+  assert.ok(on, 'the handoff rule');
+  assert.equal(on[1].opacity, '0');
+  assert.equal(MOTION.slow, 450);
+});

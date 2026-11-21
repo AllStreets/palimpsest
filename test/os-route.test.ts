@@ -122,3 +122,35 @@ test('deterministic: the same input gives the same route', () => {
   const avoid: Box[] = [{ x0: 1000, y0: 240, x1: 1180, y1: 300 }];
   assert.deepEqual(routeLeader({ x: 760, y: 460 }, TO, avoid, 88, 970), routeLeader({ x: 760, y: 460 }, TO, avoid, 88, 970));
 });
+
+test('a search past its budget gives no route rather than a hitch (Task 10)', () => {
+  // The sealed wall forces the detour search, which tries a great many routes before it gives up.
+  const wall: Box[] = [];
+  const pitch = (970 - 88) / 30;
+  for (let i = 0; i < 30; i++) wall.push({ x0: 1000, x1: 1100, y0: 88 + i * pitch, y1: 88 + (i + 1) * pitch });
+  for (let i = 0; i < 12; i++) wall.push({ x0: 820 + i * 14, x1: 826 + i * 14, y0: 120 + i * 60, y1: 150 + i * 60 });
+  const t0 = performance.now();
+  assert.equal(routeLeader({ x: 760, y: 500 }, TO, wall, 88, 970, { maxConsiders: 20_000 }), null);
+  assert.ok(performance.now() - t0 < 60, `the capped search took ${(performance.now() - t0).toFixed(1)} ms`);
+  // A budget too small for even the first channels: no route, even in a clear sky.
+  assert.equal(routeLeader({ x: 760, y: 500 }, TO, [], 88, 970, { maxConsiders: 3 }), null);
+  // With room to search, the clear sky still routes.
+  assert.ok(routeLeader({ x: 760, y: 500 }, TO, [], 88, 970, { maxConsiders: 20_000 }));
+});
+
+test('a tower left of the stub, where the leader would double back, gets no leader (Task 10)', () => {
+  assert.equal(routeLeader({ x: 760, y: 500 }, { x: 790, y: 300, r: 21 }, [], 88, 970), null);
+  assert.ok(routeLeader({ x: 760, y: 500 }, { x: 900, y: 300, r: 21 }, [], 88, 970));
+});
+
+test('a route may be held to a number of points; a longer one is no route (Task 10)', () => {
+  const blocks: Box[] = [
+    { x0: 1000, x1: 1100, y0: 88, y1: 700 },
+    { x0: 1000, x1: 1100, y0: 740, y1: 970 },
+    { x0: 1300, x1: 1500, y0: 600, y1: 970 },
+  ];
+  const free = must(routeLeader({ x: 760, y: 500 }, TO, blocks, 88, 970));
+  assert.ok(free.length > 5, `the detour has ${free.length} points`);
+  assert.equal(routeLeader({ x: 760, y: 500 }, TO, blocks, 88, 970, { maxPoints: 5 }), null);
+  assert.deepEqual(routeLeader({ x: 760, y: 500 }, TO, [], 88, 970, { maxPoints: 5 }), routeLeader({ x: 760, y: 500 }, TO, [], 88, 970));
+});

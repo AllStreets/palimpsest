@@ -620,6 +620,77 @@ export async function everyScreenChecks(page: Page, errors: string[]): Promise<v
   await page.evaluate(() => {
     location.hash = '#/';
   });
+  // The screens' city pins and lock-on (screens redesign Task 10), from the gallery's pins kind.
+  await pinsChecks(page, errors);
+}
+
+// ---------------------------------------------------------------- the city pins (screens redesign Task 10)
+
+/** The gallery's handle, its frame hook count, and the plates' drawn opacity. */
+const gallery = (page: Page, kind: string | null): Promise<void> =>
+  page.evaluate((k) => (window as unknown as { __palimpsest: { osGallery(k: string | null): void } }).__palimpsest.osGallery(k), kind);
+const frameHooks = (page: Page): Promise<number> => page.evaluate(() => (window as unknown as { __palimpsest: { frameHooks(): number } }).__palimpsest.frameHooks());
+const platesOpacity = (page: Page): Promise<string> => page.evaluate(() => {
+  const p = document.querySelector('.plates');
+  return p ? getComputedStyle(p).opacity : 'none';
+});
+
+/**
+ * The pins over the sample city (Review Focus 2 and 3): with targets, pins stand and the city's own plates fade;
+ * a target whose district does not stand makes no pin and no error; unmounted, the plates are back within 600 ms,
+ * the frame hook is gone and no pin is left; five opens and closes in two seconds leave the same. Shot: pins.png.
+ */
+export async function pinsChecks(page: Page, errors: string[]): Promise<void> {
+  const before = errors.length;
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+  await page.waitForSelector('body[data-route="city"]', { timeout: 8000 });
+  await gallery(page, 'pins');
+  const mounted = await page
+    .waitForSelector('.os-gallery[data-kind="pins"] .os-pins', { state: 'attached', timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  check(mounted, 'the gallery\'s pins kind mounts over the city');
+  if (!mounted) return;
+  // A frame or two to measure the tags, and the plates' 450 ms fade.
+  await page.waitForTimeout(900);
+  const targets = await page.locator('.os-gallery[data-kind="pins"] .os-sample-row[data-target]').count();
+  const on = await page.locator('.os-pin.on').count();
+  check(targets >= 3 && on > 0, `with ${targets} targets, ${on} pins stand on their towers`);
+  check((await platesOpacity(page)) === '0', `the city's own plates fade while the pins show (${await platesOpacity(page)})`);
+  check((await frameHooks(page)) === 1, `the pins run one frame hook (${await frameHooks(page)})`);
+  const unbuilt = await page.locator('.os-sample-row[data-target][data-unbuilt]').count();
+  const unbuiltPins = await page.evaluate(() => {
+    const repos = [...document.querySelectorAll<HTMLElement>('.os-sample-row[data-unbuilt]')].map((r) => r.dataset.repo);
+    return [...document.querySelectorAll<HTMLElement>('.os-pin')].filter((p) => repos.includes(p.dataset.repo)).length;
+  });
+  check(unbuilt === 1 && unbuiltPins === 0 && errors.length === before, `a target whose district does not stand makes no pin and no error (${unbuilt} such, ${unbuiltPins} pins)`);
+  await page.screenshot({ path: join(SHOTS, 'pins.png') });
+
+  await gallery(page, null);
+  const back = await page
+    .waitForFunction(() => {
+      const p = document.querySelector('.plates');
+      return !p || getComputedStyle(p).opacity === '1';
+    }, null, { timeout: 600, polling: 'raf' })
+    .then(() => true)
+    .catch(() => false);
+  check(back, `unmounted, the plates are back at full opacity within 600 ms (${await platesOpacity(page)})`);
+  check((await frameHooks(page)) === 0, `unmounted, no frame hook is left (${await frameHooks(page)})`);
+  check((await page.locator('.os-pin').count()) === 0, 'unmounted, no pin is left in the page');
+
+  // Five opens and closes in two seconds (Review Focus 3).
+  for (let i = 0; i < 5; i++) {
+    await gallery(page, 'pins');
+    await page.waitForTimeout(200);
+    await gallery(page, null);
+    await page.waitForTimeout(200);
+  }
+  await page.waitForTimeout(600);
+  check((await frameHooks(page)) === 0 && (await platesOpacity(page)) === '1' && (await page.locator('.os-pin').count()) === 0, `five opens and closes in two seconds leave no hook, no pin and the plates whole (${await frameHooks(page)} hooks, plates ${await platesOpacity(page)})`);
+  const fresh = errors.slice(before);
+  check(fresh.length === 0, `the pins raised no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
 }
 
 // ---------------------------------------------------------------- the running head's lighting

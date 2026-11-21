@@ -19,6 +19,10 @@ test('main.ts loads the gallery only by dynamic import, behind the debug handle'
   const main = uncomment(read('app/src/main.ts'));
   assert.ok(!/^\s*import\s(?!type\b)[^;]*['"]\.\/ui\/os\/gallery(\.js)?['"]/m.test(main), 'main.ts imports the gallery statically');
   assert.match(main, /import\(\s*['"]\.\/ui\/os\/gallery(\.js)?['"]\s*\)/, 'main.ts loads the gallery with import()');
+  // The city the pins stand on (Task 10): one OsCity, built once, handed to the gallery; pins.ts comes in as a type only.
+  assert.match(main, /mountGallery\(document\.body,\s*kind,\s*osCity\)/, 'the gallery is given the OsCity');
+  assert.ok(!/^\s*import\s(?!type\b)[^;]*['"]\.\/ui\/os\/pins(\.js)?['"]/m.test(main), 'main.ts imports pins.ts statically');
+  assert.equal([...main.matchAll(/const osCity\b/g)].length, 1, 'one OsCity');
   assert.match(main, /osGallery\s*\(\s*kind\s*:\s*GalleryKind\s*\|\s*null\s*\)\s*:\s*void/, 'the debug handle declares osGallery(kind: GalleryKind | null): void');
   assert.match(main, /import\s+type\s*\{[^}]*\bGalleryKind\b[^}]*\}\s*from\s*['"]\.\/ui\/os\/gallery(\.js)?['"]/, 'GalleryKind comes in as a type only');
 });
@@ -29,7 +33,7 @@ test('the gallery names its six kinds and mounts with an unmount', () => {
   assert.ok(kinds, 'gallery.ts exports GalleryKind');
   const names = [...kinds[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
   assert.deepEqual(names, ['type', 'panel', 'controls', 'readouts', 'pins', 'terminal']);
-  assert.match(src, /export function mountGallery\(parent: HTMLElement, kind: GalleryKind\): \(\) => void/);
+  assert.match(src, /export function mountGallery\(parent: HTMLElement, kind: GalleryKind, city\?: OsCity\): \(\) => void/);
   assert.match(src, /import\s+['"]\.\/index\.css['"]/, 'the gallery brings the os layer with it');
 });
 

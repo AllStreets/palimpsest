@@ -9,11 +9,15 @@
 import './index.css';
 import './gallery.css';
 
+import * as THREE from 'three';
+
+import { projectToView } from '../../city/labels.js';
 import { contrast, hex, over } from '../contrast.js';
 import { createSheet } from '../controls.js';
 import { osKey, WEIGHTS, type Weight } from './control.js';
 import { scanOnce, typeIn } from './motion.js';
 import { dressPanel } from './panel.js';
+import { createPins, type OsCity, type PinTarget } from './pins.js';
 import { agreementScales, figure, rangefinder, readoutRow, segmentBar } from './readout.js';
 import { COLOUR, GROUND, type ColourToken } from './tokens.js';
 
@@ -250,16 +254,133 @@ function readoutsSpecimen(host: HTMLElement): void {
   if (claims) section('Claims', 'is-claims').append(claims);
 }
 
-const BUILT: Partial<Record<GalleryKind, (host: HTMLElement) => void | (() => void)>> = { type: typeSpecimen, panel: panelSpecimen, controls: controlsSpecimen, readouts: readoutsSpecimen };
+/** A repo the city has no district for: its row is a target, and it gets no pin (Review Focus 2). */
+const UNBUILT = 'wren/not-built-yet';
 
-/** Shows one kind of the gallery over the city, and returns its unmount. */
-export function mountGallery(parent: HTMLElement, kind: GalleryKind): () => void {
+/** The sample city's districts the pins kind prefers, in order: the lock, the grant, the quiet third. */
+const PREFER = ['harbor-ledger', 'fieldnotes', 'quarry'];
+const shortName = (repo: string): string => repo.split('/').pop() ?? repo;
+
+/**
+ * Up to three standing districts for the sample's targets: the preferred sample ones that stand in view, then
+ * those whose towers stand well inside the pane: the one nearest its middle, the one farthest from it, then the
+ * next nearest. The first takes the lock and the second the grant.
+ * Where too few stand in view, the rest come in the city's own order.
+ */
+function pickDistricts(city: OsCity, paneLeft: number): string[] {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const mid = (paneLeft + w) / 2;
+  const seen = { x: 0, y: 0, behind: false };
+  const at = new THREE.Vector3();
+  const inView: Array<{ repo: string; d: number }> = [];
+  const all = city.districts();
+  for (const repo of all) {
+    const f = city.towerFrame(repo);
+    if (!f) continue;
+    at.set(f.center.x, f.center.y + f.height / 2, f.center.z);
+    projectToView(at, city.camera, w, h, seen);
+    if (!seen.behind && seen.x > paneLeft + 80 && seen.x < w - 120 && seen.y > 160 && seen.y < h - 120) inView.push({ repo, d: Math.abs(seen.x - mid) });
+  }
+  inView.sort((a, b) => a.d - b.d);
+  // The sample city's tall tower and a near one, where they stand in view, so the stills hold still between runs.
+  const prefer = PREFER.map((name) => inView.find((v) => shortName(v.repo) === name)).filter((v) => v !== undefined);
+  const rest = inView.filter((v) => !prefer.includes(v));
+  const spread = rest.length >= 2 ? [rest[0], rest[rest.length - 1], ...rest.slice(1, -1)] : rest;
+  const order = [...prefer, ...spread].map((v) => v.repo);
+  for (const repo of all) if (!order.includes(repo)) order.push(repo);
+  return order.slice(0, 3);
+}
+
+/**
+ * The pins: the dressed panel with six sample rows over the screens framing, and the city's pins beside it.
+ * Three rows are targets over two districts: the first takes the lock, the second is the grant, and the
+ * fourth shares the grant's district, so its pin reads "02 +1"; and the sixth names a district not built yet,
+ * which gets no pin. Every other standing district gets a quiet pin. The first target is locked on until a row
+ * is hovered or focused.
+ */
+function pinsSpecimen(host: HTMLElement, city?: OsCity): () => void {
+  host.classList.add('is-panel');
+  const sheet = createSheet(host, 'os-sample', 'Saturday 21 November', () => {});
+  const panel = dressPanel(sheet);
+  panel.head.append(el('p', 'os-sample-since', 'Since yesterday 19:52'));
+  const figs = el('p', 'os-sample-figs os-figs');
+  for (const [v, k] of [['4', 'wait on you'], ['11', 'merged'], ['963.24', 'credits']]) {
+    const f = el('span', 'os-sample-fig');
+    f.append(el('span', 'os-sample-v', v), el('span', 'os-sample-k', k));
+    figs.append(f);
+  }
+  panel.head.append(figs);
+  sheet.show();
+
+  const [a, b, c] = city ? pickDistricts(city, sheet.root.offsetLeft + sheet.root.offsetWidth) : [];
+  const repoA = a ?? 'harbor/ledger';
+  const repoB = b ?? 'kumo/cache';
+  const repoC = c ?? 'quarry/deploy';
+  const short = shortName;
+  const rows: Array<{ repo: string; line: string; figs: string[]; target?: Omit<PinTarget, 'n' | 'repo' | 'name'> }> = [
+    { repo: repoA, line: `${short(repoA)}: a dependency bump waits on review`, figs: ['#41', '0.66', 'waiting'], target: { id: 'r1', figure: '0.66 cr', tone: 'warn' } },
+    { repo: repoB, line: `${short(repoB)}: asks to act here on its own`, figs: ['48 of 50', 'agreed'], target: { id: 'r2', figure: '48 of 50', tone: 'grant' } },
+    { repo: repoC, line: `${short(repoC)}: the flaky clock test is fixed`, figs: ['#207', '2.38', 'merged'] },
+    { repo: repoB, line: `${short(repoB)}: the audit found two stale keys`, figs: ['#315', '1.14', 'waiting'], target: { id: 'r4', figure: '1.14 cr', tone: 'ask' } },
+    { repo: repoC, line: `${short(repoC)}: the deploy script is rewritten`, figs: ['#210', '5.75', 'merged'] },
+    { repo: UNBUILT, line: `${short(UNBUILT)}: the first build asks for a tier`, figs: ['#3', '0.00', 'waiting'], target: { id: 'r6', figure: '0.00 cr', tone: 'warn' } },
+  ];
+
+  const pins = createPins(host, sheet.root, sheet.body, city);
+  const list = el('ol', 'os-sample-rows');
+  const targets: PinTarget[] = [];
+  let first: { id: string; row: HTMLElement } | null = null;
+  for (const [i, r] of rows.entries()) {
+    const row = el('li', 'os-sample-row');
+    row.dataset.repo = r.repo;
+    row.append(el('span', 'os-sample-line', r.line), el('span', 'os-sample-row-figs os-figs', r.figs.join('  ')));
+    if (r.target) {
+      const t: PinTarget = { ...r.target, n: i + 1, repo: r.repo, name: short(r.repo) };
+      targets.push(t);
+      row.dataset.target = t.id;
+      if (r.repo === UNBUILT) row.dataset.unbuilt = '';
+      row.tabIndex = 0;
+      row.classList.add('os-focus');
+      first ??= { id: t.id, row };
+      const lead = first;
+      const rest = (): void => pins.setActive(lead.id, lead.row);
+      row.addEventListener('pointerenter', () => pins.setActive(t.id, row));
+      row.addEventListener('focus', () => pins.setActive(t.id, row));
+      row.addEventListener('pointerleave', rest);
+      row.addEventListener('blur', rest);
+    }
+    list.append(row);
+  }
+  panel.list.append(list);
+  panel.setStream(rows.flatMap((r) => [short(r.repo), ...r.figs]));
+
+  pins.setTargets(targets);
+  pins.show();
+  if (first) pins.setActive(first.id, first.row);
+  return () => {
+    pins.hide();
+    panel.dispose();
+  };
+}
+
+const BUILT: Partial<Record<GalleryKind, (host: HTMLElement, city?: OsCity) => void | (() => void)>> = {
+  type: typeSpecimen,
+  panel: panelSpecimen,
+  controls: controlsSpecimen,
+  readouts: readoutsSpecimen,
+  pins: pinsSpecimen,
+};
+
+/** Shows one kind of the gallery over the city, and returns its unmount. The pins kind stands on `city`. */
+export function mountGallery(parent: HTMLElement, kind: GalleryKind, city?: OsCity): () => void {
   const root = el('section', 'os-gallery');
   root.dataset.kind = kind;
   root.setAttribute('aria-label', `Gallery: ${kind}`);
   const build = BUILT[kind];
-  const cleanup = build ? build(root) : root.append(el('p', 'os-gallery-label', `${kind}: not built yet`));
+  // In the page before it is built, so a kind can read where the panel stands (the pins' pane edge).
   parent.append(root);
+  const cleanup = build ? build(root, city) : root.append(el('p', 'os-gallery-label', `${kind}: not built yet`));
   return () => {
     cleanup?.();
     root.remove();
