@@ -699,7 +699,7 @@ export async function schoolSettingsChecks(page: Page, check: Check, shots: stri
     {
       const u = getSettings().school.trainNowUntil;
       const d = u ? new Date(u) : null;
-      check(!!d && ((await until.textContent()) ?? '').trim() === `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`, 'the time is the engine’s, three hours on');
+      check(!!d && ((await until.textContent()) ?? '').trim() === `until ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, 'the time is the engine’s, three hours on');
     }
     {
       const g = (await api<SchoolView>(page, '/api/school')).gate.heavy;
