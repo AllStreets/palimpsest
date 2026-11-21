@@ -200,3 +200,29 @@ The router can find seven-point detours: it changes channel once past a wall. La
 
 - The lock tag is a fixed 200 by 56, so a short name leaves dark room on the right. The fixed size is what the router keeps clear of; a measured size would need one more read.
 - The leader's stub, from the rail to the first column, runs under the panel's back pane, so the line seems to rise from the back pane's edge. It reads as leaving the pane, which is what the brief asks.
+
+## Task 11: the top bar
+
+Stills in `stills/task-11/`: `topbar` (over the city) and `topbar-jobs` (over the job board), at 1600 and 1280, each whole and cropped to the head, and `topbar-focus-crop` (Find focused from the keyboard, School hovered, Jobs current).
+
+### Round 1
+
+- It reads as an instrument head, not a book's title line (round 7). The name is upright and heavy in Big Shoulders, closed off from the places by a tall amber tick. The places are set in the same condensed face, and the ruled tape runs under them like a gauge's scale.
+- The current place is held in four amber corner ticks, with its word lit, so it is never marked by colour alone.
+- Find is a cold ice key. Its ticks show faintly at rest, and ⌘K sits in its own dark window.
+- Over Jobs, the condensed 17 px places sit under the 60 px Newsreader title without fighting it. The head is lighter than the title and heavier than the filter row, so the three steps read in order. The backing runs across the sheet's top, in the sheet's own near-black, so no band shows there.
+- Over the city, the backing is a dark band that fades down and to the right before the skyline. It is a touch heavier than main's, because the ground is the screens' ground at 0.84.
+
+Weakness: the hover ticks were amber at 0.4. With Jobs current and School hovered, two places sat in amber ticks, and School read as a second current place (`round1-topbar-focus-crop.webp`).
+
+Change: the hover ticks are now drawn in the dim ink, not amber.
+
+### Round 2 (final)
+
+- A hovered place now shows grey ticks, and only the current place is amber. The focus ring (the amber .os-focus corners) stands outside Find's own ice ticks, so focus reads as a second, outer frame.
+- 1600 and 1280 both hold. At 1280 the head ends at about 1145 px, clear of the right edge.
+
+### Left, below the anti-goal level
+
+- The stone mark is the old bronze PNG, in a thin amber ring. A mark redrawn for the new language would sit better, but that is brand work, not this task.
+- Over the city, the backing's right fade passes over the sky as a soft edge. It cannot be shorter, because Find must stay on the full-strength ground.

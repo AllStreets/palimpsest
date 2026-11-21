@@ -55,15 +55,64 @@ async function stills(kind: GalleryKind, out: string, browser: Browser, port: nu
   }
 }
 
+/**
+ * The running head on every screen (Task 11): over the city at the screens
+ * framing and over the job board, at both window sizes, whole and cropped to
+ * the head; and one with Find focused from the keyboard, to see the ring.
+ */
+async function topbarStills(out: string, browser: Browser, port: number): Promise<void> {
+  const sizes: Array<{ suffix: string; size: { width: number; height: number } }> = [
+    { suffix: '', size: STILL_VIEW },
+    { suffix: '-1280', size: { width: 1280, height: 800 } },
+  ];
+  for (const { suffix, size } of sizes) {
+    const page = await browser.newPage({ viewport: size, deviceScaleFactor: 2 });
+    await ready(page, pageUrl(port));
+    await toCity(page);
+    const f = await framings(page, size.width, size.height);
+    await view(page, f.screens);
+    await page.evaluate(() => document.fonts.ready.then(() => true));
+    await page.mouse.move(size.width - 8, size.height - 8);
+    await page.waitForTimeout(1500);
+    await view(page, f.screens);
+    await settle(page);
+    const crop = { x: 0, y: 0, width: Math.min(size.width, 900), height: 96 };
+    await page.screenshot({ path: join(out, `topbar${suffix}.png`) });
+    await page.screenshot({ path: join(out, `topbar-crop${suffix}.png`), clip: crop });
+    console.log(`  topbar${suffix}.png, topbar-crop${suffix}.png`);
+    await page.evaluate(() => {
+      location.hash = '#/jobs';
+    });
+    await page.waitForSelector('body[data-route="jobs"]', { timeout: 10_000 });
+    await page.waitForTimeout(1500);
+    await settle(page);
+    await page.screenshot({ path: join(out, `topbar-jobs${suffix}.png`) });
+    await page.screenshot({ path: join(out, `topbar-jobs-crop${suffix}.png`), clip: crop });
+    console.log(`  topbar-jobs${suffix}.png, topbar-jobs-crop${suffix}.png`);
+    if (!suffix) {
+      // Find, reached from the keyboard, and a place hovered: the ring and the faint ticks.
+      await page.focus('.runhead-find');
+      await page.keyboard.press('Shift+Tab');
+      await page.keyboard.press('Tab');
+      await page.hover('.runhead a[data-route="school"]');
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(out, 'topbar-focus-crop.png'), clip: crop });
+      console.log('  topbar-focus-crop.png');
+    }
+    await page.close();
+  }
+}
+
 async function main(): Promise<void> {
   const [which, outArg] = process.argv.slice(2);
   const kinds: GalleryKind[] = which === 'all' ? [...BUILT] : BUILT.filter((k) => k === which);
-  if (!kinds.length) throw new Error(`usage: os-stills.ts <${BUILT.join('|')}|all> <out dir>`);
+  if (!kinds.length && which !== 'topbar') throw new Error(`usage: os-stills.ts <${BUILT.join('|')}|topbar|all> <out dir>`);
   const out = resolve(outArg ?? join(redesignHome(), 'os-stills'));
   mkdirSync(out, { recursive: true });
   const run = await launch();
   try {
     for (const k of kinds) await stills(k, out, run.browser, run.port);
+    if (which === 'topbar' || which === 'all') await topbarStills(out, run.browser, run.port);
   } finally {
     await run.close();
   }

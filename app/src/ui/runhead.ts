@@ -4,6 +4,7 @@ import { el } from './controls';
 import { repoCount } from './repos-words';
 import { createPalette, shortcutLabel } from './palette';
 import { guardPlates } from './plate-guard';
+import { weighKey } from './os/control';
 
 export interface Runhead {
   /** The head itself, for the city's one-line notices to stand in. */
@@ -14,10 +15,11 @@ export interface Runhead {
 }
 
 /**
- * The running head, top left, as a book prints its title above the page:
- * the mark at 18 px, the name in italic, then the places, the current one
- * ruled in bronze beneath. Plain links, so Tab and Enter reach them. After
- * them, Find: the command palette (Phase 5), which the head mounts.
+ * The running head, top left, on every screen, in the screens' language
+ * (os/topbar.css): the mark and the name as one plate, then the places, the
+ * current one held in amber corner ticks. Plain links, so Tab and Enter reach
+ * them, each with the os focus ring. After them, Find: a cold look key for the
+ * command palette (Phase 5), which the head mounts.
  */
 export function createRunhead(parent: HTMLElement): Runhead {
   const nav = el('nav', 'runhead');
@@ -35,9 +37,12 @@ export function createRunhead(parent: HTMLElement): Runhead {
   const count = el('span', 'runhead-count', '0');
   count.style.visibility = 'hidden';
   count.setAttribute('aria-hidden', 'true');
-  nav.append(icon, mark);
+  // The stone mark and the name as one plate.
+  const brand = el('span', 'runhead-brand');
+  brand.append(icon, mark);
+  nav.append(brand);
   for (const { route, name: text } of SCREENS) {
-    const a = el('a', 'runhead-link', text);
+    const a = el('a', 'runhead-link os-focus', text);
     a.href = routeHref(route);
     a.dataset.route = route;
     if (route === 'repos') a.append(count);
@@ -52,8 +57,10 @@ export function createRunhead(parent: HTMLElement): Runhead {
   findBtn.setAttribute('aria-label', 'Find anything in the city');
   findBtn.setAttribute('aria-keyshortcuts', 'Meta+K Control+K');
   findBtn.addEventListener('click', () => palette.open());
+  // Finding is looking: the lightest of the four weights.
+  weighKey(findBtn, 'look');
   nav.append(findBtn);
-  const stopped = el('a', 'runhead-stopped', 'Stopped');
+  const stopped = el('a', 'runhead-stopped os-focus', 'Stopped');
   stopped.href = routeHref('settings');
   stopped.title = 'The kill switch is on. Open Settings to turn it off.';
   stopped.hidden = true;

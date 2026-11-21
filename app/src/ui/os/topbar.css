@@ -1,0 +1,202 @@
+/*
+ * The running head in the screens' language (Task 11), on every screen: the
+ * stone mark and the name as one plate in Big Shoulders, the places in the
+ * same face, the current one held in amber corner ticks as a pin holds its
+ * target, and Find a cold look key (weighKey, control.css) with its shortcut
+ * in a small window of its own. A ruled tape runs under the head.
+ *
+ * The backing is the screens' ground, so every word holds 4.5:1 over the
+ * brightest lit glass (test/runhead-scrim.test.ts). Hover draws faint ticks
+ * and never changes a word's colour: the lit ink is the current place's
+ * alone. Ticks are drawn as background strokes at the edges, so each link's
+ * and key's ::after stays free for the .os-focus ring (tokens.css).
+ *
+ * Text colours come from the tokens alone. Red stays the lock's and the
+ * grant's: Stopped is amber. Nothing here moves.
+ */
+
+.runhead {
+  position: fixed;
+  top: 22px;
+  left: var(--gutter);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  font-family: var(--os-display);
+  text-shadow: none;
+}
+/*
+ * A quiet backing behind the head alone, in the screens' own ground: dark
+ * from the window top to below the words and the tape, then fading down and
+ * to the right (audit 2026-11-17). No card, no glow.
+ */
+.runhead::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: -22px;
+  bottom: -46px;
+  left: calc(-1 * var(--gutter));
+  right: -96px;
+  background: linear-gradient(to bottom, rgba(9, 6, 4, 0.84) 0px, rgba(9, 6, 4, 0.84) 64px, rgba(9, 6, 4, 0) 94px);
+  mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent);
+  pointer-events: none;
+}
+/* The tape: a hairline under the head, ruled every 12 px and taller every 60, fading out past the last word. */
+.runhead::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: -40px;
+  bottom: -11px;
+  height: 5px;
+  background:
+    repeating-linear-gradient(to right, rgba(var(--os-amber-rgb), 0.42) 0 1px, transparent 1px 60px) bottom / 100% 5px no-repeat,
+    repeating-linear-gradient(to right, rgba(var(--os-amber-rgb), 0.2) 0 1px, transparent 1px 12px) bottom / 100% 3px no-repeat,
+    linear-gradient(rgba(var(--os-amber-rgb), 0.24), rgba(var(--os-amber-rgb), 0.24)) bottom / 100% 1px no-repeat;
+  mask-image: linear-gradient(to right, #000 55%, transparent);
+  pointer-events: none;
+}
+/* Over the city alone a soft shade sits under the words, for the haze at the backing's fading edge. */
+body[data-route='city'] .runhead {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+/* ---------------------------------------------------------------- the name */
+
+/* The stone mark and the word as one plate, closed off from the places by a tall tick. */
+.runhead-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-right: 4px;
+  padding-right: 22px;
+  background: linear-gradient(rgba(var(--os-amber-rgb), 0.5), rgba(var(--os-amber-rgb), 0.5)) right center / 1px 20px no-repeat;
+}
+.runhead-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(var(--os-amber-rgb), 0.3), 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+.runhead-mark {
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--os-ink);
+}
+
+/* ---------------------------------------------------------------- the places */
+
+/* Each place may be held in four corner ticks, drawn as strokes at its edges; --tick is their ink, unseen at rest. */
+.runhead-link,
+.runhead-stopped {
+  --arm: 5px;
+  --tick: transparent;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 8px 5px;
+  margin: 0 -8px;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.015em;
+  color: var(--os-ink2);
+  text-decoration: none;
+  background:
+    linear-gradient(var(--tick), var(--tick)) top left / var(--arm) 1.5px no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top left / 1.5px var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top right / var(--arm) 1.5px no-repeat,
+    linear-gradient(var(--tick), var(--tick)) top right / 1.5px var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom left / var(--arm) 1.5px no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom left / 1.5px var(--arm) no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom right / var(--arm) 1.5px no-repeat,
+    linear-gradient(var(--tick), var(--tick)) bottom right / 1.5px var(--arm) no-repeat;
+}
+/*
+ * Hover draws the ticks faintly and leaves the word's colour alone, so a
+ * pointer left resting on City after a click never reads as City being the
+ * place (audit 2026-11-17). The ticks are the dim ink, not amber, so a
+ * hovered place never reads as a second current one.
+ */
+.runhead-link:not([aria-current='page']):hover {
+  --tick: color-mix(in srgb, var(--os-dim) 70%, transparent);
+}
+/* The current place: held in amber corner ticks, its word lit. */
+.runhead-link[aria-current='page'] {
+  --tick: var(--os-amber);
+  color: var(--os-amber-hi);
+  font-weight: 600;
+}
+/* How many repositories are connected, in the readouts' figures. */
+.runhead-count {
+  margin-left: 6px;
+  font-family: var(--os-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--os-dim);
+}
+.runhead-link[aria-current='page'] .runhead-count {
+  color: var(--os-amber);
+}
+/* Stopped: the kill switch is on. Amber, held in its own ticks and marked with a square, so it is never colour alone. */
+.runhead-stopped {
+  --tick: rgba(var(--os-amber-rgb), 0.7);
+  gap: 7px;
+  margin-left: 4px;
+  color: var(--os-amber);
+}
+.runhead-stopped::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--os-amber);
+}
+.runhead-stopped[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- Find: a cold look key */
+
+/* Dressed by weighKey(…, 'look'): the ice word, its shortcut in a window at its end. */
+.runhead-find.os-key[data-weight='look'] {
+  height: 27px;
+  margin-left: 4px;
+  padding: 0 0 0 9px;
+  gap: 9px;
+  font-size: 17px;
+  color: var(--os-ice);
+}
+/* Its reticle shows faintly at rest, so Find reads as a key, and closes in full when aimed at (control.css). */
+.runhead-find.os-key[data-weight='look'] .os-key-tick {
+  opacity: 0.5;
+  transform: none;
+}
+.runhead-find-key {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  background: rgba(var(--os-ground-rgb), 0.6);
+  box-shadow: inset 1px 0 0 rgba(var(--os-ice-rgb), 0.4);
+  font-family: var(--os-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--os-ice);
+}
+
+/* ---------------------------------------------------------------- forced colours */
+
+/* The ticks are backgrounds, which forced colours drop: the current place is underlined there instead. */
+@media (forced-colors: active) {
+  .runhead-link[aria-current='page'] {
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+}

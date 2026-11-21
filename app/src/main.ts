@@ -2,6 +2,8 @@ import * as THREE from 'three';
 
 import './ui/style.css';
 import './ui/screens.css';
+// The screens' design layer (redesign Stage 2), after the old sheets so the running head's rules win.
+import './ui/os/index.css';
 
 import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
 import { mondayMorning, tourWeekFor, weekOf } from '../../shared/tour';
