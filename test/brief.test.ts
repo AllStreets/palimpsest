@@ -19,7 +19,8 @@ import { askDue, grantOf, noteActed, noteActResult } from '../engine/school/auto
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localDay } from '../shared/day.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { Audit, Bid, Brief, BriefItem, Job, Repo, Run, Tour, TourStop } from '../shared/types.js';
+import { AGREE } from '../shared/school-rules.js';
+import type { Audit, Bid, Brief, BriefItem, Decision, Grant, Job, Repo, Run, Tour, TourStop, WorkKind } from '../shared/types.js';
 import { checks, FULL, HOUR, noReading, setUp, tearDown } from './guild-fixtures.js';
 import { agreedDecisions, constant, installNet, netOf } from './school-fixtures.js';
 import { paths } from '../engine/home.js';
@@ -780,4 +781,217 @@ test('a merge the city made on its own is one overnight item that keeps the paym
   assert.match(same[0].text, /^The city merged "Fix the header" on acme\/widgets on its own, under its merge:low grant, and .+ was paid 24 credits\.$/);
   assert.ok(same[0].actions.includes('revoke') && same[0].actions.includes('fly') && same[0].actions.includes('diff'));
   assert.equal(same[0].refs.firmId, 'quickset');
+});
+
+// ---------------------------------------------------------------- figures (screens redesign Task 15)
+
+/** A finished audit of `repo` with the given verdict counts; `jobs` of its findings carry a posted proposal. */
+function doneAudit(id: string, repo: string, counts: Audit['counts'], jobs: number): Audit {
+  const verdicts = (Object.entries(counts) as Array<[Audit['counts'] extends Record<infer V, number> ? V : never, number]>).flatMap(([v, n]) => Array.from({ length: n }, () => v));
+  const audit: Audit = {
+    id,
+    repo,
+    model: 'claude:sonnet',
+    trigger: 'demand',
+    baseSha: 'a'.repeat(40),
+    status: 'done',
+    waitingReason: null,
+    startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+    endedAt: new Date().toISOString(),
+    endedReason: null,
+    findings: verdicts.map((verdict, i) => ({
+      id: `${id}-f${i}`,
+      claim: `Claim ${i}`,
+      source: { file: 'README.md', line: i + 1 },
+      verdict,
+      tested: false,
+      evidence: [],
+      unverified: false,
+      proposal: i < jobs ? { key: `${repo}#${id}${i}`, title: `Fix claim ${i}`, body: 'Fix it.', scope: ['src/**'], acceptance: ['It works'], tier: 'normal', jobId: `job-${id}-${i}` } : null,
+    })),
+    counts,
+    unverified: 0,
+    claimsRead: verdicts.length,
+    credits: 4,
+    unattended: false,
+    markdownPath: null,
+  };
+  saveAudit(audit);
+  record('audit.ended', { auditId: audit.id, repo, status: 'done', reason: null, audit });
+  return audit;
+}
+
+/** Most kinds at once: merged, failed, pr, proposal, two audits done and one not, a halt, a revert, a note, audit-due and usage. */
+function everyKind(): { merged: Job; failed: Job; run: Run; proposal: Job; reopened: Job } {
+  seedFirms([]);
+  patchSettings({ dayCapPct: 50, hardStopPct: 90 });
+  addRepo(FULL);
+  addRepo('acme/gears');
+  addRepo('acme/bolts', { market: false });
+  addRepo('acme/nuts', { market: false });
+  addRepo('acme/new');
+  const merged = mergedJob(FULL, 'Fix the header');
+  const failed = failedJob(FULL, 'Rename the gears');
+  const { run } = prJob('acme/gears', 'Tidy the gear table', 41);
+  const reopened = postManualJob({ repo: 'acme/gears', title: 'Oil the gears', body: 'Oil.', tier: 'high' });
+  const { job: proposal } = auditWithProposal(FULL);
+  doneAudit('audit-stub', 'acme/bolts', { REAL: 2, PARTIAL: 1, MISSING: 1, STUBBED: 1, BROKEN: 1 }, 1);
+  const failedAudit: Audit = { ...doneAudit('audit-fail', 'acme/nuts', { REAL: 0, PARTIAL: 0, MISSING: 0, STUBBED: 0, BROKEN: 0 }, 0), status: 'failed', endedReason: 'The clone could not be read' };
+  saveAudit(failedAudit);
+  haltRepo('acme/gears', 'A city merge was reverted: Tidy the gear table');
+  record('merge.reverted', { repo: FULL, jobId: merged.id, mergeSha: 'c0ffee1234567890abcdef' });
+  record('run.note', { repo: FULL, note: 'The tests took eleven minutes' });
+  readingOf({ five: 45, seven: 10 });
+  return { merged, failed, run, proposal, reopened };
+}
+
+test("every kind's sentence stays word for word beside its figures", () => {
+  const { merged, failed, run, proposal } = everyKind();
+  const b = briefData(Date.now());
+  const text = (id: string) => item(b, id).text;
+  const title = (id: string) => item(b, id).title;
+  assert.equal(text(`merged:${merged.id}`), 'Merged, and Quickset was paid 24 credits.');
+  assert.equal(text(`failed:${failed.id}`), 'Failed, with one attempt left. The change failed inspection.');
+  assert.equal(text(`pr:${run.id}`), 'PR #41 on acme/gears by Ashlar & Vane waits for your review.');
+  assert.equal(text(`proposal:${proposal.id}`), 'The README says "The CLI exports every report as CSV", and the code does not do it yet.');
+  assert.equal(text('audit:audit-abc123'), '1 claim read: 1 missing.');
+  assert.equal(text('audit:audit-stub'), '6 claims read: 2 real, 1 partial, 1 missing, 1 stubbed and 1 broken; 1 job proposed.');
+  assert.equal(text('audit:audit-fail'), 'The audit ended failed: The clone could not be read.');
+  assert.equal(text('halt:acme/gears'), 'A city merge was reverted: Tidy the gear table. The market there stays off until you resume it.');
+  const revert = allItems(b).find((i) => i.kind === 'revert')!;
+  assert.equal(revert.text, 'A merge of "Fix the header" on acme/widgets was reverted (c0ffee1). The market there is halted until you resume it.');
+  assert.equal(allItems(b).find((i) => i.kind === 'note')!.text, 'The tests took eleven minutes.');
+  assert.equal(text('audit-due:acme/new'), 'Its README has not been checked against its code. An audit reads the clone in a sandbox and proposes jobs for what is missing; nothing runs until you accept one.');
+  assert.equal(title('usage'), 'The five-hour window is at 45%');
+  assert.equal(text('usage'), 'The cap is 50%. The city pauses at the cap; you can change today\'s limit here, for today only.');
+  assert.equal(b.lead, '3 things wait on you; 1 merged since yesterday. The city made no model calls.');
+});
+
+test('each item carries the figures its sentence says, as fields', () => {
+  const { merged, failed, run, proposal, reopened } = everyKind();
+  const b = briefData(Date.now());
+  assert.deepEqual(item(b, `merged:${merged.id}`).figures, { kind: 'merged', paid: 24 });
+  // One attempt used of two: one left, and Retry would post it again at its value.
+  assert.deepEqual(item(b, `failed:${failed.id}`).figures, { kind: 'failed', attemptsLeft: 1, retry: storedJob(failed.id)!.value });
+  assert.deepEqual(item(b, `pr:${run.id}`).figures, { kind: 'pr', pr: 41 });
+  assert.deepEqual(item(b, `proposal:${proposal.id}`).figures, { kind: 'proposal', cost: 60 });
+  assert.deepEqual(item(b, 'audit:audit-abc123').figures, { kind: 'audit', real: 0, partial: 0, missing: 1, stubbed: 0, broken: 0, claims: 1, jobs: 0 });
+  const stub = item(b, 'audit:audit-stub').figures;
+  assert.deepEqual(stub, { kind: 'audit', real: 2, partial: 1, missing: 1, stubbed: 1, broken: 1, claims: 6, jobs: 1 });
+  assert.ok(stub?.kind === 'audit');
+  assert.equal(stub.real + stub.partial + stub.missing + stub.stubbed + stub.broken, stub.claims, 'the verdicts sum to the claims read');
+  // Review Focus 1: an audit that did not finish has no figures, not zeros.
+  assert.equal(item(b, 'audit:audit-fail').figures, null);
+  // Resume reopens the job halted from open (it is bid on again, up to its value); the PR halted from waiting spends nothing.
+  assert.deepEqual(item(b, 'halt:acme/gears').figures, { kind: 'halt', resume: reopened.value });
+  assert.equal(reopened.value, 150);
+  assert.deepEqual(allItems(b).find((i) => i.kind === 'revert')!.figures, { kind: 'revert', sha: 'c0ffee1' });
+  assert.deepEqual(item(b, 'audit-due:acme/new').figures, { kind: 'audit-due', audit: getSettings().auditMaxCredits });
+  const usage = item(b, 'usage');
+  assert.deepEqual(usage.figures, { kind: 'usage', window: 'five-hour', nowPct: 45, capPct: 50, mine: false });
+  assert.ok(usage.figures?.kind === 'usage');
+  assert.equal(usage.figures.nowPct, Math.round(Number(/(\d+(?:\.\d+)?)%/.exec(usage.title)![1])));
+  // Kinds with no numbers carry null, never an empty object.
+  assert.equal(allItems(b).find((i) => i.kind === 'note')!.figures, null);
+  for (const it of allItems(b)) assert.ok(it.figures === null || typeof it.figures === 'object', it.id);
+});
+
+test("the brief's counts are the lead's numbers", () => {
+  everyKind();
+  const b = briefData(Date.now());
+  const open = b.sections.waiting.filter((i) => !i.acted).length;
+  assert.equal(b.counts.waiting, open);
+  assert.equal(b.counts.waiting, 3);
+  assert.equal(b.counts.merged, Number(/(\d+) merged/.exec(b.lead)![1]));
+  assert.equal(b.counts.spent, 0);
+  // Acting on a waiting item takes it off the count, as it does the lead's.
+  const pr = b.sections.waiting.find((i) => i.kind === 'pr')!;
+  actOn(pr.id, 'open-pr', {}, Date.now());
+  const after = briefData(Date.now());
+  assert.match(after.lead, new RegExp(`^${after.counts.waiting} things? waits? on you`));
+});
+
+test("a proposal's cost follows the tier in force, and the item tier returns carries it", () => {
+  seedFirms([]);
+  addRepo(FULL);
+  const { job } = auditWithProposal(FULL);
+  const id = `proposal:${job.id}`;
+  const now = Date.now();
+  actOn(id, 'tier', { tier: 'high' }, now);
+  assert.deepEqual(item(briefData(now), id).figures, { kind: 'proposal', cost: 150 });
+  const r = actOn(id, 'tier', { tier: 'low' }, now + 1000);
+  assert.deepEqual(r.item.figures, { kind: 'proposal', cost: 20 });
+  assert.deepEqual(item(briefData(now + 2000), id).figures, { kind: 'proposal', cost: 20 });
+});
+
+test("a limit of his shows as his cap in the usage figures", () => {
+  seedFirms([]);
+  patchSettings({ dayCapPct: 20, hardStopPct: 90 });
+  readingOf({ five: 12, seven: 10 });
+  const now = Date.now();
+  actOn('usage', 'cap', { pct: 30 }, now);
+  assert.deepEqual(item(briefData(now), 'usage').figures, { kind: 'usage', window: 'five-hour', nowPct: 12, capPct: 30, mine: true });
+  readingOf({ five: 10, seven: 85 });
+  patchSettings({ todayCapPct: null, dayCapPct: 50 });
+  assert.deepEqual(item(briefData(now), 'usage').figures, { kind: 'usage', window: 'seven-day', nowPct: 85, capPct: 90, mine: false });
+});
+
+test('the tour carries its real stops and seconds', () => {
+  seedFirms([]);
+  const d = new Date();
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() + (((8 - d.getDay()) % 7) || 7), 8).getTime();
+  const stop = (kind: TourStop['kind']): TourStop => ({ kind, towerId: null, repo: null, floorId: null, agentId: null, firmId: null, title: kind, caption: kind, at: new Date(monday - DAY).toISOString(), dwell: 6, glide: 4 });
+  const tour: Tour = { week: '2026-11-09', from: '', to: new Date(monday - HOUR).toISOString(), stops: [stop('exchange'), stop('merged'), stop('scar'), stop('exchange')], seconds: 31.6 };
+  const it = item(briefData(monday, { tour: () => tour, milestones: () => [] }), 'tour:2026-11-09');
+  assert.equal(it.text, 'A walk through last week, 2 stops in about 32 seconds. Escape ends it.');
+  assert.deepEqual(it.figures, { kind: 'tour', stops: 2, seconds: 32 });
+});
+
+/** One of his decisions on `repo`, straight into the table, with the master agreeing or not. */
+function decisionRow(kind: WorkKind, repo: string, i: number, agreed: boolean | null, at: number): void {
+  const d: Decision = { key: `${kind}#${repo}#${i}`, kind, repo, jobId: `job-${repo.replace('/', '-')}-${i}`, approved: true, by: 'accept', predictionId: agreed === null ? null : i, agreed, at: new Date(at).toISOString() };
+  openDb().prepare('INSERT INTO decisions (key, at, kind, repo, json) VALUES (?, ?, ?, ?, ?)').run(d.key, d.at, kind, repo, JSON.stringify(d));
+}
+
+/** An open ask on (kind, repo), as askDue writes it, with the pooled rate it was asked on. */
+function askRow(kind: WorkKind, repo: string, rate: { value: number; n: number }, at: number): void {
+  const g: Grant = { kind, repo, state: 'asked', at: new Date(at).toISOString(), by: 'school', rate: { ...rate, lo: rate.value - 0.05, hi: Math.min(1, rate.value + 0.05) }, reason: null, acted: 0, quietUntil: null };
+  openDb().prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)').run(g.kind, g.repo, g.state, g.at, JSON.stringify(g));
+}
+
+test("the autonomy ask's figures count this repo's own last decisions, not a constant", () => {
+  seedFirms([]);
+  addRepo(FULL);
+  addRepo('acme/few');
+  addRepo('acme/none');
+  const kind: WorkKind = 'propose:readme-gap';
+  const now = Date.now();
+  let t = now - 100 * HOUR;
+  // On FULL, twelve decisions: the oldest against (outside the last ten), one against within them, and one with no prediction (never counted).
+  for (let i = 0; i < 12; i++) decisionRow(kind, FULL, i, i !== 0 && i !== 5, (t += HOUR));
+  decisionRow(kind, FULL, 99, null, (t += HOUR));
+  // On acme/few, four: three agreed. On acme/none, none.
+  for (let i = 0; i < 4; i++) decisionRow(kind, 'acme/few', i, i !== 2, (t += HOUR));
+  askRow(kind, FULL, { value: 0.96, n: 50 }, now - HOUR);
+  askRow(kind, 'acme/few', { value: 0.96, n: 50 }, now - HOUR);
+  askRow(kind, 'acme/none', { value: 0.96, n: 50 }, now - HOUR);
+  const b = briefData(now);
+  const ask = (repo: string) => item(b, `autonomy:${kind}:${repo}`);
+  assert.deepEqual(ask(FULL).figures, { kind: 'autonomy', agreed: 48, of: 50, here: 9, hereOf: 10 });
+  assert.deepEqual(ask('acme/few').figures, { kind: 'autonomy', agreed: 48, of: 50, here: 3, hereOf: 4 });
+  assert.deepEqual(ask('acme/none').figures, { kind: 'autonomy', agreed: 48, of: 50, here: 0, hereOf: 0 });
+  // The sentence is as it was, word for word.
+  assert.equal(
+    ask('acme/few').text,
+    `The master has agreed with you on 48 of the last 50 ${kind} decisions, and on its last ${AGREE.repoLast} on acme/few. If you grant it, the city acts there without you when every check holds; each act appears here, and you can revoke it at any time. Declining keeps it quiet for ${AGREE.quietDays} days.`,
+  );
+});
+
+test('kinds with no numbers carry null figures', () => {
+  seedFirms([]);
+  addRepo(FULL, { market: false });
+  record('run.note', { repo: FULL, note: 'A note' });
+  const b = briefData(Date.now());
+  for (const it of allItems(b)) assert.equal(it.figures, null, it.id);
+  assert.ok(allItems(b).length > 0);
 });

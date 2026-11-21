@@ -16,10 +16,10 @@
  * No `seen` rows. Every text goes through `plain()`, which redacts.
  */
 import { localDay } from '../shared/day.js';
-import { creditsText, MAX_ATTEMPTS, windowNowPct } from '../shared/market-rules.js';
+import { creditsText, MAX_ATTEMPTS, TIER_VALUE, windowNowPct } from '../shared/market-rules.js';
 import type { RawRow } from '../shared/net-features.js';
 import { AGREE, WORK_KINDS } from '../shared/school-rules.js';
-import type { Audit, Brief, BriefAction, BriefItem, BriefItemKind, Grant, Job, Milestone, Repo, Run, Tier, Tour, WorkKind } from '../shared/types.js';
+import type { Audit, Brief, BriefAction, BriefFigures, BriefItem, BriefItemKind, Grant, Job, Milestone, Repo, Run, Tier, Tour, WorkKind } from '../shared/types.js';
 import { queueAudit } from './audit/run.js';
 import { latestAudit, listAudits } from './audit/store.js';
 import { emit } from './events.js';
@@ -33,7 +33,7 @@ import { listRuns, resumeRepo } from './market/runs.js';
 import { getRepo, listRepos } from './repos.js';
 import { decline, grant, grants, kindWords, revoke } from './school/autonomy.js';
 import { repoAcceptShare } from './school/datasets.js';
-import { predict } from './school/decisions.js';
+import { agreement, predict } from './school/decisions.js';
 import { getSettings, patchSettings } from './settings.js';
 import { LOOKS } from '../shared/brief-actions.js';
 import { briefHandled, FINISHING } from '../shared/brief-rules.js';
@@ -109,6 +109,8 @@ interface Draft {
   tier?: Tier | null;
   refs?: BriefItem['refs'];
   actions: BriefAction[];
+  /** The numbers the sentence says, as fields (screens redesign Task 15). */
+  figures?: BriefFigures | null;
 }
 
 function toItem(d: Draft): BriefItem {
@@ -123,6 +125,7 @@ function toItem(d: Draft): BriefItem {
     refs: d.refs ?? {},
     actions: d.actions,
     acted: null,
+    figures: d.figures ?? null,
   };
 }
 
@@ -141,6 +144,13 @@ function auditLine(a: Audit): string {
   const counts = (Object.entries(a.counts) as Array<[string, number]>).filter(([, n]) => n > 0).map(([v, n]) => `${n} ${v.toLowerCase()}`);
   const proposed = a.findings.filter((f) => f.proposal?.jobId).length;
   return `${plural(a.claimsRead, 'claim')} read${counts.length ? `: ${listOf(counts)}` : ''}${proposed ? `; ${plural(proposed, 'job')} proposed` : ''}.`;
+}
+
+/** A finished audit's verdicts as figures; null for one that did not finish, so no zeros stand in for a count never made. */
+function auditFigures(a: Audit): BriefFigures | null {
+  if (a.status !== 'done') return null;
+  const c = a.counts;
+  return { kind: 'audit', real: c.REAL ?? 0, partial: c.PARTIAL ?? 0, missing: c.MISSING ?? 0, stubbed: c.STUBBED ?? 0, broken: c.BROKEN ?? 0, claims: a.claimsRead, jobs: a.findings.filter((f) => f.proposal?.jobId).length };
 }
 
 /** The claim a proposal answers, else the first line of its body after the city's marker. */
@@ -182,6 +192,13 @@ function mondayOf(ms: number): string {
   return localDay(new Date(d.getFullYear(), d.getMonth(), d.getDate() - back).getTime());
 }
 
+/** What Resume puts back up for bids on `repo`: the value of its jobs halted from anywhere but waiting (resumeJob reopens those). */
+function reopenValue(repo: string): number {
+  return listJobs({ repo, status: 'halted' })
+    .filter((j) => j.haltedFrom !== 'waiting')
+    .reduce((sum, j) => sum + j.value, 0);
+}
+
 /** The items from the ledger over the window and from the state now, in time order within their kind. */
 function gather(since: string, now: number, given: BriefOptions): { drafts: Draft[]; tour: Tour | null } {
   const opts = wired(given, now);
@@ -208,6 +225,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
         at: e.at,
         refs: { jobId: d.id, ...(j?.runId ? { runId: j.runId } : {}), ...(j?.floorId ? { floorId: j.floorId } : {}), ...(chosen ? { firmId: chosen.firmId } : {}) },
         actions: ['fly', 'diff', 'dismiss'],
+        figures: { kind: 'merged', paid: chosen ? chosen.price : null },
       });
     } else if (d.to === 'failed' && d.from !== 'failed') {
       const attempts = j?.attempts ?? MAX_ATTEMPTS;
@@ -222,6 +240,8 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
         at: e.at,
         refs: { jobId: d.id, ...(j?.runId ? { runId: j.runId } : {}) },
         actions: retry ? ['retry', 'why', 'dismiss'] : ['why', 'dismiss'],
+        // Retry posts the job again at its value.
+        figures: { kind: 'failed', attemptsLeft: final ? 0 : MAX_ATTEMPTS - attempts, retry: retry && j ? j.value : null },
       });
     }
   }
@@ -237,6 +257,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       at: e.at,
       refs: d.jobId ? { jobId: d.jobId } : {},
       actions: ['why', 'dismiss'],
+      figures: { kind: 'revert', sha: d.mergeSha?.slice(0, 7) ?? null },
     });
   }
   for (const e of query({ kind: 'run.note', from: since })) {
@@ -268,6 +289,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       at: a.endedAt ?? e.at,
       refs: { auditId: a.id },
       actions: ['why', 'dismiss'],
+      figures: auditFigures(a),
     });
   }
   // Milestones: one reached in the window whose tower no longer stands is not news.
@@ -302,6 +324,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       at: r.startedAt,
       refs: { jobId: r.jobId, runId: r.id, firmId: r.firmId, ...(r.prUrl ? { prUrl: redact(r.prUrl) } : {}), ...(r.inspectionId ? { inspectionId: r.inspectionId } : {}) },
       actions: ['open-pr', 'diff', 'why'],
+      figures: { kind: 'pr', pr: r.prNumber! },
     });
   }
   // Proposals waiting now, and the ones he already answered in this window (they keep their line, with his answer on it).
@@ -322,6 +345,8 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       tier: j.tier,
       refs: { jobId: j.id, ...(j.proposal ? { auditId: j.proposal.auditId } : {}) },
       actions: j.status === 'proposed' ? ['accept', 'tier', 'dismiss', 'why'] : ['why'],
+      // The cost from the tier in force, never a stored value that a tier change has not reached.
+      figures: { kind: 'proposal', cost: TIER_VALUE[j.tier] },
     });
   }
   // Phase 4 (ruling 17): the asks for autonomy waiting on him, and the ones he answered in this window.
@@ -332,6 +357,8 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
     const words = kindWords(g.kind);
     const n = g.rate?.n ?? 0;
     const agreed = g.rate ? Math.round(g.rate.value * n) : 0;
+    // This repo's own last decisions of the kind (at most AGREE.repoLast), counted now: how many, and how many the master agreed on.
+    const own = agreement(g.kind, g.repo);
     drafts.push({
       id,
       kind: 'autonomy',
@@ -340,6 +367,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       text: `The master has agreed with you on ${agreed} of the last ${n} ${g.kind} decisions, and on its last ${AGREE.repoLast} on ${g.repo}. If you grant it, the city acts there without you when every check holds; each act appears here, and you can revoke it at any time. Declining keeps it quiet for ${AGREE.quietDays} days.`,
       at: g.at,
       actions: g.state === 'asked' ? ['grant', 'decline', 'why'] : ['why'],
+      figures: { kind: 'autonomy', agreed, of: n, here: own.repoAgreed ?? 0, hereOf: own.repoRows ?? 0 },
     });
   }
   // Ruling 18: what the city did on its own, one line per act, with its result when that is on record.
@@ -387,6 +415,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       text: `${sentence(r.halted!.reason)} The market there stays off until you resume it.`,
       at: r.halted!.at,
       actions: ['resume', 'why'],
+      figures: { kind: 'halt', resume: reopenValue(r.fullName) },
     });
   }
   // Never audited, and worth saying: only where the market is on (an audit there would spend), and not once he
@@ -400,6 +429,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       text: 'Its README has not been checked against its code. An audit reads the clone in a sandbox and proposes jobs for what is missing; nothing runs until you accept one.',
       at: r.connectedAt ?? iso(now),
       actions: ['audit', 'dismiss'],
+      figures: { kind: 'audit-due', audit: getSettings().auditMaxCredits },
     });
   }
 
@@ -424,6 +454,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
         : `The week's hard stop is ${w.capPct}%, and every Claude call stops there. Today's limit does not move it.`,
       at: iso(now),
       actions: daily ? ['cap'] : [],
+      figures: { kind: 'usage', window: daily ? 'five-hour' : 'seven-day', nowPct: pct, capPct: t.todayCapPct?.pct ?? w.capPct, mine: t.todayCapPct !== null },
     });
   }
   // A stale reading is news only when the city has Claude work waiting on it; with every market off it waits on nothing.
@@ -453,6 +484,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
         text: `A walk through last week, ${plural(realStops(tour), 'stop')} in about ${Math.round(tour.seconds)} seconds. Escape ends it.`,
         at: tour.to,
         actions: ['tour'],
+        figures: { kind: 'tour', stops: realStops(tour), seconds: Math.round(tour.seconds) },
       });
     }
   }
@@ -526,8 +558,7 @@ function sinceWords(since: string, today: string): string {
  * Two short sentences of at most three counts, as he would say it (audit 2026-11-17): what still waits on him
  * and what merged, then what the city spent. The failed runs, halts and audits are rows of their own below.
  */
-function lead(waiting: BriefItem[], n: ReturnType<typeof numbers>, since: string, today: string): string {
-  const open = waiting.filter((i) => !briefHandled(i)).length;
+function lead(open: number, n: ReturnType<typeof numbers>, since: string, today: string): string {
   // The merged count is the reports' (ruling 8), never recounted from the items.
   const merged = n.merged ? `${n.merged} merged ${sinceWords(since, today)}` : '';
   const first = open
@@ -660,13 +691,16 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
   const all = [...sections.waiting, ...sections.overnight, ...sections.recommendations, ...sections.city];
   const firstOpen = openedToday(day) === null;
   const t = treasury(now);
+  const n = numbers(since, day);
+  const open = sections.waiting.filter((i) => !briefHandled(i)).length;
   return {
     day,
     since,
     firstOpen,
     // The brief opens before the city only for news or what waits on him: never for a standing recommendation alone.
     due: firstOpen && all.some((it) => !STANDING.has(it.kind) && !it.acted),
-    lead: plain(lead(sections.waiting, numbers(since, day), since, day), 600),
+    lead: plain(lead(open, n, since, day), 600),
+    counts: { waiting: open, merged: n.merged, spent: n.all },
     usage: { fiveHour: t.fiveHour, sevenDay: t.sevenDay, todayCapPct: t.todayCapPct?.pct ?? null, paused: t.paused ? { reason: t.paused.reason, detail: plain(t.paused.detail, 300) } : null },
     sections,
     tour: tour ? { week: tour.week, stops: realStops(tour) } : null,
@@ -772,7 +806,10 @@ export function actOn(itemId: string, action: BriefAction, body: { tier?: Tier; 
   record('brief.action', row);
   emit('brief.action', row);
   const acted: BriefItem = { ...item, acted: covers(item.acted, action) ? { action, at } : item.acted };
-  if (action === 'tier' && patch.tier) acted.tier = patch.tier;
+  if (action === 'tier' && patch.tier) {
+    acted.tier = patch.tier;
+    acted.figures = { kind: 'proposal', cost: TIER_VALUE[patch.tier] };
+  }
   if (FINISHING.includes(action)) acted.actions = acted.actions.filter((a) => !FINISHING.includes(a) && a !== 'tier');
   return { item: acted, result };
 }

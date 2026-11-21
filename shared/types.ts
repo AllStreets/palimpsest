@@ -541,6 +541,31 @@ export type AuditView = Omit<Audit, 'markdownPath'> & { markdown: string | null;
 export type BriefItemKind = 'merged' | 'failed' | 'pr' | 'proposal' | 'halt' | 'revert' | 'note' | 'audit' | 'audit-due' | 'usage' | 'stale' | 'milestone' | 'tour' | 'autonomy' | 'graduate' | 'acted';
 export type BriefAction = 'accept' | 'tier' | 'dismiss' | 'why' | 'diff' | 'fly' | 'retry' | 'resume' | 'open-pr' | 'cap' | 'audit' | 'tour' | 'grant' | 'decline' | 'revoke';
 
+/**
+ * A brief item's numbers as fields (screens redesign Task 15), each the same
+ * value its sentence already says, so the Brief never reads a number out of
+ * a sentence. The sums a spending key carries sit here too: a proposal's
+ * `cost` (accept), a failure's `retry`, a halt's `resume` and an audit-due's
+ * `audit`, in credits. Kinds with no numbers, and an audit that did not
+ * finish, carry null.
+ */
+export type BriefFigures =
+  | { kind: 'merged'; paid: number | null }
+  /** `retry`: the job's value, posted again; null when Retry is not offered. */
+  | { kind: 'failed'; attemptsLeft: number; retry: number | null }
+  | { kind: 'pr'; pr: number }
+  | { kind: 'proposal'; cost: number }
+  | { kind: 'audit'; real: number; partial: number; missing: number; stubbed: number; broken: number; claims: number; jobs: number }
+  /** `resume`: the value of the jobs Resume puts back up for bids (a job halted while its PR waited spends nothing). */
+  | { kind: 'halt'; resume: number }
+  /** `audit`: the most credits an audit may spend (Settings, auditMaxCredits). */
+  | { kind: 'audit-due'; audit: number }
+  | { kind: 'usage'; window: 'five-hour' | 'seven-day'; nowPct: number; capPct: number; mine: boolean }
+  /** `agreed` of the last `of` pooled decisions of the kind; `here` of this repo's last `hereOf` (at most AGREE.repoLast). */
+  | { kind: 'autonomy'; agreed: number; of: number; here: number; hereOf: number }
+  | { kind: 'tour'; stops: number; seconds: number }
+  | { kind: 'revert'; sha: string | null };
+
 export interface BriefItem {
   id: string;
   kind: BriefItemKind;
@@ -554,6 +579,8 @@ export interface BriefItem {
   acted: { action: BriefAction; at: string } | null;
   /** Phase 4: a quiet line from a trusted triage net, such as the tier it would suggest; the tier itself stays his. */
   suggestion?: string;
+  /** The item's numbers as fields; null for a kind with none. */
+  figures: BriefFigures | null;
 }
 
 export interface Brief {
@@ -562,6 +589,8 @@ export interface Brief {
   firstOpen: boolean;
   due: boolean;
   lead: string;
+  /** The lead's numbers: the open waiting items, the jobs merged and the credits spent in the window. */
+  counts: { waiting: number; merged: number; spent: number };
   usage: { fiveHour: BudgetWindow; sevenDay: BudgetWindow; todayCapPct: number | null; paused: TreasuryState['paused'] };
   sections: { waiting: BriefItem[]; overnight: BriefItem[]; recommendations: BriefItem[]; city: BriefItem[] };
   tour: { week: string; stops: number } | null;

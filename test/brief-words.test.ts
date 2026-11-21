@@ -13,7 +13,7 @@ import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant } from '../shar
 const names = { agent: (id: string) => id, firm: (id: string) => ({ quickset: 'Quickset' })[id] ?? id };
 
 function item(over: Partial<BriefItem>): BriefItem {
-  return { id: 'x', kind: 'merged', repo: 'tidewater/harbor-ledger', title: 'A job', text: '', at: new Date(2026, 10, 11, 18, 30).toISOString(), tier: null, refs: {}, actions: [], acted: null, ...over };
+  return { id: 'x', kind: 'merged', repo: 'tidewater/harbor-ledger', title: 'A job', text: '', at: new Date(2026, 10, 11, 18, 30).toISOString(), tier: null, refs: {}, actions: [], acted: null, figures: null, ...over };
 }
 
 function win(over: Partial<BudgetWindow> = {}): BudgetWindow {
