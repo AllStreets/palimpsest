@@ -40,6 +40,7 @@ import type { Browser, Page } from 'playwright';
 import { framings, launch, PERF_VIEW, pageUrl, ready, redesignHome, redesignPort, settle, STILL_VIEW, toCity, view } from './redesign-harness.js';
 import type { Frame } from './redesign-harness.js';
 import type { Brief } from '../shared/types.js';
+import { LONG_SUMMARY, LONG_TITLE } from './ui-test-brief.js';
 
 const PORT = redesignPort();
 const HOME_ROOT = redesignHome();
@@ -69,16 +70,6 @@ async function openTerminal(page: Page, f: Frame): Promise<void> {
   await view(page, f);
   await settle(page);
 }
-
-/** A 240-character PR title with markup in it, and a 600-character summary (Review Focus 5): both must stand as text. */
-export const LONG_TITLE = `Keep the <b>nightly</b> ledger export's rows past midnight UTC &amp; stop the window starting at local midnight, so invoices dated 23:59 stay in their own day, the totals match the bank's, and the reconciliation report stops flagging them by hand`.slice(0, 240);
-export const LONG_SUMMARY = [
-  'The nightly export built its window from **local** midnight, so rows written between 23:00 and 23:59 UTC fell into the next day and the totals drifted from the bank statement.',
-  '',
-  '- `window.ts` now starts the day at UTC midnight, and `nightly.ts` reads the same window for the totals <b>and</b> the rows.',
-  '- A test writes rows at 23:59 UTC &amp; checks they stay in their own day; it failed before the change and passes after it.',
-  '- The whole suite passes, 412 of 412, and typecheck is clean. Nothing outside the export was touched.',
-].join('\n').slice(0, 600);
 
 /** Seeds the long strings into the run's home: the first PR waiting for review takes the title, its last run the summary. */
 async function seedLong(): Promise<string | null> {

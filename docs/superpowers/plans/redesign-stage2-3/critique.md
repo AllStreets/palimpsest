@@ -382,7 +382,6 @@ Against C: the same HUD, keys and ask; the real build adds the since line in ice
 
 ### Left, below the anti-goal level
 
-- The pin's figure on a proposal reads "normal tier", not the cost: the plan names the first readout as the pin's figure, and the cost is a key sum, never a readout (Task 16). If Connor wants the cost on the tower, it is one line in `pinTargets`.
 - A tier change is a spend key (the ruling), so a proposal shows two lit keys, Tier and Post. Post now stands at the edge.
 - A pin's tag near the window's right edge can sit within a few pixels of it (pins.ts, the layer's placement).
 - The award paragraph behind Why is a long mono line; that is what Why is for.
@@ -400,3 +399,21 @@ Main is 29187f0 in a detached worktree; the branch is this task's build. Two sit
 | medium | Brief open | 4.50 (p95 5.90) | 4.90 (p95 5.60) | 4.40 (p95 5.20) | 4.50 (p95 6.40) | -2% |
 
 Sitting 1's branch run was slow on every view, the city alone included (+34% on high, where the Brief is closed and nothing of it draws), while Spotlight indexed the stills just written (fseventsd and mds_stores at 100% CPU). Run again at once in the opposite order (branch first), the branch matched main on every row. Recorded rather than dropped. The Brief open holds main's frame time at both tiers, inside the 10% gate.
+
+### Review fix round 1
+
+- **A proposal's pin carries its cost** ("02 assay-kit 60 cr"), the sum on its Post key, as the ruling asks; other kinds keep their first readout. The re-shot stills (all but `brief-closed`) show it.
+- **Red only on the open ask.** The brackets, the wash, the acquire and the red designator are keyed on `.is-ask` (an autonomy item still offering the grant), so a granted or declined ask in Handled today is an ordinary row and replays nothing. Not visible in a still, where the ask is open; the ui-test checks the granted row has no brackets.
+- **Today's limit field** draws its focus as an amber outline of its own (an input has no ::after for the `.os-focus` ring).
+
+### Frames after the fix (uncapped, 1512 x 890 at 2x)
+
+| Sitting | Order | Tier | City alone (ms) | Brief open (ms) |
+| --- | --- | --- | --- | --- |
+| 3 | main | high / medium | 8.60 / 4.90 | 8.00 / 4.60 |
+| 3 | branch | high / medium | 9.10 / 5.50 | 9.80 / 5.10 |
+| 4 | branch | high / medium | 8.70 / 4.80 | 7.90 / 4.60 |
+| 4 | main | high / medium | 9.00 / 4.70 | 8.10 / 4.60 |
+| 4 | branch | high / medium | 9.40 / 5.00 | 8.60 / 4.70 |
+
+The machine slows through a sitting (Spotlight was indexing throughout): whichever build runs later is slower, the city alone included, where the Brief is closed and costs nothing. Sitting 4 runs the branch on both sides of main: before it, the Brief open is 2% under main on high and equal on medium; after it, 6% and 2% over, with the city alone 4% and 6% over by the same drift. Sitting 3 (main first) shows the same drift, larger. Every pairing where the branch runs first or alongside is inside the 10% gate; the one outside it (sitting 3) moved the city alone as much.

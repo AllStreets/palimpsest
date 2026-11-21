@@ -312,7 +312,7 @@
 
 /* ---------------------------------------------------------------- the autonomy ask: raised, in the lock's red */
 
-.brief-item.k-autonomy {
+.brief-item.is-ask {
   margin: 14px 0 18px;
   padding: 20px 22px 18px 0;
   border: none;
@@ -326,7 +326,7 @@
     0 0 46px rgba(var(--os-red-rgb), 0.08);
 }
 /* The lock's brackets, top and foot, standing off the ask; they close in once as the Brief opens. */
-.brief-item.k-autonomy::before {
+.brief-item.is-ask::before {
   --arm: 22px;
   --th: 2px;
   content: '';
@@ -361,14 +361,14 @@
     transform: none;
   }
 }
-.brief-item.k-autonomy.is-active::after {
+.brief-item.is-ask.is-active::after {
   display: none;
 }
-.brief-item.k-autonomy .brief-des {
+.brief-item.is-ask .brief-des {
   --ink: var(--os-red);
   margin-left: 10px;
 }
-.brief-item.k-autonomy.is-active .brief-des:not(:empty) {
+.brief-item.is-ask.is-active .brief-des:not(:empty) {
   color: var(--os-red);
   background-color: transparent;
   box-shadow: 0 0 12px rgba(var(--os-red-rgb), 0.45), inset 0 0 8px rgba(var(--os-red-rgb), 0.35);
@@ -380,7 +380,7 @@
   color: var(--os-red);
   box-shadow: inset 0 0 0 1px rgba(var(--os-red-rgb), 0.6);
 }
-.brief-item.k-autonomy .brief-head {
+.brief-item.is-ask .brief-head {
   font-size: 27px;
   line-height: 1.06;
 }
@@ -421,7 +421,7 @@
   color: var(--os-amber);
   text-shadow: 0 0 18px rgba(var(--os-amber-rgb), 0.4);
 }
-.brief-item.k-autonomy .brief-line {
+.brief-item.is-ask .brief-line {
   margin-top: 14px;
 }
 
@@ -542,6 +542,10 @@
   text-align: right;
   color: var(--os-amber-hi);
   -moz-appearance: textfield;
+}
+.sheet.brief .brief-cap-input:focus-visible {
+  outline: 1.5px solid var(--os-amber);
+  outline-offset: 3px;
 }
 .brief-cap-input::-webkit-outer-spin-button,
 .brief-cap-input::-webkit-inner-spin-button {
@@ -707,7 +711,7 @@
 /* ---------------------------------------------------------------- still */
 
 @media (prefers-reduced-motion: reduce) {
-  .brief-item.k-autonomy::before,
+  .brief-item.is-ask::before,
   .brief-sweep {
     animation: none;
   }

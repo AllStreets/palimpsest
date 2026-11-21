@@ -403,6 +403,9 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     const said = async (sel: string) => ((await row.locator(sel).textContent({ timeout: 500 }).catch(() => '')) ?? '').trim();
     check(await within(page, 8000, async () => /^Granted \d{2}:\d{2}$/.test(await said('.brief-acted'))), `the row says it was granted (${(await said('.brief-acted')) || (await said('.brief-error')) || `focus on ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120))}`})`);
     check((await row.locator('.brief-act[data-action="grant"]').count()) === 0, 'and offers the grant no longer');
+    // Answered, the ask is an ordinary row: no red brackets, no red wash (red is the open grant's and the lock's alone).
+    const plain = await row.evaluate((r) => ({ ask: r.classList.contains('is-ask'), before: getComputedStyle(r, '::before').content, bg: getComputedStyle(r).backgroundImage }));
+    check(!plain.ask && plain.before === 'none' && !/255, 85, 50/.test(plain.bg), `and keeps no red brackets once granted (${JSON.stringify(plain).slice(0, 120)})`);
     check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'granted'), 'the district page in the other window shows it granted, live');
     check(/^granted \d+ [A-Z][a-z]+, none since$/.test(((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()), `in a ledger's words (${((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()})`);
 

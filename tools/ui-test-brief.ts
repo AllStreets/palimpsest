@@ -41,6 +41,16 @@ const SECTIONS = [
   ['city', 'In the city'],
 ] as const;
 
+/** A 240-character PR title with markup in it, and a 600-character summary (Review Focus 5): both must stand as text. */
+export const LONG_TITLE = `Keep the <b>nightly</b> ledger export's rows past midnight UTC &amp; stop the window starting at local midnight, so invoices dated 23:59 stay in their own day, the totals match the bank's, and the reconciliation report stops flagging them by hand`.slice(0, 240);
+export const LONG_SUMMARY = [
+  'The nightly export built its window from **local** midnight, so rows written between 23:00 and 23:59 UTC fell into the next day and the totals drifted from the bank statement.',
+  '',
+  '- `window.ts` now starts the day at UTC midnight, and `nightly.ts` reads the same window for the totals <b>and</b> the rows.',
+  '- A test writes rows at 23:59 UTC &amp; checks they stay in their own day; it failed before the change and passes after it.',
+  '- The whole suite passes, 412 of 412, and typecheck is clean. Nothing outside the export was touched.',
+].join('\n').slice(0, 600);
+
 async function within(page: Page, ms: number, ok: () => Promise<boolean>): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -142,6 +152,9 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       emit('milestone.reached', { milestone: ribbon });
     }
     openDb().prepare("DELETE FROM ledger WHERE kind = 'brief.opened' AND json_extract(json, '$.day') = ?").run(today);
+    // Review Focus 5: the first PR waiting for review takes a 240-character title with markup in it, set as text.
+    const longPr = briefData(Date.now()).sections.waiting.find((i: BriefItem) => i.kind === 'pr' && i.refs.jobId);
+    if (longPr?.refs.jobId) openDb().prepare("UPDATE jobs SET json = json_set(json, '$.title', ?) WHERE id = ?").run(LONG_TITLE, longPr.refs.jobId);
     const opensBefore = query({ kind: 'brief.opened' }).length;
 
     // The order the page did things in: when the brief took the route, and when the veil began to lift.
@@ -240,6 +253,24 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     });
     check(pinsShown.shown && pinsShown.numbered > 0 && pinsShown.plates === '0', `the brief pins what waits on the city's towers, its plates gone (${JSON.stringify(pinsShown)})`);
     check(pinsShown.lockOn && pinsShown.lockGrant === itemsOf(brief).some((i) => i.kind === 'autonomy' && i.actions.includes('grant') && !!i.repo), `the lock stands on the autonomy ask (${JSON.stringify(pinsShown)})`);
+    if (longPr) {
+      const long = await sheet.locator(`.brief-item[data-item="${longPr.id}"]`).evaluate((r) => ({ head: r.querySelector('h3.brief-head')?.textContent ?? '', tags: r.querySelectorAll('b').length }));
+      check(long.head.includes('<b>') && long.head.includes('&amp;') && long.tags === 0, `a title with markup in it stands as text, no <b> element made (${long.head.slice(0, 50)})`);
+    }
+    // A proposal's pin names what posting it would cost, the sum on its Post key (ruling: the cost, not the tier):
+    // aimed at, its row puts the lock on its tower, and the lock's tag carries the pin's figure.
+    const post = sheet.locator('.brief-sec[data-sec="waiting"] .brief-list:not(.brief-handled) .brief-item[data-kind="proposal"]:has(.brief-act[data-action="accept"])').first();
+    if (await post.count()) {
+      await post.scrollIntoViewIfNeeded();
+      await post.hover();
+      const sum = ((await post.locator('.brief-act[data-action="accept"] .os-sum').textContent()) ?? '').trim();
+      const tag = await within(page, 2000, async () => ((await page.locator('.os-lock-fig').textContent()) ?? '').trim() === sum);
+      check(tag && / cr$/.test(sum), `a proposal's pin carries its cost (${sum} against ${((await page.locator('.os-lock-fig').textContent()) ?? '').trim()})`);
+      await page.mouse.move(SIZE.width - 8, SIZE.height - 8);
+      await sheet.locator('.sheet-body').evaluate((b) => {
+        b.scrollTop = 0;
+      });
+    } else check(false, 'a proposal with Post waits, for its pin');
     const numbers = await sheet.locator('.brief-sec[data-sec="waiting"] .brief-list:not(.brief-handled) .brief-des').evaluateAll((els) => els.map((e) => e.textContent ?? ''));
     const numbered = numbers.filter((n) => n !== '');
     check(numbered.length > 0 && numbered.every((n, i) => n === String(i + 1).padStart(2, '0')), `the waiting rows with a district are numbered in list order (${numbers.join(' ')})`);
@@ -350,6 +381,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       check(await within(page, 2000, async () => (await input.count()) === 1), 'Change today\'s limit opens a one-line field');
       check((await input.inputValue()) === '50' && /until midnight/.test((await usageRow.locator('.brief-cap').textContent()) ?? ''), `with the current cap and "until midnight" (${await input.inputValue()})`);
       check(await page.evaluate(() => document.activeElement?.classList.contains('brief-cap-input') ?? false), 'and the field takes focus');
+      check(await input.evaluate((i) => getComputedStyle(i).outlineStyle !== 'none' && parseFloat(getComputedStyle(i).outlineWidth) >= 1), 'with its focus drawn, visibly');
       check((await input.getAttribute('max')) === '85' && /85%/.test((await usageRow.locator('.brief-cap').textContent()) ?? ''), 'it may rise to 85%, five points under the hard stop');
       await usageRow.evaluate((r) => r.scrollIntoView({ block: 'center' }));
       await input.fill('60');

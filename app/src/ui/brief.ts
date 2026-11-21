@@ -18,7 +18,7 @@
  * the safe markdown renderer as nodes. The PR link goes to GitHub alone.
  */
 import type { AuditView, Brief, BriefAction, BriefItem, FirmView, JobDetail, Settings, Tier } from '../../../shared/types';
-import { windowNowPct } from '../../../shared/market-rules';
+import { creditsText, windowNowPct } from '../../../shared/market-rules';
 import { api, type EngineEvent } from '../api';
 import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
@@ -161,6 +161,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   let sinceText: string | null = null;
   let sinceStop: (() => void) | null = null;
   let headKey = '';
+  /** The stops of the reasons still typing in, all finished at once when the Brief closes. */
+  const typing: Array<() => void> = [];
 
   let brief: Brief | null = null;
   /** Whether this window made the day's first open (it keeps that, though the engine now says otherwise). */
@@ -533,7 +535,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
    * nodes) is never typed: it is revealed by a sweep, the scan crossing it once.
    */
   function reveal(node: HTMLElement): HTMLElement {
-    for (const p of node.querySelectorAll<HTMLElement>('p.brief-why-text')) typedLine(p, p.textContent ?? '', true);
+    for (const p of node.querySelectorAll<HTMLElement>('p.brief-why-text')) typing.push(typedLine(p, p.textContent ?? '', true));
     const summary = node.querySelector<HTMLElement>('.brief-why-summary');
     if (summary) {
       summary.classList.add('brief-sweep');
@@ -564,6 +566,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const li = el('li', `brief-item k-${item.kind}`);
     li.dataset.item = item.id;
     li.dataset.kind = item.kind;
+    if (item.repo) li.dataset.repo = item.repo;
     li.dataset.tone = toneOf(item.kind);
     if (item.acted) li.dataset.acted = item.acted.action;
     if (busy.has(item.id)) li.setAttribute('aria-busy', 'true');
@@ -573,6 +576,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     li.append(des);
     const { where, when } = briefMeta(item, now);
     const ask = item.kind === 'autonomy' && item.actions.includes('grant');
+    // Only an open ask is raised in red; an answered one (granted, declined) is an ordinary row.
+    li.classList.toggle('is-ask', ask);
     if (where || when || ask) {
       const meta = el('p', 'brief-meta os-figs');
       if (where) meta.append(el('span', 'brief-where', where));
@@ -633,7 +638,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       cancel?.classList.remove('textbtn');
       if (set) weighKey(set, 'spend');
       if (cancel) weighKey(cancel, 'look');
-      cap.querySelector('.brief-cap-input')?.classList.add('os-focus', 'os-figs');
+      // An input draws no ::after, so its focus is an outline of its own (brief.css), not the .os-focus ring.
+      cap.querySelector('.brief-cap-input')?.classList.add('os-figs');
       li.append(cap);
     }
     if (whyOpen.has(item.id)) {
@@ -704,12 +710,14 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     for (const item of open) {
       if (!item.repo) continue;
       const first = itemReadouts(item, names)[0];
+      // A proposal's tower names what posting it would cost, as its Post key does (ruling: the cost, not the tier).
+      const cost = item.figures?.kind === 'proposal' ? keySum(item, 'accept') ?? (Number.isFinite(item.figures.cost) && item.figures.cost > 0 ? `${creditsText(item.figures.cost)} cr` : null) : null;
       out.push({
         id: item.id,
         n: out.length + 1,
         repo: item.repo,
         name: cleanText(item.repo.split('/').pop() ?? item.repo, 80),
-        figure: first ? `${first.v}${first.k ? ` ${first.k}` : ''}` : '',
+        figure: cost ?? (first ? `${first.v}${first.k ? ` ${first.k}` : ''}` : ''),
         tone: toneOf(item.kind),
       });
     }
@@ -736,7 +744,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     headKey = key;
     figs.replaceChildren(...hf.map((x) => figure(x.value, x.label, x.tone)));
     ranges.replaceChildren(rangefinder('five-hour', five, fiveCap), rangefinder('seven-day', seven, b.usage.sevenDay.capPct));
-    ranges.setAttribute('aria-label', `The treasury: ${usageLine(b.usage, settings.dayCapPct)}`);
+    const over = (five !== null && five >= fiveCap) || (seven !== null && seven >= b.usage.sevenDay.capPct);
+    ranges.setAttribute('aria-label', `The treasury: ${usageLine(b.usage, settings.dayCapPct)}${over ? ' Over the limit.' : ''}`);
   }
 
   // ---------------------------------------------------------------- the page
@@ -849,6 +858,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       unlisten = null;
       sinceStop?.();
       sinceStop = null;
+      for (const stop of typing.splice(0)) stop();
+      pins.setActive(null, null);
       whyOpen.clear();
       tierOpen.clear();
       capOpen = false;

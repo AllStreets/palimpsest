@@ -340,7 +340,7 @@ test("red on the Brief is the autonomy ask's alone", () => {
   const all = rules(sheet).filter(([sel]) => !/^\s*(from|to|\d+%)/.test(sel));
   for (const [sel, body] of all) {
     if (!RED.test(body)) continue;
-    for (const s of selectors(sel)) assert.ok(/k-autonomy|brief-grant-tag/.test(s), `brief.css ${s} is red but not the autonomy ask`);
+    for (const s of selectors(sel)) assert.ok(/is-ask|brief-grant-tag/.test(s), `brief.css ${s} is red but not the autonomy ask`);
   }
-  assert.ok(all.some(([sel, body]) => sel.includes('k-autonomy') && RED.test(body)), 'the ask is not in red brackets');
+  assert.ok(all.some(([sel, body]) => sel.includes('is-ask') && RED.test(body)), 'the ask is not in red brackets');
 });

@@ -69,3 +69,44 @@ Status: DONE_WITH_CONCERNS (all gates pass; the concerns are presentation choice
 4. The first perf sitting's branch run was noisy (Spotlight); the second sitting is clean. A reviewer may want a third.
 5. The audit explanation under Recommended is now for screen readers only.
 6. tools/ui-test-screens.ts was changed (the two Task 10 pin counts), outside the files the brief named; it is under tools/*, which the ruling allows.
+
+## Fix round 1 (controller review)
+
+Important findings:
+1. **Proposal pin figure.** `pinTargets` gives a proposal the cost: `keySum(item, 'accept')` while Post is offered, else `creditsText(figures.cost) cr`. Other kinds keep their first readout. ui-test: hovering the first open proposal puts the lock on its tower, and the lock tag's figure equals the Post key's sum ("60 cr against 60 cr"). My first version of this check read the first pin of each district and found none in the full run, where earlier checks move the proposals; it now goes through the lock.
+2. **Red only on the open ask.** `row()` sets `is-ask` (kind autonomy with `grant` offered), and every red rule in brief.css (brackets, wash, acquire, designator, head size, line) is keyed on `.brief-item.is-ask`. The os-css test "red on the Brief is the autonomy ask's alone" now requires `is-ask` (or the grant tag). ui-test-school: once granted, the row has no `is-ask`, its `::before` is `none`, and there is no red in its background.
+3. **Today's limit focus.** The input no longer takes `.os-focus`. `.sheet.brief .brief-cap-input:focus-visible` draws a 1.5 px amber outline 3 px out. ui-test: the focused field's computed outline is not `none` and is at least 1 px.
+
+Minors:
+- `reveal()` keeps each typedLine stop in `typing`, and `hide()` finishes them all.
+- `hide()` calls `pins.setActive(null, null)`.
+- The usage link's aria-label ends "Over the limit." when either window is at or past its cap.
+- ui-test: the long-title row's `h3` contains the literal `<b>` and `&amp;`, and the row has no `<b>` element. The constants moved to ui-test-brief.ts; redesign-brief.ts imports them. The ui-test seeds the title into the first waiting PR's job before the page loads.
+- Each row carries `data-repo`.
+
+Gates:
+- `npm test`: 2417 pass, 0 fail, 2 skipped. Typecheck clean.
+- Brief-only ui-test: no failures.
+- Full ui-test, run 3: 2 failures.
+  - My first pin check, since rewritten.
+  - `lod-400 frames differ by under 2% in mean luminance` (2.80%): a city tram check with the Brief closed. It passed in run 2 and is the flaky tram check noted at Task 8.
+- Full ui-test, run 4: "ui-test passed" (the rewritten pin check: "60 cr against 60 cr").
+
+Frames (uncapped, ms, high / medium):
+
+| Sitting | Build | City alone | Brief open |
+| --- | --- | --- | --- |
+| 3 | main | 8.60 / 4.90 | 8.00 / 4.60 |
+| 3 | branch | 9.10 / 5.50 | 9.80 / 5.10 |
+| 4 | branch | 8.70 / 4.80 | 7.90 / 4.60 |
+| 4 | main | 9.00 / 4.70 | 8.10 / 4.60 |
+| 4 | branch | 9.40 / 5.00 | 8.60 / 4.70 |
+
+- The machine slows through a sitting: Spotlight was indexing, with fseventsd and mds_stores at 100% CPU. Whichever build runs later is slower, and the city alone slows with it, though the Brief is closed there and draws nothing.
+- Sitting 4 ran the branch both before and after main:
+  - Branch before main: Brief open -2% on high and 0% on medium.
+  - Branch after main: +6% and +2%, with the city alone +4% and +6% by the same drift.
+- Sitting 3, with main first, shows the same drift, larger: the branch Brief open reads +22%, and the city alone moves +6% and +12%.
+- Recorded in critique.md.
+
+Stills: the seven that show pins were re-shot (all but brief-closed), and the proposal pins now read "60 cr".
