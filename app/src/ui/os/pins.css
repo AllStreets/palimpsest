@@ -135,6 +135,59 @@ html[data-os-pins='on'] .plates * {
   color: var(--os-red);
 }
 
+/*
+ * The plumb, on a pin whose tower stands against another pinned tower on screen: a hairline from the mark down the
+ * tower's own line to a tick at its foot, the number again there. Two pins on one apparent mass are told apart by
+ * where each line lands. Sized by scaleY and placed by translate (pins.ts); it fades in, never grows.
+ */
+.os-pin-plumb,
+.os-pin-foot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  transition: opacity var(--os-base) var(--os-ease);
+  pointer-events: none;
+}
+.os-pin-plumb {
+  left: -0.5px;
+  width: 1px;
+  height: 1px;
+  transform-origin: 0 0;
+  background: rgba(var(--os-amber-rgb), 0.75);
+  box-shadow: 0 0 3px rgba(var(--os-amber-rgb), 0.6);
+}
+.os-pin-foot {
+  margin: -7px 0 0 10px;
+  padding: 0 5px 1px;
+  font-size: 10px;
+  line-height: 13px;
+  color: var(--os-amber-hi);
+  background: rgba(var(--os-ground-rgb), var(--os-plate-alpha));
+  white-space: nowrap;
+}
+/* The foot's tick: across the tower's line, reaching back to the number's plate. */
+.os-pin-foot::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: -17px;
+  width: 17px;
+  height: 1.5px;
+  background: var(--os-amber);
+}
+.os-pin.crowd .os-pin-plumb,
+.os-pin.crowd .os-pin-foot {
+  opacity: 1;
+}
+.os-pin.grant .os-pin-plumb,
+.os-pin.grant .os-pin-foot::before {
+  background: var(--os-red);
+}
+.os-pin.grant .os-pin-foot {
+  color: var(--os-red);
+}
+
 /* A quiet pin: a district with nothing waiting. A 6 px tick and its name, dim, never numbered, never lifted. */
 .os-pin.quiet .os-pin-mark {
   left: -3px;

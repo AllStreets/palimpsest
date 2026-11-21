@@ -71,6 +71,15 @@ export function pinLabel(ns: number[]): string {
   return k > 0 ? `${pad2(Math.min(...ns))} +${k}` : pad2(ns[0]);
 }
 
+/**
+ * The lock's number on a shared district: the locked item's own number, plus how many more wait there ("01 +2"),
+ * so the lock never hides the district's other items. On the district's lowest item it reads as its pin did.
+ */
+export function lockLabel(n: number, ns: number[]): string {
+  const k = ns.filter((x) => x !== n).length;
+  return k > 0 ? `${pad2(n)} +${k}` : pad2(n);
+}
+
 /** A pin's whole box at a lift: its tag, the stem down to its mark, and the mark. What a leader keeps clear of. */
 export function pinTagBox(at: { x: number; y: number }, w: number, h: number, lift = 0): Box {
   return { x0: at.x - PIN_TAG.padLeft, x1: at.x + PIN_TAG.dx + w, y0: at.y - PIN_TAG.dy - h - lift, y1: at.y + PIN_TAG.padBelow };
@@ -122,6 +131,27 @@ export function lockTagBox(lock: LockAt, view: View, top = -Infinity): { box: Bo
   }
   y0 = Math.max(y0, top);
   return { flip, box: { x0, x1: x0 + LOCK_TAG.w, y0, y1: y0 + LOCK_TAG.h } };
+}
+
+/** A pinned tower as it projects: its line's x, its half width on screen, and its foot. */
+export interface TowerSpan {
+  x: number;
+  half: number;
+  foot: number;
+}
+
+/**
+ * Which pinned towers stand so close on screen that a mark at the head alone cannot say which is which: those
+ * whose drawn widths overlap another pinned tower's, plus `slack` px. A null span (off the pane, behind) never
+ * crowds. Each crowded pin draws a plumb from its mark down its own tower to the foot (pins.css).
+ */
+export function crowdedTowers(spans: Array<TowerSpan | null>, slack = 6): boolean[] {
+  return spans.map((a, i) => !!a && spans.some((b, j) => j !== i && !!b && Math.abs(a.x - b.x) < a.half + b.half + slack));
+}
+
+/** A tower's drawn half width from its head and foot projected and its frame: as wide as it stands tall, scaled. */
+export function towerHalf(head: Projected, foot: Projected, frame: { width: number; height: number }): number {
+  return Math.max(2, ((foot.y - head.y) * frame.width) / Math.max(1e-6, frame.height) / 2);
 }
 
 /** One pin to place: its district, whether it is quiet or the one locked on, where its tower's head projects, and its tag's size. */

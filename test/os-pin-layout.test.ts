@@ -11,6 +11,9 @@ import {
   lockGeometry,
   lockTagBox,
   pinLabel,
+  lockLabel,
+  crowdedTowers,
+  towerHalf,
   pinTagBox,
   placePins,
   tagCustomProperties,
@@ -125,6 +128,10 @@ test('a district pin shared by several items: its lowest number, plus how many m
   assert.equal(pinLabel([7]), '07');
   assert.equal(pinLabel([12, 3, 9]), '03 +2');
   assert.equal(pinLabel([]), '');
+  // The lock on a shared district keeps its count: the locked item's number, plus the others there.
+  assert.equal(lockLabel(1, [1, 3, 4]), '01 +2');
+  assert.equal(lockLabel(4, [1, 3, 4]), '04 +2');
+  assert.equal(lockLabel(7, [7]), '07');
 });
 
 test('the tag offsets reach the sheet as custom properties, from the same constants', () => {
@@ -149,4 +156,15 @@ test('lockTagBox holds the tag below the pane top, flipped or not (Task 10)', ()
   // Below the top already, nothing moves.
   const low = { x: 900, top: 286, base: 606, half: 40 };
   assert.deepEqual(lockTagBox(low, VIEW, 70), lockTagBox(low, VIEW));
+});
+
+test('crowdedTowers: two pinned towers standing together on screen each get a plumb; a lone one and a null do not', () => {
+  const span = (x: number, half: number) => ({ x, half, foot: 600 });
+  assert.deepEqual(crowdedTowers([span(400, 10), span(420, 12), span(700, 10), null]), [true, true, false, false]);
+  // Within the slack: 6 px past touching still crowds; past it does not.
+  assert.deepEqual(crowdedTowers([span(100, 10), span(125, 10)]), [true, true]);
+  assert.deepEqual(crowdedTowers([span(100, 10), span(127, 10)]), [false, false]);
+  assert.deepEqual(crowdedTowers([null, span(100, 10)]), [false, false]);
+  // The drawn half width scales with how tall the tower stands on screen.
+  assert.equal(towerHalf({ x: 0, y: 100, behind: false }, { x: 0, y: 500, behind: false }, { width: 10, height: 100 }), 20);
 });

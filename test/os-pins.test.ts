@@ -335,6 +335,13 @@ test('the lock: amber on an item, red on the grant, its words as text, its brack
   const again = [...lock.classes].filter((c) => c.startsWith('acquire'));
   assert.equal(again.length, 1);
   assert.notEqual(again[0], acquired[0], 'the brackets close in again');
+  // A shared district: the lock keeps the count its pin showed, so no item there goes unnumbered on the city.
+  pins.setTargets([T('i1', 1, 'a/one'), T('i2', 2, 'a/two', 'grant'), T('i3', 3, 'a/one'), T('i4', 4, 'a/one')]);
+  pins.setActive('i1', r1 as unknown as HTMLElement);
+  city.frame(2);
+  assert.equal(lock.find('os-lock-n')[0].textContent, '01 +2');
+  pins.setActive('i2', row(300, host.scroller) as unknown as HTMLElement);
+  city.frame(2);
   // Still: the same lock asked again does not restart them.
   pins.setActive('i2', row(300, host.scroller) as unknown as HTMLElement);
   assert.deepEqual([...lock.classes].filter((c) => c.startsWith('acquire')), again);

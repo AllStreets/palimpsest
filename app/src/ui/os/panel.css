@@ -104,24 +104,32 @@
 /* ---------------------------------------------------------------- the back pane, farthest */
 
 /*
- * Wide and low behind the panel, out past its right and foot, lit along its
- * right and foot edges, with its own fine ticks; the panel casts onto it.
+ * The panel's own frame again, one step deeper: the same size, set back 16px
+ * right and down, so its corners echo the panel's at one even offset. Lit
+ * along its right and foot, its three visible corners bracketed thinner and
+ * dimmer than the panel's, its own fine ticks; the panel casts onto it.
  */
 .os-back {
+  --back-arm: 18px;
+  --back-ink: rgba(var(--os-amber-rgb), 0.6);
   position: absolute;
-  top: 58px;
-  bottom: -24px;
-  left: 56px;
-  right: -44px;
+  top: 16px;
+  bottom: -16px;
+  left: 16px;
+  right: -16px;
   z-index: -3;
   pointer-events: none;
   background:
-    linear-gradient(to left, rgba(var(--os-amber-rgb), 0.7), rgba(var(--os-amber-rgb), 0.06) 55%) bottom / 100% 1px no-repeat,
-    linear-gradient(to top, rgba(var(--os-amber-rgb), 0.65), rgba(var(--os-amber-rgb), 0.08) 70%) right / 1px 100% no-repeat,
-    linear-gradient(to left, rgba(var(--os-amber-rgb), 0.12), transparent 18px) right / 18px 100% no-repeat,
-    linear-gradient(to top, rgba(var(--os-amber-rgb), 0.1), transparent 12px) bottom / 100% 12px no-repeat,
-    repeating-linear-gradient(to bottom, rgba(var(--os-amber-rgb), 0.22) 0 1px, transparent 1px 8px) right 6px top / 5px 100% no-repeat,
-    linear-gradient(to bottom, rgba(var(--os-ground-rgb), 0.72), rgba(var(--os-ground-rgb), 0.86));
+    linear-gradient(var(--back-ink), var(--back-ink)) top right / var(--back-arm) 1.5px no-repeat,
+    linear-gradient(var(--back-ink), var(--back-ink)) top right / 1.5px var(--back-arm) no-repeat,
+    linear-gradient(var(--back-ink), var(--back-ink)) bottom right / var(--back-arm) 1.5px no-repeat,
+    linear-gradient(var(--back-ink), var(--back-ink)) bottom right / 1.5px var(--back-arm) no-repeat,
+    linear-gradient(var(--back-ink), var(--back-ink)) bottom left / var(--back-arm) 1.5px no-repeat,
+    linear-gradient(var(--back-ink), var(--back-ink)) bottom left / 1.5px var(--back-arm) no-repeat,
+    linear-gradient(to left, rgba(var(--os-amber-rgb), 0.32), rgba(var(--os-amber-rgb), 0.04) 60%) bottom / 100% 1px no-repeat,
+    linear-gradient(to top, rgba(var(--os-amber-rgb), 0.3), rgba(var(--os-amber-rgb), 0.04) 70%) right / 1px 100% no-repeat,
+    repeating-linear-gradient(to bottom, rgba(var(--os-amber-rgb), 0.18) 0 1px, transparent 1px 8px) right 4px top 40px / 4px calc(100% - 80px) no-repeat,
+    linear-gradient(to bottom, rgba(var(--os-ground-rgb), 0.7), rgba(var(--os-ground-rgb), 0.84));
   box-shadow: var(--os-shadow-far);
   transition: transform var(--os-slow) var(--os-ease);
   will-change: transform;
@@ -138,14 +146,14 @@
   z-index: -1;
   overflow: hidden;
   pointer-events: none;
-  /* Almost gone under the headlines at the left, strongest at the right where the keys leave room. */
-  mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.25), #000 75%);
 }
 /* A column: the words read downward, upright, one composited layer falling by transform. */
 .os-stream-col {
   position: absolute;
   top: 0;
-  left: var(--os-x);
+  /* In a margin, never under a text column (stream.ts LANES). */
+  left: var(--os-l, auto);
+  right: var(--os-r, auto);
   writing-mode: vertical-rl;
   text-orientation: upright;
   white-space: nowrap;
@@ -174,13 +182,23 @@
 /*
  * The nearest plate: proud of the panel at the left, denser than it, lit
  * along its top and left edges in warm white, and casting a long shadow down
- * and right onto the list.
+ * and right onto the list. The plate is the head's ::after, behind its words,
+ * so a screen can fade it on its own (the Brief's fold).
  */
 .sheet.os-panel .sheet-head {
   position: relative;
   z-index: 4;
   margin: 14px 22px 0 -14px;
   padding: 20px 26px 18px 40px;
+  transition: transform var(--os-slow) var(--os-ease);
+  will-change: transform;
+}
+.sheet.os-panel .sheet-head::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background:
     linear-gradient(to right, rgba(255, 226, 180, 0.75), rgba(var(--os-amber-rgb), 0.35) 40%, rgba(var(--os-amber-rgb), 0.04)) top / 100% 1px no-repeat,
     linear-gradient(to bottom, rgba(255, 226, 180, 0.6), rgba(var(--os-amber-rgb), 0.08)) left / 1px 100% no-repeat,
@@ -190,8 +208,6 @@
     inset 0 -1px 0 rgba(var(--os-amber-rgb), 0.28),
     var(--os-shadow-near),
     -6px 0 18px -10px rgba(0, 0, 0, 0.7);
-  transition: transform var(--os-slow) var(--os-ease);
-  will-change: transform;
 }
 /* Two ticks at the head's proud corner, the panel's bracket standing behind it. */
 .sheet.os-panel .sheet-head::before {

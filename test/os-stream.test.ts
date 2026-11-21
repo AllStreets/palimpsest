@@ -13,7 +13,7 @@ import { afterEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { leanPanes } from '../app/src/ui/os/panel.js';
-import { cleanWord, columnLook, streamColumns } from '../app/src/ui/os/stream.js';
+import { cleanWord, columnLook, LANES, streamColumns } from '../app/src/ui/os/stream.js';
 import { parallaxOffset } from '../app/src/ui/os/tokens.js';
 
 const OS = join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'src', 'ui', 'os');
@@ -81,12 +81,15 @@ test('deterministic', () => {
 });
 
 test('the stream stays under 20% opacity', () => {
-  for (let i = 0; i < 18; i++) {
-    const look = columnLook(i, 18);
+  for (let i = 0; i < 4; i++) {
+    const look = columnLook(i);
     assert.ok(look.opacity > 0 && look.opacity < 0.2, `column ${i} at ${look.opacity}`);
-    assert.ok(look.x >= 0 && look.x < 100, `column ${i} at ${look.x}%`);
     assert.ok(look.seconds > 0, `column ${i} does not fall`);
   }
+  // Never under a text column: each lane sits in a margin. The list's padding is 30px at the left (the
+  // designators start there) and 34px at the right; a column is 14px wide.
+  assert.deepEqual(LANES.map((l) => l.side).sort(), ['left', 'right']);
+  for (const l of LANES) assert.ok(l.offset >= 0 && l.offset + 14 <= (l.side === 'left' ? 24 : 34), `${l.side} lane at ${l.offset}px stays in the margin`);
   const css = readFileSync(join(OS, 'panel.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   const rule = /\.os-stream-col\s*\{([^}]*)\}/.exec(css);
   assert.ok(rule, 'panel.css has an .os-stream-col rule');

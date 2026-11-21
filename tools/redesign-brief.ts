@@ -19,6 +19,8 @@
  * top), brief-1280.png (a 1280 x 800 window), brief-reduced-motion.png
  * (prefers-reduced-motion emulated), brief-closed.png (the city over the
  * first still's framing once the Brief has closed, its own plates back) and
+ * brief-folded.png (part way down, the head folded to its slim bar),
+ * brief-handled.png (Handled today and Overnight, the quieter rows),
  * brief-why-long.png (Review Focus 5: the PR waiting for review given a
  * 240-character title with markup in it and a 600-character summary, seeded
  * into the scratch home, with Why open on it).
@@ -102,6 +104,22 @@ async function stills(out: string, browser: Browser): Promise<void> {
     });
     await page.waitForTimeout(1500);
     await shot(page, 'brief-scrolled');
+    // Part way down: the head folded to its slim bar, a row passing under it (polish round).
+    await page.locator('.sheet.brief .sheet-body').evaluate((b) => {
+      b.scrollTop = 470;
+    });
+    await page.waitForTimeout(1500);
+    await shot(page, 'brief-folded');
+    // What he settled today and what happened overnight: the quieter rows (polish round).
+    const settled = page.locator('.sheet.brief .brief-handled-head');
+    if (await settled.isVisible()) {
+      await settled.evaluate((h) => {
+        const body = h.closest('.sheet-body') as HTMLElement;
+        body.scrollTop += h.getBoundingClientRect().top - body.getBoundingClientRect().top - 40;
+      });
+      await page.waitForTimeout(1500);
+      await shot(page, 'brief-handled');
+    }
     await page.locator('.sheet.brief .brief-item[data-item^="autonomy:"]').first().evaluate((sec) => {
       const body = sec.closest('.sheet-body') as HTMLElement;
       body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;

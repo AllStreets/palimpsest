@@ -1,7 +1,9 @@
 /**
- * The stream behind the panel's list: a few columns of the brief's own names
+ * The stream behind the panel's list: two columns of the brief's own names
  * and figures, read downward with a middle dot between them, falling slowly
- * and faint. Words, not a font sample: no column carries one word twice
+ * and faint. They run in the list's two margins, the left gutter before the
+ * designators and the right margin before the rail, never under a text
+ * column: no headline or figure sits on moving glyphs (polish round). Words, not a font sample: no column carries one word twice
  * running (round 3's "A I A I A").
  *
  * streamColumns is pure and deterministic. createStream builds the columns
@@ -61,19 +63,29 @@ export function streamColumns(words: string[], columns: number, rows: number): s
   return out;
 }
 
-/** Where a column stands (percent across), how long it takes to fall, its head start, and its opacity (always under 0.2). */
-export function columnLook(i: number, columns: number): { x: number; seconds: number; delay: number; opacity: number } {
-  const spread = columns > 0 ? (i * 37) % 100 : 0;
+/**
+ * The margins a column runs in: its side of the panel and its offset in px from that edge. The left gutter is
+ * the list's 30px padding before the designators; the right lane stands between the keys' reticles and the rail.
+ */
+export const LANES: ReadonlyArray<{ side: 'left' | 'right'; offset: number }> = [
+  { side: 'left', offset: 7 },
+  { side: 'right', offset: 15 },
+];
+
+/** Where a column stands (its lane), how long it takes to fall, its head start, and its opacity (always under 0.2). */
+export function columnLook(i: number): { side: 'left' | 'right'; offset: number; seconds: number; delay: number; opacity: number } {
+  const lane = LANES[i % LANES.length];
   return {
-    x: spread,
-    seconds: 38 + ((i * 17) % 29),
+    side: lane.side,
+    offset: lane.offset,
+    seconds: 44 + ((i * 17) % 29),
     delay: -((i * 11) % 30),
-    opacity: Number((0.17 * (0.32 + ((i * 29) % 50) / 100)).toFixed(3)),
+    opacity: i % 2 ? 0.15 : 0.17,
   };
 }
 
-/** The columns a stream shows, and how many characters each runs to: enough for a tall panel. */
-const COLUMNS = 18;
+/** The columns a stream shows (one a lane), and how many characters each runs to: enough for a tall panel. */
+const COLUMNS = LANES.length;
 const ROWS = 96;
 
 /**
@@ -97,8 +109,8 @@ export function createStream(host: HTMLElement): { root: HTMLElement; fill(words
         col.className = 'os-stream-col';
         // Twice over, so the fall loops without a seam.
         col.textContent = text + text;
-        const look = columnLook(i, COLUMNS);
-        col.style.setProperty('--os-x', `${look.x}%`);
+        const look = columnLook(i);
+        col.style.setProperty(look.side === 'left' ? '--os-l' : '--os-r', `${look.offset}px`);
         col.style.setProperty('--os-t', `${look.seconds}s`);
         col.style.setProperty('--os-d', `${look.delay}s`);
         col.style.setProperty('--os-o', String(look.opacity));

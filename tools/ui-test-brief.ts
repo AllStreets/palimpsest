@@ -387,13 +387,25 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await input.fill('60');
       await page.waitForTimeout(250);
       await page.screenshot({ path: join(shots, 'brief-cap.png') });
-      // Scrolled, the title stands on the near plate, over the rows passing under it.
+      // Scrolled, the head folds to its slim bar: a plate standing over the rows passing under it, the day and the
+      // three figures on one line, and the list's top no lower than the bar's foot (polish round).
+      await page.waitForTimeout(400);
       const head = await sheet.locator('.sheet-head').evaluate((h) => {
         const cs = getComputedStyle(h);
-        const body = getComputedStyle(h.parentElement!.querySelector('.sheet-body')!);
-        return { plate: /gradient/.test(cs.backgroundImage), over: Number(cs.zIndex) > (Number(body.zIndex) || 0), scrolled: (h.closest('.sheet') as HTMLElement).dataset.scrolled };
+        const slim = h.querySelector('.brief-slim') as HTMLElement;
+        const ss = getComputedStyle(slim);
+        const bodyEl = h.parentElement!.querySelector('.sheet-body') as HTMLElement;
+        const body = getComputedStyle(bodyEl);
+        return {
+          plate: /gradient/.test(ss.backgroundImage) && Number(ss.opacity) === 1,
+          over: Number(cs.zIndex) > (Number(body.zIndex) || 0),
+          slim: Math.round(slim.getBoundingClientRect().height),
+          line: (slim.textContent ?? '').replace(/\s+/g, ' ').trim(),
+          under: Math.round(bodyEl.getBoundingClientRect().top - slim.getBoundingClientRect().bottom),
+          scrolled: (h.closest('.sheet') as HTMLElement).dataset.scrolled,
+        };
       });
-      check(head.plate && head.over && head.scrolled === 'true', `scrolled, the head is a plate standing over the rows (${JSON.stringify(head)})`);
+      check(head.plate && head.over && head.scrolled === 'true' && head.slim <= 60 && head.under >= -6 && /waiting/.test(head.line), `scrolled, the head is a slim plate standing over the rows (${JSON.stringify(head)})`);
       // Escape in the field puts it away and stays on the brief.
       await page.keyboard.press('Escape');
       check(await within(page, 2000, async () => (await input.count()) === 0), 'Escape puts the field away');

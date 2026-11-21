@@ -22,7 +22,7 @@
 import * as THREE from 'three';
 
 import { projectToView } from '../../city/labels.js';
-import { lockGeometry, lockTagBox, pinLabel, placePins, tagCustomProperties, type LockAt, type PinCandidate, type Projected, type View } from './pin-layout.js';
+import { crowdedTowers, lockGeometry, lockLabel, lockTagBox, pinLabel, placePins, tagCustomProperties, towerHalf, type LockAt, type PinCandidate, type Projected, type TowerSpan, type View } from './pin-layout.js';
 import { routeLeader, routePath, type Box } from './route.js';
 import type { Tone } from './tokens.js';
 
@@ -96,6 +96,12 @@ interface Pin {
   /** Where its tower's head projects this frame, and its candidate for placement (its tag's size, 0 until read). */
   at: Projected;
   cand: PinCandidate;
+  /** Where its tower's foot projects, and the plumb down to it: drawn only while another pinned tower crowds it. */
+  footAt: Projected;
+  plumb: HTMLElement | null;
+  footTick: HTMLElement | null;
+  crowd: boolean;
+  plumbLen: number;
   shown: boolean;
   locked: boolean;
   lift: number;
@@ -202,6 +208,7 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
   let routeKey: number[] = [];
   const keyNow: number[] = [];
   const avoid: Box[] = [];
+  const spans: Array<TowerSpan | null> = [];
   const reserved: Box[] = [];
 
   const head = { x: 0, y: 0, behind: false };
@@ -232,7 +239,18 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
       const lead = pin.targets[0];
       tag.append(el('span', 'os-pin-n os-figs', pinLabel(pin.targets.map((t) => t.n))), el('span', 'os-pin-name', lead.name), el('span', 'os-pin-fig os-figs', lead.figure));
     }
-    pin.el.replaceChildren(el('span', 'os-pin-mark'), tag);
+    // The plumb: a hairline from the mark down the tower's own line to a tick at its foot, with the number there,
+    // so two pinned towers standing together on screen are told apart by where each one's line lands.
+    if (pin.quiet) {
+      pin.plumb = null;
+      pin.footTick = null;
+      pin.el.replaceChildren(el('span', 'os-pin-mark'), tag);
+    } else {
+      pin.plumb = el('span', 'os-pin-plumb');
+      pin.footTick = el('span', 'os-pin-foot os-figs', pinLabel(pin.targets.map((t) => t.n)).split(' ')[0]);
+      pin.el.replaceChildren(pin.plumb, pin.footTick, el('span', 'os-pin-mark'), tag);
+    }
+    pin.plumbLen = NaN;
     pin.tag = tag;
     pin.cand.w = 0;
     pin.cand.h = 0;
@@ -244,7 +262,7 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
     box.dataset.repo = repo;
     const tag = el('span', 'os-pin-tag');
     const at = { x: 0, y: 0, behind: false };
-    return { repo, quiet: true, targets: [], sig: null, el: box, tag, frame: null, at, cand: { repo, quiet: true, locked: false, at: null, w: 0, h: 0 }, shown: false, locked: false, lift: 0, x: NaN, y: NaN };
+    return { repo, quiet: true, targets: [], sig: null, el: box, tag, frame: null, at, cand: { repo, quiet: true, locked: false, at: null, w: 0, h: 0 }, footAt: { x: 0, y: 0, behind: false }, plumb: null, footTick: null, crowd: false, plumbLen: NaN, shown: false, locked: false, lift: 0, x: NaN, y: NaN };
   }
 
   /** One pin per standing district: those with targets first, in item order, then the quiet ones. */
@@ -292,7 +310,8 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
   /** The lock's words and colour, and its brackets closing in, when the active item changes. */
   function drawActive(): void {
     const on = !!active && byRepo.has(active.repo);
-    const key = on ? `${active!.id}\u0001${active!.n}\u0001${active!.name}\u0001${active!.figure}\u0001${active!.tone}` : '';
+    const shared = on ? byRepo.get(active!.repo)!.targets.map((t) => t.n) : [];
+    const key = on ? `${active!.id}\u0001${lockLabel(active!.n, shared)}\u0001${active!.name}\u0001${active!.figure}\u0001${active!.tone}` : '';
     if (key === activeKey) return;
     activeKey = key;
     const newLock = on && active!.id !== activeId;
@@ -300,7 +319,7 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
     const grant = on && active!.tone === 'grant';
     lock.classList.toggle('grant', grant);
     lines.classList.toggle('grant', grant);
-    lockN.textContent = on ? pad2(active!.n) : '';
+    lockN.textContent = on ? lockLabel(active!.n, shared) : '';
     lockName.textContent = on ? active!.name : '';
     lockFig.textContent = on ? active!.figure : '';
     if (newLock) {
@@ -401,6 +420,20 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
       pin.cand.at = pin.frame && pin.cand.w ? project(pin.frame, pin.frame.height / 2, pin.at) : null;
     }
     const placed = placePins(cands, reserved, view);
+    // Pinned towers that stand together on screen: each draws its plumb (the locked one has the lock's brackets).
+    spans.length = 0;
+    for (let i = 0; i < pins.length; i++) {
+      const pin = pins[i];
+      const f = pin.frame;
+      const a = pin.cand.at;
+      if (pin.quiet || !f || !a || !placed[i].shown) {
+        spans.push(null);
+        continue;
+      }
+      const footP = project(f, -f.height / 2, pin.footAt);
+      spans.push(footP.behind ? null : { x: a.x, half: towerHalf(a, footP, f), foot: Math.min(footP.y, view.h - CHANNEL.foot) });
+    }
+    const crowded = crowdedTowers(spans);
 
     avoid.length = 0;
     if (teleBox) avoid.push(teleBox);
@@ -448,6 +481,19 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
       if (p.shown !== pin.shown) {
         pin.shown = p.shown;
         pin.el.classList.toggle('on', p.shown);
+      }
+      const crowd = crowded[i] && !pin.cand.locked && p.shown;
+      if (crowd !== pin.crowd) {
+        pin.crowd = crowd;
+        pin.el.classList.toggle('crowd', crowd);
+      }
+      if (crowd && pin.plumb && pin.footTick) {
+        const len = tenth(Math.max(0, spans[i]!.foot - pin.at.y));
+        if (len !== pin.plumbLen) {
+          pin.plumbLen = len;
+          pin.plumb.style.transform = `scaleY(${len.toFixed(1)})`;
+          pin.footTick.style.transform = translate(0, len);
+        }
       }
       if (pin.cand.locked !== pin.locked) {
         pin.locked = pin.cand.locked;

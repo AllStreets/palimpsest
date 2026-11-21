@@ -93,7 +93,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   // sheet is always shown through sheet.show (Task 5).
   const panel = dressPanel(sheet);
   const head = panel.head;
-  // Scrolled, the head is ruled off from the rows passing under it.
+  // Scrolled, the head folds to its slim bar (the day and the three figures on one line), and opens again at the
+  // top. Only a class changes; the fold is opacity and transform (brief.css), so the list never lays out again.
   sheet.body.addEventListener('scroll', () => {
     const on = sheet.body.scrollTop > 4;
     if ((sheet.root.dataset.scrolled === 'true') !== on) sheet.root.dataset.scrolled = String(on);
@@ -108,7 +109,13 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   const ranges = el('a', 'brief-ranges os-focus');
   ranges.href = routeHref('treasury');
   readouts.append(figs, ranges);
-  head.append(since, readouts);
+  // The slim bar the head folds to: the day and the head figures, for the eye (the full head stays for the reader).
+  const slim = el('div', 'brief-slim');
+  slim.setAttribute('aria-hidden', 'true');
+  const slimDay = el('span', 'brief-slim-day');
+  const slimFigs = el('span', 'brief-slim-figs os-figs');
+  slim.append(slimDay, slimFigs);
+  head.append(since, readouts, slim);
   // The lead and the usage sentence stay for the reader alone; the head says them as figures.
   const lead = el('p', 'brief-lead os-sr');
   const usage = el('p', 'brief-usage os-sr');
@@ -739,10 +746,18 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     const seven = windowNowPct(b.usage.sevenDay);
     const fiveCap = b.usage.todayCapPct ?? b.usage.fiveHour.capPct ?? settings.dayCapPct;
     const hf = headFigures(b);
-    const key = JSON.stringify([hf, five, seven, fiveCap, b.usage.sevenDay.capPct]);
+    const key = JSON.stringify([hf, five, seven, fiveCap, b.usage.sevenDay.capPct, b.day]);
     if (key === headKey) return;
     headKey = key;
     figs.replaceChildren(...hf.map((x) => figure(x.value, x.label, x.tone)));
+    slimDay.textContent = briefTitle(b.day);
+    slimFigs.replaceChildren(
+      ...hf.map((x) => {
+        const f = el('span', `brief-slim-fig${x.tone === 'hot' ? ' hot' : ''}`);
+        f.append(el('b', 'brief-slim-v', x.value), el('span', 'brief-slim-k', x.label));
+        return f;
+      }),
+    );
     ranges.replaceChildren(rangefinder('five-hour', five, fiveCap), rangefinder('seven-day', seven, b.usage.sevenDay.capPct));
     const over = (five !== null && five >= fiveCap) || (seven !== null && seven >= b.usage.sevenDay.capPct);
     ranges.setAttribute('aria-label', `The treasury: ${usageLine(b.usage, settings.dayCapPct)}${over ? ' Over the limit.' : ''}`);
@@ -751,13 +766,17 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
   // ---------------------------------------------------------------- the page
 
   /** Sets a list's rows to `items`, reusing each row whose item and state are unchanged, and keeping focus in a row redrawn. */
-  function fill(into: HTMLElement, items: BriefItem[], now: number, seen: Set<string>, numbers: Map<string, number>): void {
+  function fill(into: HTMLElement, items: BriefItem[], now: number, seen: Set<string>, numbers: Map<string, number>, quietRows = false): void {
     const b = brief!;
     const want: HTMLElement[] = [];
-    for (const item of items) {
+    // The quieter ledgers: each run of one kind (or, settled, of one answer) stands in one muted bracket of its
+    // state's ink, a mark at its head, so twelve rows read as a few groups (polish round).
+    const runs = quietRows ? runsOf(items) : null;
+    for (const [i, item] of items.entries()) {
       seen.add(item.id);
       const n = numbers.get(item.id) ?? null;
-      const key = JSON.stringify([item, n, busy.has(item.id), errors.get(item.id), quiet.get(item.id), whyOpen.has(item.id), whyOf.get(item.id) === 'reading', tierOpen.has(item.id), item.kind === 'usage' && capOpen, b.usage.todayCapPct, settings, names.firm(item.refs.firmId ?? '')]);
+      const run = runs?.[i] ?? null;
+      const key = JSON.stringify([item, n, run, busy.has(item.id), errors.get(item.id), quiet.get(item.id), whyOpen.has(item.id), whyOf.get(item.id) === 'reading', tierOpen.has(item.id), item.kind === 'usage' && capOpen, b.usage.todayCapPct, settings, names.firm(item.refs.firmId ?? '')]);
       const had = rows.get(item.id);
       if (had && had.key === key) {
         want.push(had.el);
@@ -765,6 +784,11 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       }
       const focused = had?.el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
       const next = row(item, now, n);
+      if (run) {
+        next.dataset.run = run.at;
+        next.dataset.tone = run.tone;
+        next.classList.add('is-quiet');
+      }
       if (had) had.el.replaceWith(next);
       rows.set(item.id, { key, el: next });
       want.push(next);
@@ -776,6 +800,18 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     }
     const cur = [...into.children];
     if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) into.replaceChildren(...want);
+  }
+
+  /** Each row's place in its run of like rows (by kind, or by his answer once settled), and the run's ink. */
+  function runsOf(items: BriefItem[]): Array<{ at: 'solo' | 'first' | 'mid' | 'last'; tone: string }> {
+    const keyOf = (i: BriefItem): string => (i.acted ? `acted:${i.acted.action}` : `kind:${i.kind}`);
+    const toneFor = (i: BriefItem): string => (i.acted ? (['dismiss', 'decline'].includes(i.acted.action) ? 'quiet' : 'ok') : toneOf(i.kind));
+    return items.map((item, i) => {
+      const k = keyOf(item);
+      const prev = i > 0 && keyOf(items[i - 1]) === k;
+      const next = i < items.length - 1 && keyOf(items[i + 1]) === k;
+      return { at: prev ? (next ? 'mid' : 'last') : next ? 'first' : 'solo', tone: toneFor(item) };
+    });
   }
 
   function render(): void {
@@ -819,8 +855,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
         handledHead.hidden = handled.length === 0;
         handledList.hidden = handled.length === 0;
         fill(s.list, open, now, seen, numbers);
-        fill(handledList, handled, now, seen, numbers);
-      } else fill(s.list, list, now, seen, numbers);
+        fill(handledList, handled, now, seen, numbers, true);
+      } else fill(s.list, list, now, seen, numbers, true);
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     panel.setStream(streamWords(b, names));
@@ -854,6 +890,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     hide() {
       sheet.hide();
       pins.hide();
+      delete sheet.root.dataset.scrolled;
       unlisten?.();
       unlisten = null;
       sinceStop?.();

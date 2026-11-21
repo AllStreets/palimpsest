@@ -76,6 +76,114 @@
   font-size: 13px;
 }
 
+/*
+ * The fold. The head stands over the top of the list rather than above it: the list starts under the slim bar and
+ * its first rows wait below the full head, so nothing lays out when the head folds. Scrolled, the full head and its
+ * plate fade and lift away and the slim bar (the day and the three figures on one line) fades in; at the top it
+ * opens again. Opacity and transform only; rows pass under the bar through the list's fade, never sliced by a plate.
+ */
+.sheet.brief.os-panel .sheet-head {
+  position: absolute;
+  top: 14px;
+  left: -14px;
+  right: 22px;
+  margin: 0;
+}
+/* The full plate (the panel's head ::after) fades on its own. */
+.sheet.brief.os-panel .sheet-head::after {
+  transform-origin: top;
+  transition:
+    opacity var(--os-base) var(--os-ease),
+    transform var(--os-base) var(--os-ease);
+}
+.sheet.brief .sheet-head > :is(.sheet-title, .brief-since, .brief-readouts) {
+  transition:
+    opacity var(--os-fast) var(--os-ease),
+    transform var(--os-base) var(--os-ease);
+}
+.brief-slim {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 26px 0 40px;
+  background:
+    linear-gradient(to right, var(--os-amber-hi), rgba(var(--os-amber-rgb), 0.35) 40%, rgba(var(--os-amber-rgb), 0.04)) top / 100% 1px no-repeat,
+    linear-gradient(to bottom, var(--os-amber-hi), rgba(var(--os-amber-rgb), 0.08)) left / 1px 100% no-repeat,
+    rgba(var(--os-ground-rgb), 0.97);
+  box-shadow:
+    inset 0 -1px 0 rgba(var(--os-amber-rgb), 0.4),
+    0 14px 22px -12px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition:
+    opacity var(--os-base) var(--os-ease),
+    transform var(--os-base) var(--os-ease);
+}
+.brief-slim-day {
+  font-family: var(--os-display);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--os-ink);
+}
+.brief-slim-figs {
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+}
+.brief-slim-fig {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.brief-slim-v {
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--os-ink);
+}
+.brief-slim-fig.hot .brief-slim-v {
+  color: var(--os-amber);
+}
+.brief-slim-k {
+  font-family: var(--os-display);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--os-dim);
+}
+/* Folded: unless the rangefinders hold the keyboard's focus, which opens the head where it stands. */
+.sheet.brief[data-scrolled='true'] .sheet-head:not(:has(.brief-ranges:focus-visible)) {
+  pointer-events: none;
+}
+.sheet.brief[data-scrolled='true'] .sheet-head:not(:has(.brief-ranges:focus-visible))::after {
+  opacity: 0;
+  transform: scaleY(0.6);
+}
+.sheet.brief[data-scrolled='true'] .sheet-head:not(:has(.brief-ranges:focus-visible)) > :is(.sheet-title, .brief-since, .brief-readouts) {
+  opacity: 0;
+  transform: translateY(-14px);
+}
+.sheet.brief[data-scrolled='true'] .sheet-head:not(:has(.brief-ranges:focus-visible)) > .brief-slim {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+/* The list: from the slim bar's foot down, its first rows waiting below the full head. */
+.sheet.brief.os-panel .sheet-body {
+  margin-top: 62px;
+  padding-top: calc(var(--os-head, 340px) - 62px + 18px);
+  mask-image: linear-gradient(to bottom, transparent 0, transparent 14px, black 44px, black calc(100% - 30px), transparent);
+}
+
 /* ---------------------------------------------------------------- the list */
 
 .brief-empty {
@@ -157,8 +265,10 @@
 }
 
 /* The designator: the target's number in four corner ticks, in its state's ink; else a short hairline. */
-.brief-des {
+.brief-item {
   --ink: var(--os-amber);
+}
+.brief-des {
   align-self: start;
   justify-self: start;
   display: grid;
@@ -186,17 +296,57 @@
   background: var(--ink);
   opacity: 0.55;
 }
-.brief-item[data-tone='ok'] .brief-des {
+.brief-item[data-tone='ok'] {
   --ink: var(--os-ok);
 }
-.brief-item[data-tone='warn'] .brief-des {
+.brief-item[data-tone='warn'] {
   --ink: var(--os-warn);
 }
-.brief-item[data-tone='fail'] .brief-des {
+.brief-item[data-tone='fail'] {
   --ink: var(--os-fail);
 }
-.brief-item[data-tone='quiet'] .brief-des {
+.brief-item[data-tone='quiet'] {
   --ink: var(--os-dim);
+}
+
+/*
+ * The quieter ledgers (Handled today, Overnight, Recommended, In the city): no number, because no pin. Each run of
+ * like rows stands in one muted bracket of its state's ink down the gutter, closed at the run's two ends, and the
+ * run's head carries a small square of that ink: twelve rows read as a few groups, and a lone row as its own.
+ */
+.brief-item.is-quiet::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  box-sizing: border-box;
+  border: 0 solid color-mix(in srgb, var(--ink) 55%, transparent);
+  border-left-width: 1.5px;
+  pointer-events: none;
+}
+.brief-item.is-quiet:is([data-run='first'], [data-run='solo'])::before {
+  top: 12px;
+  border-top-width: 1.5px;
+}
+.brief-item.is-quiet:is([data-run='last'], [data-run='solo'])::before {
+  bottom: 12px;
+  border-bottom-width: 1.5px;
+}
+/* Inside a run the rule between rows is fainter: the bracket holds them together. */
+.brief-item.is-quiet:is([data-run='first'], [data-run='mid']) {
+  border-bottom-color: rgba(var(--os-amber-rgb), 0.04);
+}
+.brief-item.is-quiet .brief-des:empty {
+  width: 6px;
+  height: 6px;
+  margin: 5px 0 0 19px;
+  background: var(--ink);
+  opacity: 1;
+}
+.brief-item.is-quiet:is([data-run='mid'], [data-run='last']) .brief-des:empty {
+  visibility: hidden;
 }
 
 /* The row the lock is on: its designator lit, a warm wash, and a lit bar at the rail where the leader leaves. */
@@ -714,6 +864,12 @@
   .brief-item.is-ask::before,
   .brief-sweep {
     animation: none;
+  }
+  /* The fold is a cut, not a fade: the slim bar stands at once. */
+  .sheet.brief.os-panel .sheet-head::after,
+  .sheet.brief .sheet-head > :is(.sheet-title, .brief-since, .brief-readouts),
+  .brief-slim {
+    transition: none;
   }
 }
 .brief-handled .brief-item > :is(.brief-why, .brief-quiet, .brief-error, .brief-tier, .brief-cap),
