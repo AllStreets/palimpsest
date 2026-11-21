@@ -1714,6 +1714,8 @@ async function main(): Promise<void> {
       requestAnimationFrame(find);
     },
     startTour,
+    // The pins over the city (screens redesign Task 17): the one OsCity, shared with the gallery.
+    city: osCity,
   });
 
   // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an

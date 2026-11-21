@@ -16,8 +16,12 @@
  * screen over the screens framing), brief-scrolled.png (its body scrolled to
  * the end), brief-overview.png (over the overview, the city at its
  * brightest framing), brief-autonomy.png (the city's autonomy ask at the
- * top), brief-1280.png (a 1280 x 800 window) and brief-reduced-motion.png
- * (prefers-reduced-motion emulated).
+ * top), brief-1280.png (a 1280 x 800 window), brief-reduced-motion.png
+ * (prefers-reduced-motion emulated), brief-closed.png (the city over the
+ * first still's framing once the Brief has closed, its own plates back) and
+ * brief-why-long.png (Review Focus 5: the PR waiting for review given a
+ * 240-character title with markup in it and a 600-character summary, seeded
+ * into the scratch home, with Why open on it).
  *
  * frames, at perf's 1512 x 890 window and 2x, on high and on medium with
  * the governor held: the city alone from home, then the Brief open over it,
@@ -35,6 +39,7 @@ import type { Browser, Page } from 'playwright';
 
 import { framings, launch, PERF_VIEW, pageUrl, ready, redesignHome, redesignPort, settle, STILL_VIEW, toCity, view } from './redesign-harness.js';
 import type { Frame } from './redesign-harness.js';
+import type { Brief } from '../shared/types.js';
 
 const PORT = redesignPort();
 const HOME_ROOT = redesignHome();
@@ -65,8 +70,31 @@ async function openTerminal(page: Page, f: Frame): Promise<void> {
   await settle(page);
 }
 
+/** A 240-character PR title with markup in it, and a 600-character summary (Review Focus 5): both must stand as text. */
+export const LONG_TITLE = `Keep the <b>nightly</b> ledger export's rows past midnight UTC &amp; stop the window starting at local midnight, so invoices dated 23:59 stay in their own day, the totals match the bank's, and the reconciliation report stops flagging them by hand`.slice(0, 240);
+export const LONG_SUMMARY = [
+  'The nightly export built its window from **local** midnight, so rows written between 23:00 and 23:59 UTC fell into the next day and the totals drifted from the bank statement.',
+  '',
+  '- `window.ts` now starts the day at UTC midnight, and `nightly.ts` reads the same window for the totals <b>and</b> the rows.',
+  '- A test writes rows at 23:59 UTC &amp; checks they stay in their own day; it failed before the change and passes after it.',
+  '- The whole suite passes, 412 of 412, and typecheck is clean. Nothing outside the export was touched.',
+].join('\n').slice(0, 600);
+
+/** Seeds the long strings into the run's home: the first PR waiting for review takes the title, its last run the summary. */
+async function seedLong(): Promise<string | null> {
+  const brief = (await (await fetch(`http://127.0.0.1:${PORT}/api/brief`)).json()) as Brief;
+  const pr = brief.sections.waiting.find((i) => i.kind === 'pr' && i.refs.jobId);
+  if (!pr?.refs.jobId) return null;
+  const { openDb } = await import('../engine/db.js');
+  const db = openDb();
+  db.prepare("UPDATE jobs SET json = json_set(json, '$.title', ?) WHERE id = ?").run(LONG_TITLE, pr.refs.jobId);
+  db.prepare("UPDATE runs SET json = json_set(json, '$.summary', ?) WHERE job_id = ?").run(LONG_SUMMARY, pr.refs.jobId);
+  return pr.id;
+}
+
 async function stills(out: string, browser: Browser): Promise<void> {
   const url = pageUrl(PORT);
+  const longId = await seedLong();
   const shot = async (page: Page, name: string): Promise<void> => {
     await settle(page);
     await page.screenshot({ path: join(out, `${name}.png`) });
@@ -95,6 +123,25 @@ async function stills(out: string, browser: Browser): Promise<void> {
       b.scrollTop = 0;
     });
     await shot(page, 'brief-overview');
+    // The Brief closed again over the first still's framing: the city's own plates are back, the pins gone.
+    await toCity(page);
+    await view(page, f.screens);
+    await page.waitForTimeout(1500);
+    await shot(page, 'brief-closed');
+    // Review Focus 5: the long title and the long summary, Why open, set as text and clipped by the layout.
+    if (longId) {
+      await openBrief(page, f.screens);
+      const row = page.locator(`.sheet.brief .brief-item[data-item="${longId}"]`);
+      await row.locator('.brief-act[data-action="why"]').click();
+      await page.waitForSelector(`.sheet.brief .brief-item[data-item="${longId}"] .brief-why-summary`, { timeout: 10_000 });
+      await row.evaluate((r) => {
+        const body = r.closest('.sheet-body') as HTMLElement;
+        body.scrollTop += r.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
+      });
+      await page.mouse.move(STILL_VIEW.width - 8, STILL_VIEW.height - 8);
+      await page.waitForTimeout(1500);
+      await shot(page, 'brief-why-long');
+    } else console.log('  brief-why-long.png skipped: no PR waits for review');
     await page.close();
   }
   {

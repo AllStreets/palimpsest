@@ -186,22 +186,63 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     check(/five-hour window stands at \d+%/.test(usage) && /today's limit of 50%/.test(usage) && /seven-day window at \d+%/.test(usage), `the usage line names both windows and today's limit (${usage})`);
     for (const [key, name] of SECTIONS) {
       const sec = sheet.locator(`.brief-sec[data-sec="${key}"]`);
-      const head = ((await sec.locator('.repos-sec-name').textContent().catch(() => '')) ?? '').trim();
+      const head = ((await sec.locator('.brief-sec-name').textContent().catch(() => '')) ?? '').trim();
       const n = await sec.locator('.brief-item').count();
       check(head === name && n > 0, `"${name}" has at least one item (${n})`);
     }
     check(await runheadSaysBrief(page), 'the running head has Brief, after City, marked as the place');
-    // One ruled row per item: the sentence, then its actions in the sentence's own line.
+    // One row per item (screens redesign Task 17): a headline, its figures and its keys in one line, the whole
+    // sentence kept for the reader alone.
     const rows = await sheet.locator('.brief-item').evaluateAll((els) =>
       els.map((li) => {
         const line = li.querySelector('.brief-line');
         const acts = [...li.querySelectorAll('.brief-act')];
-        return { line: !!line && !!line.querySelector('.brief-sentence'), inLine: acts.every((a) => a.parentElement?.closest('.brief-line') === line), focusable: acts.every((a) => (a as HTMLElement).tabIndex >= 0 && /^(BUTTON|A)$/.test(a.tagName)) };
+        const sentence = li.querySelector('.brief-sentence');
+        return {
+          head: !!li.querySelector('h3.brief-head'),
+          read: !!sentence && sentence.classList.contains('os-sr') && (sentence.textContent ?? '').trim().length > 0,
+          inLine: acts.every((a) => a.parentElement?.closest('.brief-line') === line),
+          focusable: acts.every((a) => (a as HTMLElement).tabIndex >= 0 && /^(BUTTON|A)$/.test(a.tagName)),
+          undefinedOrNaN: /\bundefined\b|\bNaN\b/.test(li.textContent ?? ''),
+          emptyReadouts: li.querySelectorAll('.os-readouts:empty').length,
+        };
       }),
     );
-    check(rows.length > 0 && rows.every((r) => r.line && r.inLine && r.focusable), 'every row is a sentence with its actions as text buttons in its line, each reachable by Tab');
-    check((await sheet.locator('.brief-act.btn, .btn.brief-act').count()) === 0, 'and never a row of buttons');
+    check(rows.length > 0 && rows.every((r) => r.head && r.read && r.inLine && r.focusable), 'every row is a headline with its keys in its line, each reachable by Tab, and its sentence kept for the reader');
+    check(rows.every((r) => !r.undefinedOrNaN && r.emptyReadouts === 0), 'no row shows undefined, NaN or an empty readout box');
+    // Every key is weighed, and the one red, filled key is the grant on an open ask: one per ask, no more.
+    const keys = await sheet.locator('.brief-act').evaluateAll((els) =>
+      els.map((a) => {
+        const cs = getComputedStyle(a);
+        return { weight: (a as HTMLElement).dataset.weight ?? '', red: /255, 85, 50/.test(cs.backgroundImage) || /255, 85, 50/.test(cs.backgroundColor), underline: cs.textDecorationLine !== 'none', label: a.getAttribute('aria-label') ?? '' };
+      }),
+    );
+    const asks = itemsOf(brief).filter((i) => i.kind === 'autonomy' && i.actions.includes('grant')).length;
+    check(keys.length > 0 && keys.every((k) => /^(look|decide|spend|grant)$/.test(k.weight)), `every key has its weight (${keys.length})`);
+    check(keys.filter((k) => k.weight === 'grant').length === asks && keys.filter((k) => k.red).length === asks && keys.every((k) => !k.red || k.weight === 'grant'), `exactly one grant, filled red, per open ask (${asks})`);
+    check(keys.every((k) => !k.underline), 'no key carries a text button\'s underline');
+    const posts = await sheet.locator('.brief-act[data-action="accept"]').evaluateAll((els) => els.map((a) => ({ sum: a.querySelector('.os-sum')?.textContent ?? '', label: a.getAttribute('aria-label') ?? '' })));
+    check(posts.length > 0 && posts.every((p) => /^\d[\d.,]* cr$/.test(p.sum) && /^Post, up to [\d.,]+ credits: /.test(p.label)), `Post carries its sum on the key and in its name (${posts.map((p) => `${p.sum} / ${p.label.slice(0, 32)}`).join('; ')})`);
     check((await sheet.locator('img, iframe, script').count()) === 0, 'the brief is set as text only');
+    // The pins (screens redesign Task 17): numbered pins on the towers of what waits, the city's own plates gone,
+    // and the lock on the autonomy ask while one is open, else on the first target.
+    await page.waitForTimeout(900);
+    const pinsShown = await page.evaluate(() => {
+      const root = document.querySelector<HTMLElement>('.os-pins');
+      const plates = document.querySelector('.plates');
+      return {
+        shown: !!root && !root.hidden,
+        numbered: document.querySelectorAll('.os-pin.on:not(.quiet)').length,
+        plates: plates ? getComputedStyle(plates).opacity : 'none',
+        lockGrant: !!document.querySelector('.os-lock.on.grant'),
+        lockOn: !!document.querySelector('.os-lock.on'),
+      };
+    });
+    check(pinsShown.shown && pinsShown.numbered > 0 && pinsShown.plates === '0', `the brief pins what waits on the city's towers, its plates gone (${JSON.stringify(pinsShown)})`);
+    check(pinsShown.lockOn && pinsShown.lockGrant === itemsOf(brief).some((i) => i.kind === 'autonomy' && i.actions.includes('grant') && !!i.repo), `the lock stands on the autonomy ask (${JSON.stringify(pinsShown)})`);
+    const numbers = await sheet.locator('.brief-sec[data-sec="waiting"] .brief-list:not(.brief-handled) .brief-des').evaluateAll((els) => els.map((e) => e.textContent ?? ''));
+    const numbered = numbers.filter((n) => n !== '');
+    check(numbered.length > 0 && numbered.every((n, i) => n === String(i + 1).padStart(2, '0')), `the waiting rows with a district are numbered in list order (${numbers.join(' ')})`);
     await page.waitForTimeout(500);
     await page.screenshot({ path: join(shots, 'brief.png') });
 
@@ -232,7 +273,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       const row = sheet.locator(`.brief-item[data-item="${toAccept.id}"]`);
       mean(toAccept.id, 'accept');
       await row.locator('.brief-act[data-action="accept"]').click();
-      const said = await within(page, 5000, async () => /^Posted as a job, \d{1,2}:\d\d$/.test(((await row.locator('.brief-acted').textContent()) ?? '').trim()));
+      const said = await within(page, 5000, async () => /^Posted \d{2}:\d{2}$/.test(((await row.locator('.brief-acted').textContent()) ?? '').trim()));
       check(said, `Post as a job moves the proposal and the row says so (${((await row.locator('.brief-acted').textContent()) ?? '').trim()})`);
       const job = (await api<{ job: Job }>(page, `/api/jobs/${toAccept.refs.jobId}`)).job;
       check(job.status !== 'proposed' && job.status !== 'withdrawn', `the job is posted (${job.status})`);
@@ -260,7 +301,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       const row = sheet.locator(`.brief-item[data-item="${failed.id}"]`);
       mean(failed.id, 'dismiss');
       await row.locator('.brief-act[data-action="dismiss"]').click();
-      check(await within(page, 5000, async () => /^Dismissed, \d{1,2}:\d\d$/.test(((await row.locator('.brief-acted').textContent()) ?? '').trim())), 'Dismiss marks the failed job in place');
+      check(await within(page, 5000, async () => /^Dismissed \d{2}:\d{2}$/.test(((await row.locator('.brief-acted').textContent()) ?? '').trim())), 'Dismiss marks the failed job in place');
       check((await row.getAttribute('data-acted')) === 'dismiss', 'and quiets the row');
       const act = query({ kind: 'brief.action' }).filter((e) => (e.data as { itemId?: string }).itemId === failed.id).at(-1);
       check((act?.data as { taught?: boolean; action?: string } | undefined)?.taught === true && (act?.data as { action?: string }).action === 'dismiss', 'and records it as taught');
@@ -281,7 +322,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     await go(second, '#/brief');
     const sheet2 = second.locator('.sheet.brief');
     await within(second, 8000, async () => (await sheet2.locator('.brief-item').count()) > 0);
-    check((await sheet2.getAttribute('data-first')) === 'false' && /opened it once already today/.test((await sheet2.locator('.brief-since').textContent()) ?? ''), `and its brief says it is not the first open (${(await sheet2.locator('.brief-since').textContent()) ?? ''})`);
+    check((await sheet2.getAttribute('data-first')) === 'false' && /, second look$/.test((await sheet2.locator('.brief-since .os-sr').textContent()) ?? ''), `and its brief says it is not the first open (${(await sheet2.locator('.brief-since .os-sr').textContent()) ?? ''})`);
     const ids2 = await sheet2.locator('.brief-item').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.item ?? ''));
     check(JSON.stringify([...ids2].sort()) === JSON.stringify([...shownIds].sort()), `with the same items (${ids2.length} and ${shownIds.length})`);
     const tierItem = itemsOf(brief).find((i) => i.kind === 'proposal' && i.actions.includes('tier') && i.id !== toAccept?.id);
@@ -292,9 +333,9 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       mean(tierItem.id, 'tier', { tier: want });
       await row.locator(`.brief-tier [role="radio"][data-tier="${want}"]`).click();
       const t0 = Date.now();
-      const seen = await within(second, 2000, async () => new RegExp(`^Tier set to ${want}, `).test(((await sheet2.locator(`.brief-item[data-item="${tierItem.id}"] .brief-acted`).textContent()) ?? '').trim()));
+      const seen = await within(second, 2000, async () => new RegExp(`^Tier ${want} \\d{2}:\\d{2}$`).test(((await sheet2.locator(`.brief-item[data-item="${tierItem.id}"] .brief-acted`).textContent()) ?? '').trim()));
       check(seen, `the second window shows the first window's action within 2 s (${Date.now() - t0} ms)`);
-      check(await within(page, 3000, async () => new RegExp(`^Tier set to ${want}, `).test(((await row.locator('.brief-acted').textContent()) ?? '').trim())), 'and the first says it too');
+      check(await within(page, 3000, async () => new RegExp(`^Tier ${want} \\d{2}:\\d{2}$`).test(((await row.locator('.brief-acted').textContent()) ?? '').trim())), 'and the first says it too');
     }
     check(errors2.length === 0, `the second window has no console errors${errors2.length ? `: ${errors2.join(' | ')}` : ''}`);
     await second.close();
@@ -314,13 +355,13 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await input.fill('60');
       await page.waitForTimeout(250);
       await page.screenshot({ path: join(shots, 'brief-cap.png') });
-      // Scrolled, the title stands on an opaque head, ruled off from the rows passing under it.
+      // Scrolled, the title stands on the near plate, over the rows passing under it.
       const head = await sheet.locator('.sheet-head').evaluate((h) => {
         const cs = getComputedStyle(h);
-        const alpha = /rgba\([^)]*,\s*([\d.]+)\)/.exec(cs.backgroundColor)?.[1];
-        return { bg: cs.backgroundColor, opaque: cs.backgroundColor.startsWith('rgb(') || alpha === '1', ruled: parseFloat(cs.borderBottomWidth) >= 1, scrolled: (h.closest('.sheet') as HTMLElement).dataset.scrolled };
+        const body = getComputedStyle(h.parentElement!.querySelector('.sheet-body')!);
+        return { plate: /gradient/.test(cs.backgroundImage), over: Number(cs.zIndex) > (Number(body.zIndex) || 0), scrolled: (h.closest('.sheet') as HTMLElement).dataset.scrolled };
       });
-      check(head.opaque && head.ruled && head.scrolled === 'true', `scrolled, the head is opaque and ruled off from the rows (${JSON.stringify(head)})`);
+      check(head.plate && head.over && head.scrolled === 'true', `scrolled, the head is a plate standing over the rows (${JSON.stringify(head)})`);
       // Escape in the field puts it away and stays on the brief.
       await page.keyboard.press('Escape');
       check(await within(page, 2000, async () => (await input.count()) === 0), 'Escape puts the field away');
@@ -331,7 +372,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await input.fill('60');
       mean('usage', 'cap', { pct: 60 });
       await page.keyboard.press('Enter');
-      check(await within(page, 5000, async () => /^Today's limit set to 60% by you, /.test(((await usageRow.locator('.brief-acted').textContent()) ?? '').trim())), `Enter sets today's limit to 60%, named as his (${((await usageRow.locator('.brief-acted').textContent()) ?? '').trim()})`);
+      check(await within(page, 5000, async () => /^Limit 60% \d{2}:\d{2}$/.test(((await usageRow.locator('.brief-acted').textContent()) ?? '').trim())), `Enter sets today's limit to 60%, named as his (${((await usageRow.locator('.brief-acted').textContent()) ?? '').trim()})`);
       check(await within(page, 3000, async () => /today's limit of 60%, set by you until midnight/.test((await sheet.locator('.brief-usage').textContent()) ?? '')), 'the usage line says so');
       check((await usageRow.locator('.brief-act[data-action="cap"]').count()) === 1, 'and he can change it again from here while it holds');
       await go(page, '#/treasury');
@@ -345,7 +386,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await usageRow.locator('input.brief-cap-input').fill('50');
       mean('usage', 'cap', { pct: 50 });
       await usageRow.locator('.brief-cap-set').click();
-      check(await within(page, 5000, async () => /^Today's limit set to 50% by you, /.test(((await usageRow.locator('.brief-acted').textContent()) ?? '').trim())), 'and lowers it again from the brief');
+      check(await within(page, 5000, async () => /^Limit 50% \d{2}:\d{2}$/.test(((await usageRow.locator('.brief-acted').textContent()) ?? '').trim())), 'and lowers it again from the brief');
     }
 
     // ------------------------------------------------------------ the tour row (from the engine's own Monday brief)
@@ -371,8 +412,8 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await tourPage.goto(`${new URL(page.url()).origin}/?debug#/brief`);
       const row = tourPage.locator(`.brief-item[data-item="${tourItem.id}"]`);
       check(await within(tourPage, 10_000, async () => (await row.count()) === 1), 'on a Monday the brief offers the week\'s tour');
-      const text = ((await row.textContent()) ?? '').trim();
-      check(new RegExp(`${mondayBrief.tour.stops} stops`).test(text) && (await row.locator('.brief-act[data-action="tour"]').textContent()) === 'Walk through the week', `with its stop count and "Walk through the week" (${text.slice(0, 90)})`);
+      const outs = await row.locator('.os-readout').evaluateAll((els) => els.map((e) => [e.querySelector('.os-readout-v')?.textContent ?? '', e.querySelector('.os-readout-k')?.textContent ?? ''].join(' ')));
+      check(outs.includes(`${mondayBrief.tour.stops} stops`) && ((await row.locator('.brief-act[data-action="tour"] .brief-act-label').textContent()) ?? '') === 'Walk the week', `with its stop count and "Walk the week" (${outs.join(', ')})`);
       await row.evaluate((r) => r.scrollIntoView({ block: 'center' }));
       await tourPage.waitForTimeout(400);
       await tourPage.screenshot({ path: join(shots, 'brief-tour.png') });
@@ -436,6 +477,25 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       const want = JSON.parse(readFileSync(ACT_CALLS, 'utf8')) as ActCall[];
       check(JSON.stringify(shape) === JSON.stringify(want), `the act calls are main's contract (${shape.length} against ${want.length})`);
     }
+
+    // ------------------------------------------------------------ five opens and closes in two seconds (Review Focus 3)
+    await go(page, '#/');
+    await page.waitForSelector('body[data-route="city"]', { timeout: 8000 });
+    await page.waitForTimeout(700);
+    const hooks = (): Promise<number> => page.evaluate(() => (window as unknown as { __palimpsest: { frameHooks(): number } }).__palimpsest.frameHooks());
+    const hooks0 = await hooks();
+    for (let i = 0; i < 5; i++) {
+      await go(page, '#/brief');
+      await page.waitForTimeout(200);
+      await go(page, '#/');
+      await page.waitForTimeout(200);
+    }
+    await page.waitForTimeout(700);
+    const after = await page.evaluate(() => {
+      const plates = document.querySelector('.plates');
+      return { pins: document.querySelectorAll('.os-pins:not([hidden]), .os-pin.on, .os-lock.on').length, plates: plates ? getComputedStyle(plates).opacity : 'none', flag: document.documentElement.dataset.osPins ?? '' };
+    });
+    check((await hooks()) === hooks0 && after.pins === 0 && after.plates === '1' && after.flag === '', `five opens and closes of the brief in two seconds leave no hook, no pin and the plates whole (${await hooks()} hooks against ${hooks0}, ${JSON.stringify(after)})`);
 
     // ------------------------------------------------------------ T in the city: the week's tour walks
     await page.locator('#city canvas').focus();

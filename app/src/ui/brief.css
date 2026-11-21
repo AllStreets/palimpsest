@@ -1,0 +1,718 @@
+/*
+ * The Brief on the screens' layer (screens redesign Task 17). The panel, the
+ * keys, the readouts and the pins are drawn by the os layer (os/index.css);
+ * this sheet lays out the Brief's own parts only, every colour from the
+ * --os-* tokens and black for shadows. Only the two faces: Big Shoulders for
+ * names and headlines, Azeret Mono for figures and the reader's lines.
+ *
+ * Red belongs to the autonomy ask alone: its brackets, its designator, its
+ * tag, and its grant key (control.css), the one red, filled object here.
+ * Motion is transform and opacity only, and still under reduced motion.
+ */
+
+.sheet.brief [hidden] {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------- the head: the near plate */
+
+.sheet.brief .sheet-title {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-shadow: 0 0 22px rgba(var(--os-amber-rgb), 0.18);
+}
+.brief-since {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--os-ice);
+}
+/* The live mark: a lit amber square before the reading. */
+.brief-since::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--os-amber);
+  box-shadow: 0 0 8px rgba(var(--os-amber-rgb), 0.8);
+}
+.brief-readouts {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px 28px;
+  margin-top: 20px;
+}
+.brief-figs {
+  display: flex;
+  flex: none;
+  gap: clamp(18px, 2.2vw, 30px);
+}
+.brief-figs .os-figure-v {
+  font-size: 38px;
+}
+.brief-ranges {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  flex: 0 1 210px;
+  min-width: 150px;
+  padding: 2px 0;
+  color: inherit;
+  text-decoration: none;
+}
+.brief-ranges .os-range {
+  min-width: 0;
+  gap: 5px;
+}
+.brief-ranges .os-label {
+  font-size: 13px;
+}
+.brief-ranges .os-range-fig {
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- the list */
+
+.brief-empty {
+  margin: 26px 0 0;
+  font-family: var(--os-display);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--os-ink2);
+}
+.brief-trouble {
+  margin: 14px 0 0;
+  font-size: 12px;
+  color: var(--os-fail);
+}
+.brief-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 26px 0 6px;
+}
+.brief-sec:first-of-type .brief-sec-head {
+  padding-top: 8px;
+}
+.brief-sec-name {
+  font-family: var(--os-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--os-amber);
+}
+.brief-sec:not([data-sec='waiting']) .brief-sec-name {
+  color: var(--os-ink2);
+}
+.brief-sec-head::after {
+  content: '';
+  order: 1;
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, rgba(var(--os-amber-rgb), 0.4), rgba(var(--os-amber-rgb), 0.06));
+}
+.brief-sec-count {
+  order: 2;
+  font-size: 12px;
+  color: var(--os-dim);
+}
+.brief-key {
+  max-width: 62ch;
+  margin: 0 0 4px 44px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--os-dim);
+}
+.brief-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---------------------------------------------------------------- a row */
+
+.brief-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  padding: 14px 14px 14px 0;
+  border-bottom: 1px solid rgba(var(--os-amber-rgb), 0.09);
+}
+.brief-item > * {
+  grid-column: 2;
+  min-width: 0;
+}
+.brief-item > .brief-des {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+}
+.brief-item[aria-busy='true'] {
+  opacity: 0.6;
+}
+
+/* The designator: the target's number in four corner ticks, in its state's ink; else a short hairline. */
+.brief-des {
+  --ink: var(--os-amber);
+  align-self: start;
+  justify-self: start;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 20px;
+  margin-top: 1px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink);
+  background:
+    linear-gradient(var(--ink), var(--ink)) top left / 5px 1px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) top left / 1px 5px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) top right / 5px 1px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) top right / 1px 5px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) bottom left / 5px 1px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) bottom left / 1px 5px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) bottom right / 5px 1px no-repeat,
+    linear-gradient(var(--ink), var(--ink)) bottom right / 1px 5px no-repeat;
+}
+.brief-des:empty {
+  width: 12px;
+  height: 1px;
+  margin: 10px 0 0 8px;
+  background: var(--ink);
+  opacity: 0.55;
+}
+.brief-item[data-tone='ok'] .brief-des {
+  --ink: var(--os-ok);
+}
+.brief-item[data-tone='warn'] .brief-des {
+  --ink: var(--os-warn);
+}
+.brief-item[data-tone='fail'] .brief-des {
+  --ink: var(--os-fail);
+}
+.brief-item[data-tone='quiet'] .brief-des {
+  --ink: var(--os-dim);
+}
+
+/* The row the lock is on: its designator lit, a warm wash, and a lit bar at the rail where the leader leaves. */
+.brief-item.is-active {
+  background: linear-gradient(to right, rgba(var(--os-amber-rgb), 0.075), rgba(var(--os-amber-rgb), 0.02) 80%, rgba(var(--os-amber-rgb), 0.08));
+}
+.brief-item.is-active .brief-des:not(:empty) {
+  color: var(--os-ground);
+  background-color: var(--ink);
+  box-shadow: 0 0 14px rgba(var(--os-amber-rgb), 0.5);
+}
+.brief-item.is-active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -34px;
+  width: 24px;
+  background: linear-gradient(to right, transparent, rgba(var(--os-amber-rgb), 0.12));
+  border-right: 2px solid var(--os-amber);
+  pointer-events: none;
+}
+
+/* Where and when, over the headline. */
+.brief-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 4px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.brief-where {
+  color: var(--os-amber);
+}
+.brief-when {
+  color: var(--os-ice);
+}
+.brief-head {
+  margin: 0;
+  font-family: var(--os-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+  color: var(--os-ink);
+  overflow-wrap: anywhere;
+  /* A long title is clipped by the layout at three lines, never by the window. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+/* The headline, its figures, and the keys at the right: one line, wrapping keys to the right. */
+.brief-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
+  margin-top: 9px;
+}
+.brief-line > .os-readouts {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.brief-acts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px 12px;
+  margin-left: auto;
+  /* Room for the heavier reticles standing out past their keys. */
+  padding: 4px 4px 4px 0;
+}
+.brief-act .os-key-label {
+  display: inline-block;
+}
+.brief-act.os-key[data-weight] {
+  font-size: 15px;
+}
+.brief-act.os-key[data-weight='look'] {
+  padding: 0 6px;
+}
+.brief-acted {
+  font-size: 11px;
+  color: var(--os-ok);
+  white-space: nowrap;
+  outline: none;
+}
+.brief-item[data-acted='dismiss'] .brief-acted,
+.brief-item[data-acted='decline'] .brief-acted {
+  color: var(--os-dim);
+}
+.brief-claims {
+  margin-top: 10px;
+  max-width: 420px;
+}
+.brief-quiet {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--os-dim);
+  outline: none;
+}
+.brief-error {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--os-fail);
+}
+
+/* ---------------------------------------------------------------- the autonomy ask: raised, in the lock's red */
+
+.brief-item.k-autonomy {
+  margin: 14px 0 18px;
+  padding: 20px 22px 18px 0;
+  border: none;
+  background:
+    linear-gradient(to right, rgba(var(--os-red-rgb), 0.12), rgba(var(--os-red-rgb), 0.035) 70%, rgba(var(--os-red-rgb), 0.08)),
+    linear-gradient(rgba(var(--os-ground-rgb), 0.85), rgba(var(--os-ground-rgb), 0.85));
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--os-red-rgb), 0.3),
+    inset 0 1px 0 rgba(var(--os-red-rgb), 0.45),
+    0 24px 44px -16px rgba(0, 0, 0, 0.95),
+    0 0 46px rgba(var(--os-red-rgb), 0.08);
+}
+/* The lock's brackets, top and foot, standing off the ask; they close in once as the Brief opens. */
+.brief-item.k-autonomy::before {
+  --arm: 22px;
+  --th: 2px;
+  content: '';
+  position: absolute;
+  inset: -7px;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--os-red), var(--os-red)) top left / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) top left / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) top right / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) top right / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) bottom left / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) bottom left / var(--th) var(--arm) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) bottom right / var(--arm) var(--th) no-repeat,
+    linear-gradient(var(--os-red), var(--os-red)) bottom right / var(--th) var(--arm) no-repeat;
+  filter: drop-shadow(0 0 5px rgba(var(--os-red-rgb), 0.7));
+  animation: brief-acquire 0.9s var(--os-ease) 0.3s both;
+}
+@keyframes brief-acquire {
+  0% {
+    opacity: 0;
+    transform: scale(1.08, 1.3);
+  }
+  45% {
+    opacity: 1;
+  }
+  75% {
+    transform: scale(0.99, 0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+.brief-item.k-autonomy.is-active::after {
+  display: none;
+}
+.brief-item.k-autonomy .brief-des {
+  --ink: var(--os-red);
+  margin-left: 10px;
+}
+.brief-item.k-autonomy.is-active .brief-des:not(:empty) {
+  color: var(--os-red);
+  background-color: transparent;
+  box-shadow: 0 0 12px rgba(var(--os-red-rgb), 0.45), inset 0 0 8px rgba(var(--os-red-rgb), 0.35);
+}
+.brief-grant-tag {
+  margin-left: auto;
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--os-red);
+  box-shadow: inset 0 0 0 1px rgba(var(--os-red-rgb), 0.6);
+}
+.brief-item.k-autonomy .brief-head {
+  font-size: 27px;
+  line-height: 1.06;
+}
+/* The ask's evidence on one line: every repo's long run, then the short run here, each count beside its own strip;
+   where the panel is narrow the run here takes the next line. */
+.brief-scales.os-agree {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 34px;
+  margin-top: 16px;
+}
+.brief-scales .os-agree-row {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 12px;
+  row-gap: 4px;
+  align-items: center;
+}
+.brief-scales .os-agree-row > .os-agree-v {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.brief-scales .os-agree-row > .os-ticks {
+  grid-column: 2;
+  grid-row: 1;
+  height: 22px;
+  margin: 0;
+}
+.brief-scales .os-agree-row > .os-label {
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  font-size: 13px;
+}
+.brief-scales .os-agree-v {
+  font-size: 30px;
+  color: var(--os-amber);
+  text-shadow: 0 0 18px rgba(var(--os-amber-rgb), 0.4);
+}
+.brief-item.k-autonomy .brief-line {
+  margin-top: 14px;
+}
+
+/* ---------------------------------------------------------------- handled today, and the other ledgers */
+
+.brief-handled-head {
+  margin: 20px 0 2px 44px;
+  font-family: var(--os-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--os-dim);
+}
+.brief-handled .brief-item,
+.brief-sec:not([data-sec='waiting']) .brief-item {
+  padding: 11px 14px 11px 0;
+}
+.brief-handled .brief-head,
+.brief-sec:not([data-sec='waiting']) .brief-head {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--os-ink2);
+}
+.brief-handled .brief-line > .os-readouts {
+  display: none;
+}
+/*
+ * A settled row, and a row with no figures, is one line: where and the headline at the left, its keys and what he
+ * did at the right.
+ */
+.brief-handled .brief-item,
+.brief-item.is-bare {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+}
+.brief-handled .brief-item > .brief-line,
+.brief-item.is-bare > .brief-line {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: end;
+  margin-top: 0;
+  padding-left: 16px;
+}
+.brief-handled .brief-acts,
+.brief-item.is-bare .brief-acts {
+  padding: 0 4px 0 0;
+}
+.brief-item[data-acted='dismiss'] .brief-head {
+  color: var(--os-dim);
+  text-decoration: line-through;
+  text-decoration-color: rgba(var(--os-amber-rgb), 0.4);
+}
+
+/* ---------------------------------------------------------------- the tier, and today's limit */
+
+.brief-tier {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.sheet.brief .brief-tier .prop-tier-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  background: rgba(var(--os-amber-rgb), 0.04);
+  box-shadow: inset 0 0 0 1px rgba(var(--os-amber-rgb), 0.25);
+  font-family: var(--os-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--os-ink2);
+}
+.sheet.brief .brief-tier .prop-tier-value {
+  font-family: var(--os-mono);
+  font-size: 11px;
+  color: var(--os-dim);
+}
+.sheet.brief .brief-tier .prop-tier-choice[aria-checked='true'] {
+  background: rgba(var(--os-amber-rgb), 0.16);
+  box-shadow: inset 0 0 0 1px var(--os-amber);
+  color: var(--os-amber-hi);
+}
+.sheet.brief .brief-tier .prop-tier-choice[aria-checked='true'] .prop-tier-value {
+  color: var(--os-ink);
+}
+.sheet.brief .brief-tier .prop-tier-choice::after {
+  display: none;
+}
+.sheet.brief .brief-tier .prop-tier-choice:focus-visible {
+  outline: none;
+}
+.sheet.brief .brief-tier .prop-tier-choice.os-focus:focus-visible::after {
+  display: block;
+}
+.brief-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--os-ink2);
+}
+.brief-cap-label {
+  font-family: var(--os-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--os-ink);
+}
+.sheet.brief .brief-cap-input {
+  all: unset;
+  box-sizing: border-box;
+  width: 4ch;
+  padding: 0 2px 2px;
+  border-bottom: 1px solid var(--os-amber);
+  font-family: var(--os-mono);
+  font-size: 17px;
+  text-align: right;
+  color: var(--os-amber-hi);
+  -moz-appearance: textfield;
+}
+.brief-cap-input::-webkit-outer-spin-button,
+.brief-cap-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.brief-cap-unit {
+  margin-left: -8px;
+  color: var(--os-ink);
+}
+.brief-cap-until {
+  color: var(--os-dim);
+}
+.brief-cap-note {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--os-dim);
+}
+
+/* ---------------------------------------------------------------- Why: the reason, unfolded under the row */
+
+.brief-why {
+  max-width: 68ch;
+  margin-top: 12px;
+  padding: 8px 0 4px 14px;
+  border-left: 1px solid rgba(var(--os-ice-rgb), 0.45);
+  font-family: var(--os-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--os-ink2);
+}
+/* Every part the reason borrows from other pages speaks in the Brief's faces. */
+.brief-why :where(p, blockquote, cite, li, span, a, strong, em, code) {
+  font-family: inherit;
+  font-style: normal;
+}
+.brief-why-text {
+  margin: 6px 0 0;
+}
+.brief-why-text:first-child {
+  margin-top: 0;
+}
+.brief-why-text.reading {
+  color: var(--os-dim);
+}
+.sheet.brief .why-claim {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.sheet.brief .why-claim-text {
+  margin: 0;
+  font-family: var(--os-display);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.22;
+  color: var(--os-ink);
+}
+.sheet.brief .why-claim-source {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--os-dim);
+}
+.sheet.brief .why-verdict {
+  max-width: none;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--os-ink2);
+}
+.sheet.brief .why-verdict .verdict {
+  margin-right: 6px;
+  color: var(--os-ink);
+}
+.sheet.brief .why-verdict .verdict.v-struck {
+  color: var(--os-fail);
+}
+.sheet.brief .why-verdict .verdict-word {
+  font-size: 12px;
+}
+.sheet.brief .why-evidence {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sheet.brief .why-ev {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+.sheet.brief .why-ev .claim-evidence,
+.sheet.brief .why-ev .claim-ref {
+  color: var(--os-ice);
+  text-decoration: none;
+}
+.sheet.brief .why-ev-note {
+  color: var(--os-dim);
+}
+/* A run's summary: its own dark window, revealed by one sweep, never typed. */
+.brief-why-summary {
+  position: relative;
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  overflow: hidden;
+  background: rgba(var(--os-ground-rgb), 0.6);
+  box-shadow: inset 1px 0 0 rgba(var(--os-amber-rgb), 0.5);
+  color: var(--os-ink2);
+  overflow-wrap: anywhere;
+}
+.brief-why-summary > * + * {
+  margin-top: 6px;
+}
+.brief-why-summary p {
+  margin: 0;
+}
+.brief-why-summary strong,
+.brief-why-summary em {
+  font-weight: 600;
+  color: var(--os-ink);
+}
+.brief-why-summary .md-code {
+  font-size: 11.5px;
+  color: var(--os-amber-hi);
+}
+.brief-why-summary .md-list {
+  margin: 0;
+  padding-left: 16px;
+}
+.brief-sweep {
+  animation: brief-sweep var(--os-slow) var(--os-ease) both;
+}
+@keyframes brief-sweep {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.brief-why-more {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+}
+.sheet.brief .brief-why-link {
+  color: var(--os-ice);
+  text-decoration: none;
+  box-shadow: inset 0 -1px 0 rgba(var(--os-ice-rgb), 0.35);
+}
+.sheet.brief .brief-why-link:hover {
+  color: var(--os-ink);
+}
+.sheet.brief .brief-why a:focus-visible {
+  outline: 1.5px solid var(--os-amber);
+  outline-offset: 3px;
+}
+
+/* ---------------------------------------------------------------- still */
+
+@media (prefers-reduced-motion: reduce) {
+  .brief-item.k-autonomy::before,
+  .brief-sweep {
+    animation: none;
+  }
+}
+.brief-handled .brief-item > :is(.brief-why, .brief-quiet, .brief-error, .brief-tier, .brief-cap),
+.brief-item.is-bare > :is(.brief-why, .brief-quiet, .brief-error, .brief-tier, .brief-cap) {
+  grid-column: 2 / span 2;
+}

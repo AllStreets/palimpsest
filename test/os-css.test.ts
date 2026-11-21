@@ -14,7 +14,9 @@ const UI = join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'src', 'ui
 const OS = join(UI, 'os');
 
 const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? walk(join(dir, f)) : [join(dir, f)]));
-const files = walk(OS).filter((f) => f.endsWith('.css') || f.endsWith('.ts'));
+/** The os layer, and the Brief's own sheet built on it (Task 17), which holds to the same rules. */
+const BRIEF_CSS = join(UI, 'brief.css');
+const files = [...walk(OS).filter((f) => f.endsWith('.css') || f.endsWith('.ts')), BRIEF_CSS];
 const read = (f: string): string => readFileSync(f, 'utf8');
 const name = (f: string): string => relative(UI, f);
 const css = files.filter((f) => f.endsWith('.css'));
@@ -313,4 +315,32 @@ test('the terminal stands full height in the mono face, and index.css loads it',
   // Made today: no glow on the words, no scanlines.
   assert.ok(!/text-shadow|repeating-linear-gradient/.test(sheet), 'terminal.css draws a CRT glow or scanlines');
   assert.match(uncomment(read(join(OS, 'index.css'))), /@import '\.\/terminal\.css';/);
+});
+
+// ---------------------------------------------------------------- the Brief's own sheet (Task 17)
+
+test("the Brief's sheet is linted with the os layer", () => {
+  assert.ok(css.includes(BRIEF_CSS), 'brief.css is in the motion and reduced-motion lints');
+});
+
+test("the Brief's sheet takes every colour from the tokens and only the two faces", () => {
+  const sheet = uncomment(read(BRIEF_CSS));
+  for (const [sel, body] of rules(sheet)) {
+    assert.ok(!/#[0-9a-f]{3,8}\b/i.test(body), `brief.css ${sel} sets a colour by hex`);
+    for (const m of body.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g)) {
+      assert.deepEqual([m[1], m[2], m[3]], ['0', '0', '0'], `brief.css ${sel} sets rgb(${m[1]}, ${m[2]}, ${m[3]}) by hand`);
+    }
+    for (const m of body.matchAll(/var\(--([\w-]+)/g)) assert.ok(m[1].startsWith('os-') || ['ink', 'arm', 'th'].includes(m[1]), `brief.css ${sel} reads --${m[1]}, not a token`);
+    assert.ok(!/Plex|Newsreader|var\(--(sans|serif|mono)\)/.test(body), `brief.css ${sel} names an old face`);
+  }
+});
+
+test("red on the Brief is the autonomy ask's alone", () => {
+  const sheet = uncomment(read(BRIEF_CSS));
+  const all = rules(sheet).filter(([sel]) => !/^\s*(from|to|\d+%)/.test(sel));
+  for (const [sel, body] of all) {
+    if (!RED.test(body)) continue;
+    for (const s of selectors(sel)) assert.ok(/k-autonomy|brief-grant-tag/.test(s), `brief.css ${s} is red but not the autonomy ask`);
+  }
+  assert.ok(all.some(([sel, body]) => sel.includes('k-autonomy') && RED.test(body)), 'the ask is not in red brackets');
 });

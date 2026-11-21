@@ -4652,6 +4652,7 @@ async function main(): Promise<void> {
     // UI_ONLY=campus: the university's checks and shots on high, then on medium after the step down (Task 34's rounds).
     // UI_ONLY=school: the school towers' checks and shots on high, then on medium (Task 38's rounds).
     // UI_ONLY=schoolscreen: the school screen's checks and shots on the economy, then on the empty home (Task 30's rounds).
+    // UI_ONLY=brief: the Brief's checks and its act-call contract, then autonomy in it (screens redesign Task 17).
     // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
@@ -4671,7 +4672,7 @@ async function main(): Promise<void> {
     // UI_ONLY=perfpass: the home guard on both tiers and a step down to medium in the middle of a ride (Phase 5 Task 15).
     // UI_ONLY=textures: the first city frame within 4 s over five cold loads, and SSIM 0.98 against the original textures (UI_TEXTURE_BASE) at four views (Task 14).
     const brandOnly = process.env.UI_ONLY === 'brand';
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates', 'perfpass'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['brief', 'spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates', 'perfpass'].includes(process.env.UI_ONLY ?? '');
     if (brandOnly && ready) {
       await brandChecks(page);
       // The every-screen and palette checks expect firms and agents (the firms screen's rows, the palette's tally and firm), so the economy is laid over the city first, as the full run has it by then.
@@ -4693,6 +4694,14 @@ async function main(): Promise<void> {
         const refused = await schoolSettingsChecks(page, check, SHOTS, DIST);
         for (let i = 0; i < refused; i++) {
           const k = consoleErrors.findIndex((t) => /status of 400/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
+      } else if (process.env.UI_ONLY === 'brief') {
+        // The Brief alone (screens redesign Task 17's rounds): its checks and the act-call contract, then autonomy in it.
+        await briefChecks(page, check, SHOTS);
+        const briefRefusals = await autonomyChecks(page, check, SHOTS);
+        for (let i = 0; i < briefRefusals; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
           if (k >= 0) consoleErrors.splice(k, 1);
         }
       } else if (process.env.UI_ONLY === 'autonomy') {

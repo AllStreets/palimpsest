@@ -324,7 +324,8 @@ async function keyFocus(page: Page, sel: string): Promise<boolean> {
   await el.focus();
   await page.keyboard.press('Shift+Tab');
   await page.keyboard.press('Tab');
-  return el.evaluate((e) => document.activeElement === e && e.matches(':focus-visible') && getComputedStyle(e).outlineStyle !== 'none');
+  // Drawn as an outline, or as the screens' focus ring (os/tokens.css .os-focus, its ::after).
+  return el.evaluate((e) => document.activeElement === e && e.matches(':focus-visible') && (getComputedStyle(e).outlineStyle !== 'none' || (e.classList.contains('os-focus') && getComputedStyle(e, '::after').content !== 'none')));
 }
 
 /** Every action in `scope` is a button or a link in the tab order (none taken out of it). */
@@ -389,7 +390,7 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     const sentence = ((await row.locator('.brief-sentence').textContent()) ?? '').trim();
     check(/README gap proposals/.test(sentence) && !/propose:readme-gap/.test(sentence), `its sentence names the kind in words (${sentence.slice(0, 120)})`);
     const labels = await row.locator('.brief-act').allTextContents();
-    check(labels.includes('Let the city do this on its own here') && labels.includes('Not yet'), `it offers the grant and Not yet (${labels.join(', ')})`);
+    check(labels.includes('Let it act here') && labels.includes('Not yet'), `it offers the grant and Not yet (${labels.join(', ')})`);
     await row.scrollIntoViewIfNeeded();
     await page.waitForTimeout(350);
     await page.screenshot({ path: join(shots, 'brief-autonomy.png') });
@@ -400,7 +401,7 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     check(await keyFocus(page, `.brief-item[data-item="${itemId}"] .brief-act[data-action="grant"]`), 'the grant takes the keyboard’s focus, visibly');
     await page.keyboard.press('Enter');
     const said = async (sel: string) => ((await row.locator(sel).textContent({ timeout: 500 }).catch(() => '')) ?? '').trim();
-    check(await within(page, 8000, async () => /^Granted, \d+:\d\d$/.test(await said('.brief-acted'))), `the row says it was granted (${(await said('.brief-acted')) || (await said('.brief-error')) || `focus on ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120))}`})`);
+    check(await within(page, 8000, async () => /^Granted \d{2}:\d{2}$/.test(await said('.brief-acted'))), `the row says it was granted (${(await said('.brief-acted')) || (await said('.brief-error')) || `focus on ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120))}`})`);
     check((await row.locator('.brief-act[data-action="grant"]').count()) === 0, 'and offers the grant no longer');
     check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'granted'), 'the district page in the other window shows it granted, live');
     check(/^granted \d+ [A-Z][a-z]+, none since$/.test(((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()), `in a ledger's words (${((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()})`);

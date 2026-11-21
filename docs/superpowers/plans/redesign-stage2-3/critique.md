@@ -313,3 +313,90 @@ The six primitives read as one language: Big Shoulders for names and headlines, 
 - The deferred minors from Tasks 1 to 12 stay open (motion lint scope, os-stills out dir before home check, stills dated by new Date(), kind list duplicated, scanOnce timer, lean on a still pointer, permanent will-change on panel panes, fixed 18 stream columns, the --os-sheen type mix, disabled hover wash, label capitalisation, districts() allocation, pin lift layout rewrites, T12 hold race and stale text).
 - The terminal gate has no direct draw counter; it relies on the ui-test held flag.
 - Branches redesign-brief-a and redesign-brief-b, with their worktrees, are not yet deleted (the deletion was blocked by the permission classifier).
+
+## Task 17: the Brief on the shared layer
+
+Stills: `stills/task-17/`, shot with `tools/redesign-brief.ts stills` on the sample city and the CAPTURE_ECONOMY economy (port 4789, a scratch home, the GPU lock held for every shoot). Eight stills a round: `brief`, `brief-scrolled`, `brief-autonomy`, `brief-overview`, `brief-closed`, `brief-1280`, `brief-reduced-motion` and `brief-why-long`. The last is Review Focus 5: the PR waiting for review is given a 240-character title with `<b>` and `&amp;` in it and a 600-character markdown summary, seeded into the scratch home, and Why is opened on it. The committed stills are round 4's (final), with `brief-round1.webp`, `brief-1280-round2.webp` and `brief-scrolled-round3.webp` for the weaknesses named below. Judged against the spec's goals and anti-goals, CORANTO's bar, the Stage 1 Review Focus and C's final stills (branch `redesign-brief-c`, 1020db1).
+
+### Round 1
+
+The first build on the layer: the dressed panel, the head (the day, the since line typed in, the three figures, both rangefinders as one link to the treasury), the four ledgers with their section heads and counts, each row a designator, where and when, the headline, its readouts and its weighed keys, the ask in red brackets with its two agreement scales, and the pins over the city.
+
+What works:
+- **One language with the stage 2 primitives.** Big Shoulders headlines, Azeret figures, amber designators in corner ticks, the keys climbing from the ice Why to the lit Post with its sum in a window. Nothing on the Brief is in Plex or Newsreader.
+- **Review Focus 5 holds.** The 240-character title reads `<b>nightly</b>` and `&amp;` as text and is clipped by the layout at three lines with an ellipsis; the summary keeps its list and code marks, the markup in it shown as text, and ends inside its own window. Nothing runs off the panel.
+- **The pins** stand on every waiting tower with numbers that match the rows; the plates are gone, and `brief-closed` has them back in full.
+- Reduced motion reads whole at 0.7 s: the since line is set at once, the stream stands, the brackets are already closed.
+
+Weaknesses:
+1. **The autonomy ask is sixth.** The engine lists it after the proposals, so on the first screen the heaviest decision is below the fold: the lock sits on harbor-ledger's tower with no leader, because its row is scrolled out. The heaviest thing on the screen is not on the screen. (Review Focus: the ask as the heaviest thing.)
+2. **The keys stand in the engine's order** (Post, Tier, Dismiss, Why), so the key that spends sits mid-row with a second lit key beside it, and the row ends on a light ice word. C ended each row on its heaviest key.
+3. **The ask's evidence reads as a form.** The two agreement scales stack, each count over a short label, so "48/50" is no bigger than a row's figure. C set the run on one line, the count large; here the ask's case is smaller than its headline.
+4. **Handled rows waste a line.** A settled row is its headline, then a nearly empty line holding only Why and "Posted 18:30" at the far right.
+5. **The audit's explanation is a three-line paragraph in the list** under Recommended: the excessive text the spec cuts. The Audit key carries its sum, and Why carries the rest.
+6. **At 1280 the head eats 340 px of 800.** The rangefinders wrap under the figures, so only two rows of the list show under it.
+7. Tier and Post are both spend keys (the ruling), so a proposal shows two lit amber keys side by side. Left by the ruling; ordering (2) at least puts Post at the edge.
+
+### Round 2
+
+Changes: the autonomy ask leads Waiting on you (the open asks first, then the rest in the engine's order; nothing else moves); the keys stand lightest to heaviest, so a row ends on its heaviest key; the two agreement scales stand on one line, each count at 30 px in amber beside its strip; a handled row is one line, its keys and acted time beside the headline; the audit's explanation is for the reader alone (`.os-sr`), the Audit key and its sum saying it on the screen; the head's figures and rangefinders hold one line down to 1280.
+
+What works:
+- **The ask is the heaviest thing on the first screen**, at 1600 and 1280: raised on its own shadow, closed in red brackets, its grant the one red, filled object, and the lock and leader on harbor-ledger's tower, the leader leaving the ask's rail, climbing at the pane's edge and dropping onto the ring. This is C's brief-autonomy, now the first still.
+- Each row ends on its heaviest key: Resume with its sum, Audit with its sum, Let it act here.
+- At 1280 the head is 270 px, the ask and the first proposal both in view.
+
+Weaknesses:
+1. **On a proposal the row ends on Tier, not Post.** Both are spend keys (the ruling), and the engine lists accept first, so the stable sort leaves Tier at the edge and Post, the key that spends, inside.
+2. **At 1280 the ask's run here is clipped** past the panel's right edge ("Last 10" cut): the four-column line does not wrap.
+3. **Rows with no figures still take two lines** (a note, a failed job's Why and Dismiss): the keys stand alone under the headline, far right, the rows twice the height they need.
+4. A pin's tag near the window's right edge (harbor-ledger, "01 +2", in `brief-why-long`) stands within a few pixels of it. pins.ts places it; below the anti-goal level, left to the layer.
+
+### Round 3
+
+Changes: of two keys of one weight, the one carrying a sum stands last, so a proposal ends on Post and its 60 cr; the agreement scales are two groups that wrap, the run here taking the next line where the panel is narrow; a row with no figures is one line, its keys beside the headline.
+
+What works:
+- Every row ends on the key that spends or grants: Post 60 cr, Resume 20 cr, Audit 40 cr, Let it act here. Read down the right edge, the column is the page's decisions in order of weight.
+- At 1280 the ask's two runs stand whole, one over the other, inside the brackets.
+- The overnight ledger is shorter: a note is one line, its Why and Dismiss beside it.
+
+Weaknesses:
+1. **A one-line row's headline steps 16 px right of every other headline** (`brief-scrolled`, "Docs: name the SQLite version the crate needs"): the third column's gap was set on the whole grid, so it also opened between the designator and the text. A broken left edge in a list read for its alignment.
+2. Under the anti-goal level and left as is: the award paragraph behind Why is a long mono line at 12 px (the whole sentence is what Why is for); the pin tags are the layer's.
+
+### Round 4 (final)
+
+Change: the gap before the keys of a one-line row is padding on the keys' own cell, not a gap of the grid, so every headline in the list starts on one edge.
+
+What the final stills show, against C's final round:
+- **brief**: the ask first, in red brackets on its own shadow, its two runs on one line (48/50 every repo, 10/10 here) and Let it act here the only red, filled object; the lock on harbor-ledger's tower and the leader from the ask's rail, up the pane's edge, across the sky and down onto the ring. Then the proposals, each ending on Post and its sum, the PR with its three look keys, the halt ending on Resume 20 cr. As C's brief-autonomy, with the ask now where the page opens.
+- **brief-scrolled**: the rows slide under the head plate; the overnight notes are one line each; Recommended ends on Audit 40 cr; Today's limit shows its two figures and Set limit. No paragraph is left in the list.
+- **brief-overview**: over the city's brightest framing the panel holds, the head plate and every figure legible; the lock and leader on harbor-ledger, close.
+- **brief-1280**: the head at 270 px, the ask whole with its runs on two lines, the first proposal in view.
+- **brief-reduced-motion**: the same page whole at 0.7 s, the since line set at once, the brackets already closed, the stream still.
+- **brief-why-long**: the 240-character title as text and clipped at three lines; Why open with the award line typed in and the summary in its own window, revealed by the sweep, its markup and entities as text, clipped at its 600 characters by the renderer and inside the panel.
+- **brief-closed**: the plates back in full, no pin left.
+
+Against C: the same HUD, keys and ask; the real build adds the since line in ice, mono head figures, two lit rangefinders that lead to the treasury, the claims bar on a finished audit, and one-line rows where there are no figures. C's pin figure for a proposal was its cost; here it is the first readout (the tier), as the plan sets it.
+
+### Left, below the anti-goal level
+
+- The pin's figure on a proposal reads "normal tier", not the cost: the plan names the first readout as the pin's figure, and the cost is a key sum, never a readout (Task 16). If Connor wants the cost on the tower, it is one line in `pinTargets`.
+- A tier change is a spend key (the ruling), so a proposal shows two lit keys, Tier and Post. Post now stands at the edge.
+- A pin's tag near the window's right edge can sit within a few pixels of it (pins.ts, the layer's placement).
+- The award paragraph behind Why is a long mono line; that is what Why is for.
+- Motion never shows in a still: the since line typing in, the ask's brackets closing, the summary's sweep and scan, the stream.
+
+### Frames (uncapped, `tools/redesign-brief.ts frames`, 1512 x 890 at 2x, the GPU lock held)
+
+Main is 29187f0 in a detached worktree; the branch is this task's build. Two sittings, back to back.
+
+| Tier | View | Main, sitting 1 | Branch, sitting 1 | Branch, sitting 2 | Main, sitting 2 | Delta (sitting 2) |
+| --- | --- | --- | --- | --- | --- | --- |
+| high | city alone | 8.60 (p95 9.80) | 11.50 (p95 12.80) | 8.60 (p95 9.80) | 8.60 (p95 9.70) | 0% |
+| high | Brief open | 8.10 (p95 9.10) | 9.90 (p95 11.60) | 7.80 (p95 8.90) | 7.80 (p95 8.80) | 0% |
+| medium | city alone | 4.90 (p95 6.00) | 5.70 (p95 6.60) | 4.80 (p95 5.90) | 4.80 (p95 6.20) | 0% |
+| medium | Brief open | 4.50 (p95 5.90) | 4.90 (p95 5.60) | 4.40 (p95 5.20) | 4.50 (p95 6.40) | -2% |
+
+Sitting 1's branch run was slow on every view, the city alone included (+34% on high, where the Brief is closed and nothing of it draws), while Spotlight indexed the stills just written (fseventsd and mds_stores at 100% CPU). Run again at once in the opposite order (branch first), the branch matched main on every row. Recorded rather than dropped. The Brief open holds main's frame time at both tiers, inside the 10% gate.

@@ -94,15 +94,6 @@ export function briefMeta(item: BriefItem, now: number = Date.now()): { where: s
   return { where: item.repo ? shortRepo(item.repo) : 'the city', when: Number.isFinite(at) ? `${dayWords(at, localDay(now))}${clock(at)}` : '' };
 }
 
-/**
- * The old dateline, "kumo, 18:30", kept only until Task 17 moves brief.ts
- * onto briefMeta. Remove it with that import.
- */
-export function dateline(item: BriefItem, now: number = Date.now()): string {
-  const { where, when } = briefMeta(item, now);
-  return where && when ? `${where}, ${when}` : where || when;
-}
-
 // ---------------------------------------------------------------- the row's figures (screens redesign Task 16)
 
 /** A count or a percent as a figure, or null when it is no number. */
