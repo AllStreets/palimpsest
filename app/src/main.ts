@@ -96,6 +96,8 @@ interface DebugHandle {
   camera(): number[];
   /** Glides back to the home framing, as the H key does. */
   home(): void;
+  /** How many frame hooks the city runs after its plates (City.onFrame): 0 while no screen pins the city. */
+  frameHooks(): number;
   /** The view's limits now, as eased this frame. */
   limits(): ReturnType<ReturnType<typeof createCity>['limits']>;
   /** Multiplies the home haze by k (the clear-air still, tools/capture.ts and tools/perf.ts overview-clear at 0.4); null restores the default. */
@@ -509,6 +511,7 @@ async function main(): Promise<void> {
     },
     quarters: 0,
     opened: '',
+    frameHooks: () => city.frameHooks(),
     agentFrame: (id) => {
       const f = city.agentFrame(id);
       return f ? { center: f.center.toArray(), width: f.width, height: f.height } : null;

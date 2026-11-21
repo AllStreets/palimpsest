@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
+import * as THREE from 'three';
+
 import * as labels from '../app/src/city/labels.js';
 import type { Floor } from '../shared/types.js';
 
@@ -139,4 +141,93 @@ test('the plates read the pane the screens set, and the guard sets it to the ope
   assert.match(src, /export function setPlatePane\(/);
   const guard = readFileSync(new URL('../app/src/ui/plate-guard.ts', import.meta.url), 'utf8');
   assert.match(guard, /setPlatePane\(/);
+});
+
+type Seen = { x: number; y: number; behind: boolean };
+type Project = (at: THREE.Vector3, camera: THREE.Camera, w: number, h: number, out: Seen, scratch?: THREE.Vector3) => Seen;
+
+/** The camera of Task 8's tests: at (0, 0, 10), looking at the origin, its matrices current. */
+function eye(): THREE.PerspectiveCamera {
+  const camera = new THREE.PerspectiveCamera(50, 1600 / 1000, 1, 5000);
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  return camera;
+}
+
+test("projectToView puts the camera's target at the view's centre", () => {
+  const projectToView = (labels as unknown as { projectToView?: Project }).projectToView;
+  assert.equal(typeof projectToView, 'function', 'labels.ts shares its projection with the screens');
+  const out: Seen = { x: -1, y: -1, behind: true };
+  const got = projectToView!(new THREE.Vector3(0, 0, 0), eye(), 1600, 1000, out);
+  assert.equal(got, out, 'it writes into the object it is given');
+  assert.ok(Math.abs(got.x - 800) < 1e-6, `x ${got.x}`);
+  assert.ok(Math.abs(got.y - 500) < 1e-6, `y ${got.y}`);
+  assert.equal(got.behind, false);
+  // Up in the world is up on the view: a smaller y.
+  assert.ok(projectToView!(new THREE.Vector3(0, 1, 0), eye(), 1600, 1000, out).y < 500);
+});
+
+test('a point behind the eye is behind', () => {
+  const projectToView = (labels as unknown as { projectToView?: Project }).projectToView;
+  assert.equal(typeof projectToView, 'function');
+  const scratch = new THREE.Vector3();
+  assert.equal(projectToView!(new THREE.Vector3(0, 0, 20), eye(), 1600, 1000, { x: 0, y: 0, behind: false }, scratch).behind, true);
+});
+
+/** Just enough of a DOM element for createPlates: its style, its classes and its words' width. */
+function fakeElement(): Record<string, unknown> {
+  return {
+    style: {} as Record<string, string>,
+    classList: { toggle() {}, add() {}, remove() {} },
+    className: '',
+    textContent: '',
+    title: '',
+    disabled: false,
+    offsetWidth: 40,
+    append() {},
+    appendChild() {},
+    remove() {},
+    addEventListener() {},
+    setAttribute() {},
+    removeAttribute() {},
+  };
+}
+
+test('the plates use the shared projection', () => {
+  const projectToView = (labels as unknown as { projectToView?: Project }).projectToView;
+  assert.equal(typeof projectToView, 'function');
+  const g = globalThis as unknown as { document?: unknown };
+  const had = g.document;
+  const made: Array<Record<string, unknown>> = [];
+  g.document = {
+    createElement() {
+      const el = fakeElement();
+      made.push(el);
+      return el;
+    },
+  };
+  try {
+    const host = { clientWidth: 1600, clientHeight: 1000, appendChild() {} } as unknown as HTMLElement;
+    const camera = eye();
+    const plates = labels.createPlates(host, camera, () => []);
+    const front = new THREE.Vector3(1.5, -2, 0);
+    const back = new THREE.Vector3(0, 0, 20);
+    plates.set([
+      { key: 'front', origin: { x: 0, z: 0 }, name: 'Front', sub: '', at: (o) => o.copy(front) },
+      { key: 'back', origin: { x: 0, z: 0 }, name: 'Back', sub: '', at: (o) => o.copy(back) },
+    ]);
+    // The plates' buttons, in the order set: [layer, button, name, sub, button, name, sub].
+    const buttons = made.filter((_, i) => i === 1 || i === 4) as Array<{ style: Record<string, string> }>;
+    plates.update();
+    const want = projectToView!(front, camera, 1600, 1000, { x: 0, y: 0, behind: true });
+    assert.equal(want.behind, false);
+    assert.equal(buttons[0].style.transform, `translate3d(${want.x.toFixed(1)}px, ${want.y.toFixed(1)}px, 0)`, 'a plate stands where the shared projection puts it');
+    assert.equal(buttons[0].style.visibility, 'visible');
+    assert.equal(projectToView!(back, camera, 1600, 1000, { x: 0, y: 0, behind: false }).behind, true);
+    assert.equal(buttons[1].style.visibility, 'hidden', 'a plate the shared projection calls behind is not shown');
+    plates.dispose();
+  } finally {
+    g.document = had;
+  }
 });

@@ -69,6 +69,26 @@ export function placeInPane(x: number, y: number, words: number, pane: { left: n
   return { flip, fits: at >= 0 && plateFits(at, y, words, flip, width, pane.height, margin) };
 }
 
+/**
+ * Where a world point stands in a `w` by `h` view, in pixels from its top left, and whether it is behind the eye or
+ * past the far plane: the projection the plates stand by, shared with the screens' pins and lock-ons (Task 8).
+ * `camera`'s matrices must be current. Writes into `out` and returns it; `scratch` spares an allocation per call.
+ */
+export function projectToView(
+  at: THREE.Vector3,
+  camera: THREE.Camera,
+  w: number,
+  h: number,
+  out: { x: number; y: number; behind: boolean },
+  scratch: THREE.Vector3 = new THREE.Vector3(),
+): { x: number; y: number; behind: boolean } {
+  scratch.copy(at).project(camera);
+  out.behind = scratch.z > 1 || scratch.z < -1;
+  out.x = (scratch.x * 0.5 + 0.5) * w;
+  out.y = (-scratch.y * 0.5 + 0.5) * h;
+  return out;
+}
+
 /** The room kept between two plates' boxes, in pixels. */
 const PLATE_GAP = 2;
 
@@ -162,6 +182,7 @@ export function createPlates(
   raycaster.layers.enableAll();
   const at = new THREE.Vector3();
   const ndc = new THREE.Vector3();
+  const seen = { x: 0, y: 0, behind: false };
   const toward = new THREE.Vector3();
   const ray = new THREE.Vector3();
 
@@ -230,8 +251,7 @@ export function createPlates(
         const testOcclusion = i % OCCLUSION_EVERY === turn || !l.tested;
         anchor(l.plate, at);
         const dist = at.distanceTo(camera.position);
-        ndc.copy(at).project(camera);
-        const behind = ndc.z > 1 || ndc.z < -1;
+        const { behind } = projectToView(at, camera, w, h, seen, ndc);
         const fade = 1 - THREE.MathUtils.smoothstep(dist, l.plate.fade?.start ?? FADE_START, l.plate.fade?.end ?? FADE_END);
         if (testOcclusion && !behind) {
           raycaster.set(camera.position, ray.copy(at).sub(camera.position).normalize());
@@ -244,8 +264,7 @@ export function createPlates(
         l.el.style.opacity = show ? fade.toFixed(3) : '0';
         l.el.style.visibility = show ? 'visible' : 'hidden';
         if (!show) continue;
-        const x = (ndc.x * 0.5 + 0.5) * w;
-        const y = (-ndc.y * 0.5 + 0.5) * h;
+        const { x, y } = seen;
         l.el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
         // Near the right edge the words stand left of the hairline rather than clipping (plateFlips); measured once.
         if (!l.words) l.words = Math.max(l.name.offsetWidth, l.sub.offsetWidth);

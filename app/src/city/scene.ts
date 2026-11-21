@@ -20,6 +20,7 @@ import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import { campanileStands, type BoardJob, type Exchange } from './exchange.js';
+import { createFrameHooks } from './frame-hooks.js';
 import { createGrid, type LotSummary } from './grid.js';
 import { createGround, makePlinth } from './ground.js';
 import { createPlates, type Plate } from './labels.js';
@@ -144,6 +145,15 @@ export interface City {
   highlightFloor(repo: string, floorId: string | null): void;
   floorFrame(repo: string, floorId: string): Frame | null;
   towerFrame(repo: string): Frame | null;
+  /**
+   * Runs `fn` every frame after the plates have placed themselves (the screens' pins and lock-ons, Task 8). The
+   * returned function removes it; calling it twice is harmless. A hook that throws is logged once and removed.
+   */
+  onFrame(fn: () => void): () => void;
+  /** How many frame hooks are subscribed (tests). */
+  frameHooks(): number;
+  /** The repos of the districts standing now, as last set by setPlots. */
+  districts(): string[];
   /** Shows the open and bidding jobs on the exchange's tote board. */
   setBoard(jobs: ReadonlyArray<BoardJob>): void;
   /** The engine's kill switch: the exchange's fountain runs only while it is off. */
@@ -719,6 +729,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   /** Spots the board stands on, cleared like plots. */
   let boardSpots: Array<{ x: number; z: number }> = [];
+  /** What else follows the camera each frame, after the plates (onFrame): nothing to do while none subscribes. */
+  const frameHooks = createFrameHooks();
   let lastOcc: Occupancy = { districts: [], sites: [], quarters: [] };
   /** The occupied set last placed, floors and all (the job sites read the era of the floor a run laid from it). */
   let occNow: Occupancy = lastOcc;
@@ -2185,6 +2197,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     fitMark();
     plates.update();
     peoplePlates.update();
+    frameHooks.run();
     sky.dome.position.copy(camera.position);
     followShadow(dt);
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
@@ -2270,6 +2283,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     highlightFloor,
     floorFrame,
     towerFrame,
+    onFrame: (fn) => frameHooks.add(fn),
+    frameHooks: () => frameHooks.size(),
+    districts: () => occNow.districts.map((d) => d.repo),
     agentFrame,
     setInset(px) {
       insetTarget = Math.max(0, Math.min(px, width() * 0.6));
