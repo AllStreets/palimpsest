@@ -320,9 +320,12 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
       view.w = window.innerWidth;
       view.h = window.innerHeight;
       paneTop = frameEl.offsetTop;
+      // Read again on the next frame, after this frame writes the pane's edge (if it moved), on every measure:
+      // a resize that keeps the edge, or a hide and show, must not drop the telemetry from what the leader avoids.
       teleBox = null;
+      teleDirty = true;
     } else if (teleDirty) {
-      // The frame after the pane's edge was written, so the telemetry's box is where it now stands.
+      // The frame after a measure, so the telemetry's box is where it now stands.
       teleDirty = false;
       const r = tele.getBoundingClientRect();
       teleBox = r.width > 0 ? { x0: r.left, y0: r.top, x1: r.right, y1: r.bottom } : null;
@@ -423,7 +426,6 @@ export function createPins(parent: HTMLElement, panel: HTMLElement, scroller: HT
     if (paneLeftWritten !== view.left) {
       paneLeftWritten = view.left;
       root.style.setProperty('--os-pane-left', `${view.left}px`);
-      teleDirty = true;
     }
     for (let i = 0; i < pins.length; i++) {
       const pin = pins[i];

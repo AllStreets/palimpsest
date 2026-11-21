@@ -377,3 +377,48 @@ test('without a city nothing hooks and the plates stay', () => {
   assert.equal(html.dataset.osPins, undefined);
   pins.hide();
 });
+
+/** The leader's drawn path as runs between its points (cut corners included). */
+function runsOf(d: string): Array<[number, number, number, number]> {
+  const pts = [...d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  const out: Array<[number, number, number, number]> = [];
+  for (let i = 1; i < pts.length; i++) out.push([pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]]);
+  return out;
+}
+const crossesBox = (d: string, b: { left: number; top: number; right: number; bottom: number }): boolean =>
+  runsOf(d).some(([ax, ay, bx, by]) => Math.max(ax, bx) >= b.left && Math.min(ax, bx) <= b.right && Math.max(ay, by) >= b.top && Math.min(ay, by) <= b.bottom);
+
+/** The telemetry box set where the leader's first climb would run, out of the rail at x 562 and up. */
+const TELE = { left: 590, top: 160, right: 660, bottom: 380, width: 70, height: 220 };
+
+function teleSetup(withTele: boolean) {
+  const s = setup();
+  s.pins.setTargets([T('i1', 1, 'a/two')]);
+  const tele = s.root.find('os-pins-tele')[0];
+  if (withTele) tele.rect = TELE;
+  s.pins.show();
+  const r = row(400, s.host.scroller);
+  s.pins.setActive('i1', r as unknown as HTMLElement);
+  s.city.frame(4);
+  const path = (): string => s.root.find('os-leader')[0].getAttribute('d') ?? '';
+  return { ...s, path };
+}
+
+test('the leader keeps clear of the telemetry, after a resize that leaves the pane edge and after hide and show (fix round 1)', () => {
+  // Without the telemetry in its way, the route climbs straight through where it stands: the test means something.
+  const bare = teleSetup(false);
+  assert.ok(crossesBox(bare.path(), TELE), `the free route ${bare.path()} should pass through the telemetry's place`);
+
+  const s = teleSetup(true);
+  assert.ok(s.path() && !crossesBox(s.path(), TELE), `the leader avoids the telemetry at first: ${s.path()}`);
+  // A height-only resize: the pane's left edge stays where it was.
+  win.innerHeight = 880;
+  win.fire('resize');
+  s.city.frame(4);
+  assert.ok(s.path() && !crossesBox(s.path(), TELE), `after a resize that keeps the edge: ${s.path()}`);
+  // Hide and show the same pins.
+  s.pins.hide();
+  s.pins.show();
+  s.city.frame(4);
+  assert.ok(s.path() && !crossesBox(s.path(), TELE), `after hide and show: ${s.path()}`);
+});
