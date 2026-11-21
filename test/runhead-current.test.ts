@@ -30,14 +30,19 @@ test('City is current only on the city route', () => {
   for (const [route] of EXPECT) assert.equal(currentSection(route) === 'city', route === 'city', route);
 });
 
+/** The head's own stylesheet (screens redesign Task 11), comments stripped; screens.css no longer draws the head. */
+const topbar = (): string => readFileSync(new URL('../app/src/ui/os/topbar.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
 test('no stylesheet rule lifts a head link by route alone, so only the current one reads lit', () => {
-  const css = readFileSync(new URL('../app/src/ui/screens.css', import.meta.url), 'utf8');
-  assert.doesNotMatch(css, /data-route='city'\]\s+\.runhead-link\s*\{/);
+  const css = topbar();
+  assert.match(css, /\.runhead-link[^{}]*\{/, 'topbar.css draws the head links');
+  assert.doesNotMatch(css, /data-route=[^{}]*\.runhead-link[^{}]*\{/);
 });
 
-test('hovering a head link never draws it in the current place\'s colour, so a pointer resting on City does not light it', () => {
-  const css = readFileSync(new URL('../app/src/ui/screens.css', import.meta.url), 'utf8');
-  for (const m of css.matchAll(/([^{}]*\.runhead-link[^{}]*:hover[^{}]*)\{([^}]*)\}/g)) {
+test('hovering a head link, Find or Stopped never draws it in another colour, so a pointer resting on City does not light it', () => {
+  const matches = [...topbar().matchAll(/([^{}]*\.runhead-(?:link|find|stopped)[^{}]*:hover[^{}]*)\{([^}]*)\}/g)];
+  assert.ok(matches.length > 0, 'topbar.css draws a hover');
+  for (const m of matches) {
     assert.doesNotMatch(m[2], /(^|[\s;])color\s*:/, `${m[1].trim()} sets a colour`);
   }
 });

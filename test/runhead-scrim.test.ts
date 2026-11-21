@@ -119,5 +119,22 @@ test('the head lives in os/topbar.css alone, loaded app-wide after screens.css',
 test('Find is a look key: its focus ring is the os ring, and the head draws nothing on its ::after', () => {
   const ts = raw('ui/runhead.ts');
   assert.match(ts, /weighKey\(findBtn, 'look'\)/);
-  assert.ok(!rules.some(([sel]) => /runhead-(find|link)[^,]*::after/.test(sel)), 'the keys\' ::after is the focus ring\'s');
+  assert.ok(!rules.some(([sel]) => /runhead-(find|link|stopped)[^,]*::after/.test(sel)), 'the keys\' ::after is the focus ring\'s');
+});
+
+test("Find's word holds 4.5:1 under its hover sheen (control.css), on the backing over the brightest city", () => {
+  const control = css('os/control.css');
+  const look = /\.os-key\[data-weight='look'\]\s*\{([^{}]*)\}/.exec(control);
+  assert.ok(look, "control.css has the look key's rule");
+  const sheen = /--os-sheen\s*:\s*rgba\(var\((--os-[\w-]+)-rgb\),\s*([\d.]+)\)/.exec(look[1]);
+  assert.ok(sheen, 'the look sheen is a token at an alpha');
+  const sheenRgb = /--os-ice-rgb\s*:\s*(\d+),\s*(\d+),\s*(\d+)\s*;/.exec(tokens)!.slice(1).map(Number) as unknown as Rgb;
+  assert.equal(sheen[1], '--os-ice', 'the look sheen is ice');
+  const b = backing();
+  const face = over(over(BRIGHTEST, b.colour, b.alpha), sheenRgb, Number(sheen[2]));
+  const find = rules.find(([sel]) => sel === ".runhead-find.os-key[data-weight='look']");
+  assert.ok(find, "topbar.css sets Find's word");
+  const ink = /(?:^|[\s;])color\s*:\s*([^;]+);/.exec(find[1])![1].trim();
+  const ratio = contrast(resolve(ink), face);
+  assert.ok(ratio >= 4.5, `Find (${ink}) reads ${ratio.toFixed(2)}:1 under its hover sheen`);
 });
