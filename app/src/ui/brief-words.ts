@@ -1,46 +1,44 @@
 /**
  * The brief's words (Phase 3 Task 11), kept free of the page so the tests
  * can read them: the day as the page's title, the line under it, each
- * action's label, each item's dateline and sentence, what he did with an
- * item and when, the usage line, the bounds of today's limit and the
- * empty morning.
+ * action's label and weight, each item's place and time, its readouts and
+ * its sentence, what he did with an item and when, the usage line, the
+ * bounds of today's limit and the empty morning.
+ *
+ * Screens redesign Task 16 cut the words hard: a row is a headline plus
+ * figures, read from the engine's fields (item.figures, Brief.counts) and
+ * never parsed out of a sentence; money sits on the key that spends it;
+ * the whole sentence (itemSentence) waits behind Why and in the reader's
+ * text.
  *
  * Every item's title and text were composed by the engine from the ledger
  * and from model output, so they are only ever cleaned and set as text.
  */
-import { TIER_VALUE, windowNowPct } from '../../../shared/market-rules.js';
+import { creditsText, TIER_VALUE, windowNowPct } from '../../../shared/market-rules.js';
 import { AGREE, isBeagle, WORK_KINDS } from '../../../shared/school-rules.js';
-import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant, WorkKind } from '../../../shared/types.js';
+import type { Brief, BriefAction, BriefItem, BriefItemKind, BudgetWindow, Grant, WorkKind } from '../../../shared/types.js';
 import { cleanText } from './board.js';
+import { ACTIONS } from './brief-actions.js';
 import type { Names } from './detail.js';
+import type { Weight } from './os/control.js';
+import type { Readout } from './os/readout-model.js';
+import type { Tone } from './os/tokens.js';
 import { clock } from './time-words.js';
 import { briefHandled } from '../../../shared/brief-rules.js';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-const LABELS: Record<BriefAction, string> = {
-  accept: 'Post as a job',
-  tier: 'Change the tier',
-  dismiss: 'Dismiss',
-  why: 'Ask why',
-  diff: 'Open the diff',
-  fly: 'Fly to the floor',
-  retry: 'Retry',
-  resume: 'Resume',
-  'open-pr': 'Open the PR',
-  cap: "Change today's limit",
-  audit: 'Audit it',
-  tour: 'Walk through the week',
-  // Phase 4: an ask for autonomy, and an act under a grant.
-  grant: 'Let the city do this on its own here',
-  decline: 'Not yet',
-  revoke: 'Take it back',
-};
+const MONTHS_SHORT = MONTHS.map((m) => m.slice(0, 3));
 
-/** The label of an action's text button. */
+/** The label of an action's key: "Post", "Why", read from its row in ACTIONS. */
 export function actionLabel(a: BriefAction): string {
-  return LABELS[a] ?? a;
+  return ACTIONS[a]?.label ?? a;
+}
+
+/** The weight of an action's key, by consequence, read from its row in ACTIONS. */
+export function weightOf(a: BriefAction): Weight {
+  return ACTIONS[a]?.weight ?? 'look';
 }
 
 /** The empty morning, said once, quietly. */
@@ -84,18 +82,181 @@ function dayWords(ms: number, today: string): string {
 const shortRepo = (repo: string): string => cleanText(repo.split('/').pop() ?? repo, 80);
 
 /**
- * The row's dateline, as a paper sets the place and time before a story:
- * "kumo, 18:30", "harbor-ledger, yesterday 18:30". The usage, the reading
- * and the tour belong to no repo and are about now, so they carry none.
+ * Where and when, over the row's headline: { where: 'kumo', when: '18:30' },
+ * { where: 'harbor-ledger', when: 'yesterday 18:30' }. The usage, the
+ * reading and the tour belong to no repo and are about now, so they carry
+ * none; a recommendation to audit is about the repo, not when it connected.
+ */
+export function briefMeta(item: BriefItem, now: number = Date.now()): { where: string; when: string } {
+  if (item.kind === 'usage' || item.kind === 'stale' || item.kind === 'tour') return { where: '', when: '' };
+  if (item.kind === 'audit-due') return { where: item.repo ? shortRepo(item.repo) : '', when: '' };
+  const at = Date.parse(item.at);
+  return { where: item.repo ? shortRepo(item.repo) : 'the city', when: Number.isFinite(at) ? `${dayWords(at, localDay(now))}${clock(at)}` : '' };
+}
+
+/**
+ * The old dateline, "kumo, 18:30", kept only until Task 17 moves brief.ts
+ * onto briefMeta. Remove it with that import.
  */
 export function dateline(item: BriefItem, now: number = Date.now()): string {
-  if (item.kind === 'usage' || item.kind === 'stale' || item.kind === 'tour') return '';
-  // A recommendation to audit is about the repo, not about when it connected.
-  if (item.kind === 'audit-due') return item.repo ? shortRepo(item.repo) : '';
-  const at = Date.parse(item.at);
-  const when = Number.isFinite(at) ? `${dayWords(at, localDay(now))}${clock(at)}` : '';
-  const where = item.repo ? shortRepo(item.repo) : 'the city';
-  return when ? `${where}, ${when}` : where;
+  const { where, when } = briefMeta(item, now);
+  return where && when ? `${where}, ${when}` : where || when;
+}
+
+// ---------------------------------------------------------------- the row's figures (screens redesign Task 16)
+
+/** A count or a percent as a figure, or null when it is no number. */
+const num = (n: number | null | undefined): string | null => (typeof n === 'number' && Number.isFinite(n) ? String(Math.round(n)) : null);
+
+/** The firm on the row, by name, quiet: the firm is who, not state. */
+function firmOut(item: BriefItem, names: Names): Readout[] {
+  const id = item.refs.firmId;
+  if (!id) return [];
+  const name = cleanText(names.firm(id), 60);
+  return name ? [{ v: name, tone: 'quiet' }] : [];
+}
+
+/**
+ * The row's readouts, in place of a sentence: figures and short keys, read
+ * from item.figures and item.refs alone, never from the text. A kind with
+ * no numbers shows its state or nothing; no readout is ever empty. The key
+ * sums (a proposal's cost, a retry's, an audit's, a resume's) are never
+ * readouts: they sit on the key that spends them (keySum).
+ */
+export function itemReadouts(item: BriefItem, names: Names): Readout[] {
+  const f = item.figures;
+  const out: Readout[] = [];
+  switch (item.kind) {
+    case 'merged':
+      out.push({ v: 'merged', tone: 'ok' });
+      if (f?.kind === 'merged' && f.paid !== null && Number.isFinite(f.paid)) out.push({ v: creditsText(f.paid), k: 'cr' });
+      out.push(...firmOut(item, names));
+      break;
+    case 'pr': {
+      const n = f?.kind === 'pr' ? num(f.pr) : null;
+      if (n) out.push({ v: `#${n}`, k: 'PR' });
+      out.push(...firmOut(item, names), { v: 'review', tone: 'warn' });
+      break;
+    }
+    case 'failed': {
+      out.push({ v: 'failed', tone: 'fail' });
+      const left = f?.kind === 'failed' ? f.attemptsLeft : null;
+      if (left !== null && Number.isFinite(left)) out.push(left > 0 ? { v: String(left), k: left === 1 ? 'attempt left' : 'attempts left' } : { v: 'no attempts left', tone: 'quiet' });
+      break;
+    }
+    case 'halt':
+      out.push({ v: 'halted', tone: 'fail' });
+      break;
+    case 'revert':
+      out.push({ v: 'reverted', tone: 'fail' });
+      if (f?.kind === 'revert' && f.sha) out.push({ v: cleanText(f.sha, 12), k: 'commit' });
+      break;
+    case 'proposal':
+      out.push({ v: item.tier ?? 'normal', k: 'tier' });
+      break;
+    case 'audit': {
+      // The claims are the row's bar; the readout is what the audit asks of him.
+      const n = f?.kind === 'audit' ? num(f.jobs) : null;
+      if (n) out.push({ v: n, k: f?.kind === 'audit' && f.jobs === 1 ? 'job proposed' : 'jobs proposed' });
+      break;
+    }
+    case 'audit-due':
+      out.push({ v: 'never audited', tone: 'warn' });
+      break;
+    case 'usage':
+      if (f?.kind === 'usage') {
+        const now = num(f.nowPct);
+        const cap = num(f.capPct);
+        if (now) out.push({ v: `${now}%`, k: f.window });
+        if (cap) out.push({ v: `${cap}%`, k: f.mine ? 'your limit' : 'cap' });
+      }
+      break;
+    case 'autonomy':
+      if (f?.kind === 'autonomy') {
+        if (num(f.agreed) && num(f.of) && f.of > 0) out.push({ v: `${num(f.agreed)}/${num(f.of)}`, k: 'agreed' });
+        if (num(f.here) && num(f.hereOf) && f.hereOf > 0) out.push({ v: `${num(f.here)}/${num(f.hereOf)}`, k: 'here' });
+      }
+      break;
+    case 'tour':
+      if (f?.kind === 'tour') {
+        const n = num(f.stops);
+        if (n && f.stops > 0) out.push({ v: n, k: f.stops === 1 ? 'stop' : 'stops' });
+        if (Number.isFinite(f.seconds) && f.seconds > 0) out.push({ v: String(Math.max(1, Math.round(f.seconds / 60))), k: 'min' });
+      }
+      break;
+    // note, stale, milestone, graduate and acted carry no figures: the headline is the news.
+  }
+  return out.filter((r) => r.v.length > 0);
+}
+
+/**
+ * The sum on an action's key, as the most it may spend: "60 cr" on a
+ * proposal's Post, a failed job's Retry, a recommendation's Audit and a
+ * halt's Resume. Only while that action is offered (figures keep the sum
+ * after he acts), and never for a sum of 0. Every other key has none.
+ */
+export function keySum(item: BriefItem, a: BriefAction): string | null {
+  const n = keyCredits(item, a);
+  return n === null ? null : `${creditsText(n)} cr`;
+}
+
+function keyCredits(item: BriefItem, a: BriefAction): number | null {
+  if (!item.actions.includes(a)) return null;
+  const f = item.figures;
+  let n: number | null = null;
+  if (a === 'accept' && f?.kind === 'proposal') n = f.cost;
+  else if (a === 'retry' && f?.kind === 'failed') n = f.retry;
+  else if (a === 'audit' && f?.kind === 'audit-due') n = f.audit;
+  else if (a === 'resume' && f?.kind === 'halt') n = f.resume;
+  return n !== null && Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** A key's name for the reader, with its sum: "Post, up to 60 credits: Add a test command". */
+export function keyAria(item: BriefItem, a: BriefAction, head: string): string {
+  const n = keyCredits(item, a);
+  return `${actionLabel(a)}${n === null ? '' : `, up to ${creditsText(n)} credits`}: ${head}`;
+}
+
+const pad2 = (n: number): string => String(Math.max(0, Math.round(n))).padStart(2, '0');
+
+/** The head's figures, from Brief.counts: what waits (lit when anything does), what merged, what the city spent. */
+export function headFigures(b: Brief): Array<{ value: string; label: string; tone?: Tone | 'hot' }> {
+  const { waiting, merged, spent } = b.counts;
+  return [
+    { value: pad2(waiting), label: 'waiting', ...(waiting > 0 ? { tone: 'hot' as const } : {}) },
+    { value: pad2(merged), label: 'merged' },
+    { value: creditsText(spent), label: 'credits spent' },
+  ];
+}
+
+const TONE: Partial<Record<BriefItemKind, Tone | 'ask' | 'grant'>> = {
+  merged: 'ok',
+  failed: 'fail',
+  halt: 'fail',
+  revert: 'fail',
+  pr: 'warn',
+  proposal: 'ask',
+  'audit-due': 'warn',
+  usage: 'warn',
+  stale: 'warn',
+  autonomy: 'grant',
+};
+
+/** Each kind's state, the ink of its designator and its pin; quiet for a kind that carries none. */
+export function toneOf(kind: BriefItemKind): Tone | 'ask' | 'grant' {
+  return TONE[kind] ?? 'quiet';
+}
+
+/** The most words the stream carries. */
+const STREAM_MAX = 24;
+
+/** The stream under the list: the brief's own repo names, figures, PR numbers and states, in its order. */
+export function streamWords(b: Brief, names: Names): string[] {
+  const { waiting, overnight, recommendations, city } = b.sections;
+  return [...waiting, ...overnight, ...recommendations, ...city]
+    .flatMap((i) => [i.repo ? shortRepo(i.repo) : '', ...itemReadouts(i, names).map((r) => r.v)])
+    .filter((w) => /\w/.test(w))
+    .slice(0, STREAM_MAX);
 }
 
 const sentenceEnd = (s: string): string => (!s || /[.!?)"]$/.test(s) ? s : `${s}.`);
@@ -137,31 +298,20 @@ export function itemSentence(item: BriefItem, names: Names): string {
   }
 }
 
-const DONE: Partial<Record<BriefAction, string>> = {
-  accept: 'Posted as a job',
-  dismiss: 'Dismissed',
-  retry: 'Posted again',
-  resume: 'Resumed',
-  audit: 'Audit queued',
-  tour: 'Walked through the week',
-  grant: 'Granted',
-  decline: `Not yet; quiet for ${AGREE.quietDays} days`,
-  revoke: 'Taken back',
-};
-
 /**
- * What he did with the item and when, in quiet words: "Posted as a job,
- * 9:14". Looking (Ask why, the diff, the floor, the PR) is not acting, so
- * it leaves no line. A cap names the limit he set, when given.
+ * What he did with the item and when, as a short readout: "Posted 09:14",
+ * "Tier low 09:14", "Limit 60% 09:14". Looking (Why, the diff, the floor,
+ * the PR) is not acting, so it leaves no line. A cap names the limit he
+ * set, when given.
  */
 export function actedLine(item: BriefItem, capPct?: number | null): string {
   const a = item.acted;
   if (!a) return '';
   const at = clock(Date.parse(a.at));
-  if (a.action === 'tier') return `Tier set to ${item.tier ?? 'normal'}, ${at}`;
-  if (a.action === 'cap') return typeof capPct === 'number' ? `Today's limit set to ${Math.round(capPct)}% by you, ${at}` : `Today's limit set by you, ${at}`;
-  const done = DONE[a.action];
-  return done ? `${done}, ${at}` : '';
+  if (a.action === 'tier') return `Tier ${item.tier ?? 'normal'} ${at}`;
+  if (a.action === 'cap') return typeof capPct === 'number' ? `Limit ${Math.round(capPct)}% ${at}` : `Limit set ${at}`;
+  const done = ACTIONS[a.action]?.done;
+  return done ? `${done} ${at}` : '';
 }
 
 /** A window now, as Settings and the treasury show it too (shared windowNowPct). */
@@ -186,11 +336,19 @@ export function capBounds(hardStopPct: number): { min: number; max: number } {
   return { min: 5, max: Math.max(5, hardStopPct - 5) };
 }
 
-/** The line under the title: where the window starts, and, in a second window, that he has looked already. */
+/**
+ * The window the brief covers: "Since 06:40" today, "Since yesterday
+ * 06:40", "Since 12 Nov 06:40" before that, and nothing without a time. In
+ * a later window the same day it adds ", second look".
+ */
 export function sinceLine(since: string, today: string, first: boolean): string {
   const at = Date.parse(since);
-  const when = Number.isFinite(at) ? `Since ${dayWords(at, today) || 'this morning '}at ${clock(at)}.` : '';
-  return first ? when : `${when} You have opened it once already today.`.trim();
+  if (!Number.isFinite(at)) return '';
+  const day = localDay(at);
+  const back = Math.round((noonOf(today).getTime() - noonOf(day).getTime()) / 86_400_000);
+  const d = new Date(at);
+  const when = day === today ? '' : back === 1 ? 'yesterday ' : `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} `;
+  return `Since ${when}${clock(at)}${first ? '' : ', second look'}`;
 }
 
 // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
@@ -279,11 +437,12 @@ export function grantState(g: Grant, now: number = Date.now()): string {
 
 export type GrantMove = 'grant' | 'decline' | 'revoke' | 'regrant';
 
-/** Each move's label, the brief's own words for the first three. */
+/** Each move's label, as Settings and the district page say it. */
 export const MOVE_LABEL: Record<GrantMove, string> = {
-  grant: LABELS.grant,
-  decline: LABELS.decline,
-  revoke: LABELS.revoke,
+  // Settings and the district page keep their long words until their own redesign.
+  grant: 'Let the city do this on its own here',
+  decline: 'Not yet',
+  revoke: 'Take it back',
   regrant: 'Grant it again',
 };
 

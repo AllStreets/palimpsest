@@ -7,8 +7,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantMoves, grantState, itemSentence, kindWords, MOVE_LABEL, sinceLine, usageLine } from '../app/src/ui/brief-words.js';
-import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant } from '../shared/types.js';
+import { actedLine, actionLabel, briefMeta, briefTitle, capBounds, emptyMorning, grantMoves, grantState, headFigures, itemReadouts, itemSentence, keyAria, keySum, kindWords, MOVE_LABEL, sinceLine, streamWords, toneOf, usageLine, weightOf } from '../app/src/ui/brief-words.js';
+import { ACTIONS } from '../app/src/ui/brief-actions.js';
+import { LOOKS } from '../shared/brief-actions.js';
+import type { Brief, BriefAction, BriefFigures, BriefItem, BriefItemKind, BudgetWindow, Grant } from '../shared/types.js';
 
 const names = { agent: (id: string) => id, firm: (id: string) => ({ quickset: 'Quickset' })[id] ?? id };
 
@@ -30,25 +32,42 @@ test('the title is the day, written out', () => {
   assert.equal(briefTitle('2026-01-05'), 'Monday 5 January');
 });
 
-test('every action has its label', () => {
+const ALL: BriefAction[] = ['accept', 'tier', 'dismiss', 'why', 'diff', 'fly', 'retry', 'resume', 'open-pr', 'cap', 'audit', 'tour', 'grant', 'decline', 'revoke'];
+
+test('the labels', () => {
   const want: Record<BriefAction, string> = {
-    accept: 'Post as a job',
-    tier: 'Change the tier',
+    accept: 'Post',
+    tier: 'Tier',
     dismiss: 'Dismiss',
-    why: 'Ask why',
-    diff: 'Open the diff',
-    fly: 'Fly to the floor',
+    why: 'Why',
+    diff: 'Diff',
+    fly: 'Fly there',
     retry: 'Retry',
     resume: 'Resume',
-    'open-pr': 'Open the PR',
-    cap: "Change today's limit",
-    audit: 'Audit it',
-    tour: 'Walk through the week',
-    grant: 'Let the city do this on its own here',
+    'open-pr': 'Open PR',
+    cap: 'Set limit',
+    audit: 'Audit',
+    tour: 'Walk the week',
+    grant: 'Let it act here',
     decline: 'Not yet',
-    revoke: 'Take it back',
+    revoke: 'Take back',
   };
   for (const [a, label] of Object.entries(want)) assert.equal(actionLabel(a as BriefAction), label, a);
+  // One table: the label and the weight are fields of the action's row (ruling T16).
+  for (const a of ALL) {
+    assert.equal(ACTIONS[a].label, actionLabel(a), a);
+    assert.equal(ACTIONS[a].weight, weightOf(a), a);
+  }
+});
+
+test('weights', () => {
+  assert.equal(weightOf('grant'), 'grant');
+  // A tier change ranks with spending (ruling, spec over plan).
+  for (const a of ['accept', 'tier', 'retry', 'resume', 'audit', 'cap'] as BriefAction[]) assert.equal(weightOf(a), 'spend', a);
+  for (const a of ['dismiss', 'decline', 'revoke'] as BriefAction[]) assert.equal(weightOf(a), 'decide', a);
+  for (const a of ['why', 'diff', 'fly', 'open-pr', 'tour'] as BriefAction[]) assert.equal(weightOf(a), 'look', a);
+  // Every action the Brief records as a look is a look key.
+  for (const a of LOOKS) assert.equal(weightOf(a), 'look', a);
 });
 
 test('the empty morning is one quiet line', () => {
@@ -58,7 +77,7 @@ test('the empty morning is one quiet line', () => {
 test('a sentence never repeats the repo its dateline names', () => {
   const pr = item({ kind: 'pr', repo: 'hoshi/kumo', text: 'PR #312 on hoshi/kumo by Quickset waits for your review.' });
   assert.equal(itemSentence(pr, names), 'PR #312 by Quickset waits for your review.');
-  assert.equal(dateline(pr, Date.parse(pr.at) + 3_600_000), 'kumo, 18:30');
+  assert.deepEqual(briefMeta(pr, Date.parse(pr.at) + 3_600_000), { where: 'kumo', when: '18:30' });
   const merged = item({ text: 'Merged, and Quickset was paid 28.37 credits.' });
   assert.equal(itemSentence(merged, names), 'Merged, and Quickset was paid 28.37 credits.');
 });
@@ -82,26 +101,31 @@ test('a proposal says its tier and what the city would pay; its claim waits unde
 test('the usage sentence rounds the windows to whole percents', () => {
   const u = item({ kind: 'usage', repo: null, title: 'The five-hour window is at 44.83%', text: 'The cap is 50%. The city pauses at the cap; you can change today\'s limit here, for today only.' });
   assert.equal(itemSentence(u, names), 'The five-hour window is at 45%. The cap is 50%. The city pauses at the cap; you can change today\'s limit here, for today only.');
-  assert.equal(dateline(u, Date.now()), '');
+  assert.deepEqual(briefMeta(u, Date.now()), { where: '', when: '' });
 });
 
 test('a recommendation to audit names the repo alone: when it connected is not the news', () => {
   const due = item({ kind: 'audit-due', repo: 'kestrel/fieldnotes', text: 'Its README has not been checked against its code. An audit reads the clone.' });
-  assert.equal(dateline(due, Date.now()), 'fieldnotes');
+  assert.deepEqual(briefMeta(due, Date.now()), { where: 'fieldnotes', when: '' });
   assert.equal(itemSentence(due, names), 'Its README has not been checked against its code.');
 });
 
-test('what he did with an item, and when, in quiet words', () => {
+test('the acted lines', () => {
   const at = new Date(2026, 10, 12, 9, 14).toISOString();
-  assert.equal(actedLine(item({ kind: 'proposal', acted: { action: 'accept', at } })), 'Posted as a job, 09:14');
-  assert.equal(actedLine(item({ acted: { action: 'dismiss', at } })), 'Dismissed, 09:14');
-  assert.equal(actedLine(item({ kind: 'failed', acted: { action: 'retry', at } })), 'Posted again, 09:14');
-  assert.equal(actedLine(item({ kind: 'halt', acted: { action: 'resume', at } })), 'Resumed, 09:14');
-  assert.equal(actedLine(item({ kind: 'proposal', tier: 'low', acted: { action: 'tier', at } })), 'Tier set to low, 09:14');
-  assert.equal(actedLine(item({ kind: 'audit-due', acted: { action: 'audit', at } })), 'Audit queued, 09:14');
-  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } }), 60), "Today's limit set to 60% by you, 09:14");
-  // Looking is not acting: Ask why, the diff, the floor and the PR leave no line.
-  for (const a of ['why', 'diff', 'fly', 'open-pr'] as BriefAction[]) assert.equal(actedLine(item({ acted: { action: a, at } })), '', a);
+  assert.equal(actedLine(item({ kind: 'proposal', acted: { action: 'accept', at } })), 'Posted 09:14');
+  assert.equal(actedLine(item({ acted: { action: 'dismiss', at } })), 'Dismissed 09:14');
+  assert.equal(actedLine(item({ kind: 'failed', acted: { action: 'retry', at } })), 'Posted again 09:14');
+  assert.equal(actedLine(item({ kind: 'halt', acted: { action: 'resume', at } })), 'Resumed 09:14');
+  assert.equal(actedLine(item({ kind: 'proposal', tier: 'low', acted: { action: 'tier', at } })), 'Tier low 09:14');
+  assert.equal(actedLine(item({ kind: 'audit-due', acted: { action: 'audit', at } })), 'Audit queued 09:14');
+  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } }), 60), 'Limit 60% 09:14');
+  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } })), 'Limit set 09:14');
+  assert.equal(actedLine(item({ kind: 'tour', acted: { action: 'tour', at } })), 'Walked 09:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted 09:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet, quiet 30 days 09:14');
+  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back 09:14');
+  // Looking is not acting: Why, the diff, the floor and the PR leave no line.
+  for (const a of LOOKS) assert.equal(actedLine(item({ acted: { action: a, at } })), '', a);
   assert.equal(actedLine(item({})), '');
 });
 
@@ -120,11 +144,16 @@ test('today\'s limit may rise to five points under the hard stop, never below fi
   assert.deepEqual(capBounds(8), { min: 5, max: 5 });
 });
 
-test('the line under the title says the window, and whether this is the day\'s first look', () => {
-  const since = new Date(2026, 10, 11, 6, 40).toISOString();
-  assert.equal(sinceLine(since, '2026-11-12', true), 'Since yesterday at 06:40.');
-  assert.equal(sinceLine(since, '2026-11-12', false), 'Since yesterday at 06:40. You have opened it once already today.');
-  assert.equal(sinceLine(new Date(2026, 10, 9, 6, 40).toISOString(), '2026-11-12', true), 'Since Monday at 06:40.');
+test('sinceLine', () => {
+  const at = (d: number): string => new Date(2026, 10, d, 6, 40).toISOString();
+  assert.equal(sinceLine(at(21), '2026-11-21', true), 'Since 06:40', 'same day');
+  assert.equal(sinceLine(at(20), '2026-11-21', true), 'Since yesterday 06:40', 'yesterday');
+  assert.equal(sinceLine(at(12), '2026-11-21', true), 'Since 12 Nov 06:40', 'older');
+  assert.equal(sinceLine(at(18), '2026-11-21', true), 'Since 18 Nov 06:40', 'a few days back is older too');
+  assert.equal(sinceLine('', '2026-11-21', true), '', 'no time');
+  assert.equal(sinceLine('not a time', '2026-11-21', false), '', 'no time, second look');
+  // A later window that day: he has looked already.
+  assert.equal(sinceLine(at(20), '2026-11-21', false), 'Since yesterday 06:40, second look');
 });
 
 // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
@@ -187,13 +216,6 @@ test('a kind of work is said in words, never as its code', () => {
   assert.equal(itemSentence(acted, names), 'The city merged PR #12 of "Fix" on its own, under its grant for low-tier merges.');
 });
 
-test('his answer to an ask, and his taking back, in quiet words', () => {
-  const at = new Date(2026, 10, 12, 9, 14).toISOString();
-  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted, 09:14');
-  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet; quiet for 30 days, 09:14');
-  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back, 09:14');
-});
-
 test('Waiting on you sets what needs a click first, then what he handled today, apart and quieter (audit 2026-11-17)', async () => {
   const { waitingGroups, HANDLED_HEAD } = await import('../app/src/ui/brief-words.js');
   const at = new Date(2026, 10, 11, 18, 30).toISOString();
@@ -206,4 +228,134 @@ test('Waiting on you sets what needs a click first, then what he handled today, 
   assert.deepEqual(g.open.map((i) => i.id), ['p2', 'p3', 'pr1'], 'a tier changed still waits for the post');
   assert.deepEqual(g.handled.map((i) => i.id), ['p1', 'f1']);
   assert.equal(HANDLED_HEAD, 'Handled today');
+});
+
+// ---------------------------------------------------------------- the words from fields (screens redesign Task 16)
+
+const figs = (f: BriefFigures): { figures: BriefFigures } => ({ figures: f });
+
+test('briefMeta: where and when, over the headline', () => {
+  const at = new Date(2026, 10, 11, 18, 30);
+  const pr = item({ kind: 'pr', repo: 'hoshi/kumo', at: at.toISOString() });
+  assert.deepEqual(briefMeta(pr, at.getTime() + 3_600_000), { where: 'kumo', when: '18:30' });
+  assert.deepEqual(briefMeta(pr, new Date(2026, 10, 12, 9).getTime()), { where: 'kumo', when: 'yesterday 18:30' });
+  assert.deepEqual(briefMeta(item({ repo: null, kind: 'milestone', at: at.toISOString() }), at.getTime()), { where: 'the city', when: '18:30' });
+  assert.deepEqual(briefMeta(item({ kind: 'note', at: 'never' }), at.getTime()), { where: 'harbor-ledger', when: '' });
+  for (const kind of ['usage', 'stale', 'tour'] as BriefItemKind[]) assert.deepEqual(briefMeta(item({ kind }), at.getTime()), { where: '', when: '' }, kind);
+});
+
+test("a row's readouts come from fields", () => {
+  const merged = item({ kind: 'merged', refs: { firmId: 'quickset' }, ...figs({ kind: 'merged', paid: 28.37 }) });
+  assert.deepEqual(itemReadouts(merged, names), [{ v: 'merged', tone: 'ok' }, { v: '28.37', k: 'cr' }, { v: 'Quickset', tone: 'quiet' }]);
+  const unpaid = item({ kind: 'merged', ...figs({ kind: 'merged', paid: null }) });
+  assert.deepEqual(itemReadouts(unpaid, names), [{ v: 'merged', tone: 'ok' }], 'merged with paid null has no sum');
+  const pr = item({ kind: 'pr', refs: { firmId: 'quickset' }, ...figs({ kind: 'pr', pr: 312 }) });
+  assert.deepEqual(itemReadouts(pr, names), [{ v: '#312', k: 'PR' }, { v: 'Quickset', tone: 'quiet' }, { v: 'review', tone: 'warn' }]);
+  const failed = item({ kind: 'failed', ...figs({ kind: 'failed', attemptsLeft: 1, retry: 60 }) });
+  assert.deepEqual(itemReadouts(failed, names), [{ v: 'failed', tone: 'fail' }, { v: '1', k: 'attempt left' }]);
+  const twice = item({ kind: 'failed', ...figs({ kind: 'failed', attemptsLeft: 2, retry: 60 }) });
+  assert.deepEqual(itemReadouts(twice, names), [{ v: 'failed', tone: 'fail' }, { v: '2', k: 'attempts left' }]);
+  const gone = item({ kind: 'failed', ...figs({ kind: 'failed', attemptsLeft: 0, retry: null }) });
+  assert.deepEqual(itemReadouts(gone, names), [{ v: 'failed', tone: 'fail' }, { v: 'no attempts left', tone: 'quiet' }]);
+  const audit = item({ kind: 'audit', ...figs({ kind: 'audit', real: 5, partial: 2, missing: 3, stubbed: 1, broken: 1, claims: 12, jobs: 4 }) });
+  assert.deepEqual(itemReadouts(audit, names), [{ v: '4', k: 'jobs proposed' }]);
+  const usage = item({ kind: 'usage', ...figs({ kind: 'usage', window: 'five-hour', nowPct: 44.83, capPct: 50, mine: false }) });
+  assert.deepEqual(itemReadouts(usage, names), [{ v: '45%', k: 'five-hour' }, { v: '50%', k: 'cap' }]);
+  const ask = item({ kind: 'autonomy', ...figs({ kind: 'autonomy', agreed: 48, of: 50, here: 10, hereOf: 10 }) });
+  assert.deepEqual(itemReadouts(ask, names), [{ v: '48/50', k: 'agreed' }, { v: '10/10', k: 'here' }]);
+  // Halt's sum is the Resume key's, never a readout.
+  const halt = item({ kind: 'halt', actions: ['resume'], ...figs({ kind: 'halt', resume: 120 }) });
+  assert.ok(itemReadouts(halt, names).every((r) => !r.v.includes('120')));
+});
+
+test('no figures, no empty readouts', () => {
+  const all: BriefItemKind[] = ['merged', 'failed', 'pr', 'proposal', 'halt', 'revert', 'note', 'audit', 'audit-due', 'usage', 'stale', 'milestone', 'tour', 'autonomy', 'graduate', 'acted'];
+  for (const kind of all) {
+    const rs = itemReadouts(item({ kind, figures: null, refs: {} }), names);
+    for (const r of rs) {
+      assert.ok(r.v && r.v !== 'undefined' && !r.v.includes('NaN') && !r.v.includes('undefined'), `${kind}: ${JSON.stringify(r)}`);
+      if (r.k !== undefined) assert.ok(r.k.length > 0, kind);
+    }
+  }
+  for (const kind of ['note', 'milestone', 'halt', 'acted', 'graduate'] as BriefItemKind[]) {
+    const rs = itemReadouts(item({ kind, figures: null }), names);
+    assert.ok(rs.length === 0 || (rs.length === 1 && rs[0].k === undefined && rs[0].tone !== undefined), `${kind}: ${JSON.stringify(rs)}`);
+  }
+});
+
+test('the text is never parsed', () => {
+  const merged = item({ kind: 'merged', text: 'Merged, and Quickset was paid 999 credits.', refs: { firmId: 'quickset' }, ...figs({ kind: 'merged', paid: 28.37 }) });
+  const vs = itemReadouts(merged, names).map((r) => r.v);
+  assert.ok(vs.includes('28.37'));
+  assert.ok(!vs.some((v) => v.includes('999')));
+  const pr = item({ kind: 'pr', text: 'PR #999 on hoshi/kumo by Someone waits for your review.', ...figs({ kind: 'pr', pr: 312 }) });
+  assert.deepEqual(itemReadouts(pr, names).map((r) => r.v), ['#312', 'review']);
+});
+
+test('money sits on the key', () => {
+  const proposal = item({ kind: 'proposal', tier: 'normal', actions: ['accept', 'tier', 'dismiss', 'why'], ...figs({ kind: 'proposal', cost: 60 }) });
+  assert.equal(keySum(proposal, 'accept'), '60 cr');
+  assert.equal(keySum(proposal, 'dismiss'), null);
+  assert.equal(keySum(proposal, 'tier'), null);
+  assert.equal(keyAria(proposal, 'accept', 'Add a test command'), 'Post, up to 60 credits: Add a test command');
+  assert.equal(keyAria(proposal, 'dismiss', 'Add a test command'), 'Dismiss: Add a test command');
+  // Retry and audit carry their maxima; Resume its sum, hidden at 0.
+  const failed = item({ kind: 'failed', actions: ['retry', 'why'], ...figs({ kind: 'failed', attemptsLeft: 1, retry: 150 }) });
+  assert.equal(keySum(failed, 'retry'), '150 cr');
+  assert.equal(keyAria(failed, 'retry', 'Fix it'), 'Retry, up to 150 credits: Fix it');
+  const due = item({ kind: 'audit-due', actions: ['audit', 'dismiss'], ...figs({ kind: 'audit-due', audit: 40 }) });
+  assert.equal(keySum(due, 'audit'), '40 cr');
+  const halt = item({ kind: 'halt', actions: ['resume'], ...figs({ kind: 'halt', resume: 120 }) });
+  assert.equal(keySum(halt, 'resume'), '120 cr');
+  const idle = item({ kind: 'halt', actions: ['resume'], ...figs({ kind: 'halt', resume: 0 }) });
+  assert.equal(keySum(idle, 'resume'), null, 'a sum of 0 shows no window');
+  assert.equal(keyAria(idle, 'resume', 'kumo'), 'Resume: kumo');
+  // A key sum shows only while its action is offered: figures keep it after he acts.
+  assert.equal(keySum({ ...proposal, actions: [] }, 'accept'), null);
+  assert.equal(keySum({ ...failed, figures: null }, 'retry'), null);
+  assert.equal(keySum(item({ kind: 'failed', actions: ['retry'], ...figs({ kind: 'failed', attemptsLeft: 1, retry: null }) }), 'retry'), null);
+});
+
+test('headFigures: the head reads the counts', () => {
+  const b = { counts: { waiting: 3, merged: 12, spent: 412.5 } } as Brief;
+  assert.deepEqual(headFigures(b), [
+    { value: '03', label: 'waiting', tone: 'hot' },
+    { value: '12', label: 'merged' },
+    { value: '412.50', label: 'credits spent' },
+  ]);
+  const calm = { counts: { waiting: 0, merged: 0, spent: 0 } } as Brief;
+  assert.deepEqual(headFigures(calm), [
+    { value: '00', label: 'waiting' },
+    { value: '00', label: 'merged' },
+    { value: '0', label: 'credits spent' },
+  ]);
+});
+
+test('toneOf: each kind its state, quiet where it carries none', () => {
+  assert.equal(toneOf('merged'), 'ok');
+  for (const k of ['failed', 'halt', 'revert'] as BriefItemKind[]) assert.equal(toneOf(k), 'fail', k);
+  for (const k of ['pr', 'audit-due', 'usage', 'stale'] as BriefItemKind[]) assert.equal(toneOf(k), 'warn', k);
+  assert.equal(toneOf('proposal'), 'ask');
+  assert.equal(toneOf('autonomy'), 'grant');
+  for (const k of ['note', 'audit', 'milestone', 'tour', 'graduate', 'acted'] as BriefItemKind[]) assert.equal(toneOf(k), 'quiet', k);
+});
+
+test("streamWords: the brief's own repos, figures, PR numbers and states", () => {
+  const merged = item({ kind: 'merged', repo: 'tidewater/harbor-ledger', refs: { firmId: 'quickset' }, ...figs({ kind: 'merged', paid: 28.37 }) });
+  const pr = item({ kind: 'pr', repo: 'hoshi/kumo', ...figs({ kind: 'pr', pr: 312 }) });
+  const note = item({ kind: 'note', repo: null });
+  const b = { sections: { waiting: [pr], overnight: [merged], recommendations: [], city: [note] } } as unknown as Brief;
+  assert.deepEqual(streamWords(b, names), ['kumo', '#312', 'review', 'harbor-ledger', 'merged', '28.37', 'Quickset']);
+  const many = { sections: { waiting: Array.from({ length: 30 }, () => pr), overnight: [], recommendations: [], city: [] } } as unknown as Brief;
+  assert.equal(streamWords(many, names).length, 24, 'the stream is capped');
+});
+
+test('the words keep his voice', () => {
+  const bad = /\u2014|--|\p{Extended_Pictographic}/u;
+  const at = new Date(2026, 10, 12, 9, 14).toISOString();
+  for (const a of ALL) {
+    assert.doesNotMatch(actionLabel(a), bad, a);
+    assert.doesNotMatch(actedLine(item({ tier: 'low', acted: { action: a, at } }), 60), bad, a);
+  }
+  for (const d of [21, 20, 12]) for (const first of [true, false]) assert.doesNotMatch(sinceLine(new Date(2026, 10, d, 6, 40).toISOString(), '2026-11-21', first), bad);
 });
