@@ -328,7 +328,13 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
     });
   }
   // Proposals waiting now, and the ones he already answered in this window (they keep their line, with his answer on it).
-  const answered = new Set(query({ kind: 'brief.action', from: since }).map((e) => (e.data as { itemId?: string }).itemId ?? ''));
+  // Only an answer counts: a look (Why, Diff, ...) at an item he already answered must not carry it into every later window.
+  const answered = new Set(
+    query({ kind: 'brief.action', from: since })
+      .map((e) => e.data as { itemId?: string; action?: BriefAction })
+      .filter((d) => !d.action || !LOOKS.includes(d.action))
+      .map((d) => d.itemId ?? ''),
+  );
   const proposals = listJobs({ status: 'proposed' });
   for (const id of answered) if (id.startsWith('proposal:') && !proposals.some((j) => j.id === id.slice('proposal:'.length))) {
     const j = storedJob(id.slice('proposal:'.length));

@@ -428,6 +428,26 @@ test('asking why after acting keeps what he did on the item; looking alone leave
   assert.equal(item(briefData(now + 1000), `proposal:${other.id}`).acted?.action, 'why');
 });
 
+test('a look never carries a posted proposal into a later window: only his answer keeps its line', () => {
+  seedFirms([]);
+  addRepo(FULL, { market: false });
+  const { job } = auditWithProposal(FULL);
+  const day1 = morningOf(Date.now(), 8);
+  openBrief(day1);
+  actOn(`proposal:${job.id}`, 'accept', {}, day1 + 60_000);
+  // The next window still shows his answer, and he asks why there (his real Nov 19).
+  const day2 = day1 + DAY;
+  openBrief(day2);
+  assert.equal(item(briefData(day2 + 1000), `proposal:${job.id}`).acted?.action, 'accept');
+  actOn(`proposal:${job.id}`, 'why', {}, day2 + 60_000);
+  // A window later, the look alone must not bring the posted job back as waiting on him.
+  const day3 = day2 + DAY;
+  openBrief(day3);
+  const b = briefData(day3 + 1000);
+  assert.ok(!allItems(b).some((x) => x.id === `proposal:${job.id}`), 'a look is not an answer');
+  assert.equal(b.counts.waiting, 0);
+});
+
 test('dismiss withdraws a proposal by him and is recorded as taught', () => {
   seedFirms([]);
   addRepo(FULL);
