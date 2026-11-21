@@ -156,4 +156,8 @@ Changes: on an over reading the limit's words turn warn with the figure, as the 
 ### Left, below the anti-goal level
 
 - The agreement scales need the size of the run here, not only the count agreed. `agreementScales` takes `hereOf` (10 or fewer) beside `here`, so fewer than 10 decisions show as a shorter strip ("3/4", "Last 4, here"), and none says "None here yet". Task 15's `BriefFigures` autonomy shape has `here` alone, so T15 must add `hereOf` (or T17 must find it) for the ask to be honest.
-- The rangefinder's aria-label follows the ruled format ("seven-day window 62%, limit 50%"), which does not say "over" in words; the figures say it.
+- (Fixed in review, below.) The rangefinder's aria-label did not say "over" in words.
+
+### Review fix: over, said and shown
+
+Review found that over reached the reader only through a class and the eye mostly through colour. An over reading now ends its aria-label with ", over the limit" ("seven-day window 62%, limit 50%, over the limit"), and the label under the cap is unchanged. On the screen the word "over" stands in warn between the figure and the limit, in Big Shoulders 700. The readout.css contrast test covers it (warn, 4.5:1 or more on the thinnest panel). The re-shot `readouts`, `readouts-1280` and `readouts-reduced-motion` show "62% over limit 50%" on one line.

@@ -19,14 +19,15 @@ const finite = (v: number | null): v is number => v !== null && Number.isFinite(
  * A window's use as a rangefinder reads it: the lit run and the head along a
  * 0 to 100 scale, the cap standing on it, and the whole reading in words for
  * the reader ("five-hour window 45%, limit 50%"). A window not read has no run
- * and no head. At or past its cap it is over.
+ * and no head. At or past its cap it is over, and the words say so.
  */
 export function rangeModel(window: string, pct: number | null, cap: number | null): { run: number; head: number | null; cap: number | null; over: boolean; label: string } {
   const read = finite(pct);
   const capped = finite(cap);
   const run = read ? clamp100(pct) : 0;
   const words = `${window} window ${read ? `${Math.round(pct)}%` : 'not read'}${capped ? `, limit ${Math.round(cap)}%` : ''}`;
-  return { run, head: read ? run : null, cap: capped ? clamp100(cap) : null, over: read && capped && pct >= cap, label: words };
+  const over = read && capped && pct >= cap;
+  return { run, head: read ? run : null, cap: capped ? clamp100(cap) : null, over, label: over ? `${words}, over the limit` : words };
 }
 
 /**

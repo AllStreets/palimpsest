@@ -34,11 +34,12 @@ test('rangeModel: past the end of the scale the run stops at 100, and it is over
   assert.equal(m.run, 100);
   assert.equal(m.head, 100);
   assert.equal(m.over, true);
-  assert.equal(m.label, 'seven-day window 120%, limit 50%');
+  assert.equal(m.label, 'seven-day window 120%, limit 50%, over the limit');
 });
 
 test('rangeModel: at the cap is over; no cap is never over and says no limit', () => {
   assert.equal(rangeModel('five-hour', 50, 50).over, true);
+  assert.equal(rangeModel('five-hour', 50, 50).label, 'five-hour window 50%, limit 50%, over the limit');
   const m = rangeModel('five-hour', 80, null);
   assert.equal(m.over, false);
   assert.equal(m.cap, null);
@@ -205,18 +206,26 @@ test('rangefinder: one image with the whole reading, a run, a head and the cap',
   assert.equal(r.find('os-range-head').length, 1);
   assert.equal(r.find('os-range-cap').length, 1);
   assert.equal(r.classes.has('is-over'), false);
+  assert.equal(r.find('os-range-over').length, 0, 'under its cap, no word says over');
   assert.equal(r.props.get('--os-run'), '0.4483');
   assert.equal(r.props.get('--os-head'), '44.83%');
   assert.equal(r.props.get('--os-cap'), '50%');
 
   const over = asFake(rangefinder('seven-day', 62, 50));
   assert.ok(over.classes.has('is-over'));
+  assert.equal(over.getAttribute('aria-label'), 'seven-day window 62%, limit 50%, over the limit');
+  // Over is a word on the screen too, not colour alone.
+  assert.deepEqual(
+    over.find('os-range-over').map((w) => w.textContent),
+    ['over'],
+  );
 
   const none = asFake(rangefinder('five-hour', null, null));
   assert.equal(none.getAttribute('aria-label'), 'five-hour window not read');
   assert.equal(none.find('os-range-head').length, 0);
   assert.equal(none.find('os-range-cap').length, 0);
   assert.equal(none.find('os-range-fig')[0].textContent, 'Not read');
+  assert.equal(none.find('os-range-over').length, 0);
   assert.ok(!/undefined|NaN|null/.test(none.textContent));
 });
 

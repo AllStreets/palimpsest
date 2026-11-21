@@ -92,6 +92,8 @@ export function rangefinder(label: string, pct: number | null, cap: number | nul
   top.append(el('span', 'os-label', sentence(label)));
   const read = el('span', 'os-range-read');
   read.append(el('span', 'os-range-fig os-figs', m.head === null ? 'Not read' : `${Math.round(pct ?? 0)}%`));
+  // Over is said in a word as well as in warn, never by colour alone.
+  if (m.over) read.append(el('span', 'os-range-over', 'over'));
   if (m.cap !== null) read.append(el('span', 'os-range-limit os-figs', `limit ${Math.round(cap ?? 0)}%`));
   top.append(read);
 

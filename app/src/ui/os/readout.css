@@ -97,6 +97,14 @@
 .os-range.is-over .os-range-limit {
   color: var(--os-warn);
 }
+/* The word that says over, so the state is never colour alone. */
+.os-range-over {
+  font-family: var(--os-display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--os-warn);
+}
 /* The scale: a ruled baseline, a major tick every tenth and a minor every fortieth. */
 .os-range-scale {
   position: relative;
