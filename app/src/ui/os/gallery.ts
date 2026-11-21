@@ -2,7 +2,8 @@
  * The screens layer's debug gallery: each primitive shown alone over the city,
  * for stills (tools/os-stills.ts) and critique. It is reached only through the
  * debug handle's osGallery, by dynamic import, so the normal path never loads
- * it or the os stylesheets it brings. Each later task adds its own kind.
+ * it. The os stylesheets it imports are loaded on the normal path too, through
+ * main.ts. Each later task adds its own kind.
  *
  * All text is set with textContent.
  */

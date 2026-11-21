@@ -3,8 +3,8 @@
  * stand-in for the DOM: opening sets html[data-os-mode='terminal'] and moves
  * focus in; Escape and Close call onClose and nothing else; closing takes the
  * mode off and hands focus back to the opener; the body is the caller's own
- * nodes, never a parsed string; the title is read whole; and the city drops
- * to half scale while it is open, when given.
+ * nodes, never a parsed string; the title is read whole; and the city is held
+ * still while it is open, when given.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

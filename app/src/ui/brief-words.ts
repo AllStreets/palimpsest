@@ -120,7 +120,7 @@ export function itemReadouts(item: BriefItem, names: Names): Readout[] {
   switch (item.kind) {
     case 'merged':
       out.push({ v: 'merged', tone: 'ok' });
-      if (f?.kind === 'merged' && f.paid !== null && Number.isFinite(f.paid)) out.push({ v: creditsText(f.paid), k: 'cr' });
+      if (f?.kind === 'merged' && f.paid !== null && Number.isFinite(f.paid) && f.paid > 0) out.push({ v: creditsText(f.paid), k: 'cr' });
       out.push(...firmOut(item, names));
       break;
     case 'pr': {
@@ -236,6 +236,11 @@ const TONE: Partial<Record<BriefItemKind, Tone | 'ask' | 'grant'>> = {
 /** Each kind's state, the ink of its designator and its pin; quiet for a kind that carries none. */
 export function toneOf(kind: BriefItemKind): Tone | 'ask' | 'grant' {
   return TONE[kind] ?? 'quiet';
+}
+
+/** A pin's tone: an autonomy item with no grant left to give (only looked at, answered elsewhere) is quiet, as its row is. */
+export function pinToneOf(item: BriefItem): Tone | 'ask' | 'grant' {
+  return item.kind === 'autonomy' && !item.actions.includes('grant') ? 'quiet' : toneOf(item.kind);
 }
 
 /** The most words the stream carries. */

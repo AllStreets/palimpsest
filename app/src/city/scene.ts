@@ -158,7 +158,7 @@ export interface City {
   /**
    * Holds the city still (true): nothing is updated or drawn, and the last frame stays on the canvas, but for one
    * frame after each resize. false draws every frame again. Terminal mode holds it while the city stands blurred
-   * far behind (screens redesign Task 12).
+   * far behind (screens redesign Task 12). It has no production caller yet; it is kept for Stage 6 terminal mode.
    */
   hold(on: boolean): void;
   /** Whether the city is held now (tests). */

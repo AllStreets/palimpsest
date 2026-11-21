@@ -25,7 +25,7 @@ import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
 import { EFFECT } from './brief-actions';
-import { actedLine, actionLabel, briefMeta, briefTitle, capBounds, emptyMorning, grantState, HANDLED_HEAD, headFigures, itemReadouts, itemSentence, keyAria, keySum, kindWords, sinceLine, streamWords, toneOf, usageLine, waitingGroups, weightOf } from './brief-words';
+import { actedLine, actionLabel, briefMeta, briefTitle, capBounds, emptyMorning, grantState, HANDLED_HEAD, headFigures, itemReadouts, itemSentence, keyAria, keySum, kindWords, pinToneOf, sinceLine, streamWords, toneOf, usageLine, waitingGroups, weightOf } from './brief-words';
 import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
 import { createSheet, el, textButton } from './controls';
@@ -718,7 +718,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
         repo: item.repo,
         name: cleanText(item.repo.split('/').pop() ?? item.repo, 80),
         figure: cost ?? (first ? `${first.v}${first.k ? ` ${first.k}` : ''}` : ''),
-        tone: toneOf(item.kind),
+        tone: pinToneOf(item),
       });
     }
     return out;

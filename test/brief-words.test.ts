@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { actedLine, actionLabel, briefMeta, briefTitle, capBounds, emptyMorning, grantMoves, grantState, headFigures, itemReadouts, itemSentence, keyAria, keySum, kindWords, MOVE_LABEL, sinceLine, streamWords, toneOf, usageLine, weightOf } from '../app/src/ui/brief-words.js';
+import { actedLine, actionLabel, briefMeta, briefTitle, capBounds, emptyMorning, grantMoves, grantState, headFigures, itemReadouts, itemSentence, keyAria, keySum, kindWords, MOVE_LABEL, pinToneOf, sinceLine, streamWords, toneOf, usageLine, weightOf } from '../app/src/ui/brief-words.js';
 import { ACTIONS } from '../app/src/ui/brief-actions.js';
 import { LOOKS } from '../shared/brief-actions.js';
 import type { Brief, BriefAction, BriefFigures, BriefItem, BriefItemKind, BudgetWindow, Grant } from '../shared/types.js';
@@ -358,4 +358,16 @@ test('the words keep his voice', () => {
     assert.doesNotMatch(actedLine(item({ tier: 'low', acted: { action: a, at } }), 60), bad, a);
   }
   for (const d of [21, 20, 12]) for (const first of [true, false]) assert.doesNotMatch(sinceLine(new Date(2026, 10, d, 6, 40).toISOString(), '2026-11-21', first), bad);
+});
+
+test('a pin is red for an open autonomy ask and quiet once it is settled', () => {
+  assert.equal(pinToneOf(item({ kind: 'autonomy', actions: ['grant', 'why'] })), 'grant');
+  assert.equal(pinToneOf(item({ kind: 'autonomy', actions: ['why'] })), 'quiet');
+  assert.equal(pinToneOf(item({ kind: 'proposal', actions: ['accept'] })), 'ask');
+});
+
+test('a merged row with nothing paid shows merged and no sum', () => {
+  const r = itemReadouts(item({ kind: 'merged', figures: { kind: 'merged', paid: 0 } as BriefFigures }), names);
+  assert.equal(r[0].v, 'merged');
+  assert.ok(!r.some((x) => x.k === 'cr'));
 });
