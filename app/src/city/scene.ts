@@ -28,6 +28,7 @@ import type { Lot } from './lots.js';
 import { configureMaterials, firstTexturesIn, texturesSettled } from './materials.js';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor, type DropReading } from './governor.js';
+import { renderRatio } from './render-scale.js';
 import { setFacadeRooms } from './facade.js';
 import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers, shadowBoxMoves } from './lod.js';
@@ -154,6 +155,11 @@ export interface City {
   frameHooks(): number;
   /** The repos of the districts standing now, as last set by setPlots. */
   districts(): string[];
+  /**
+   * Draws at `s` (a quarter to one) of the tier's own pixel ratio: the screens lower it while the city stands far
+   * behind them, blurred (terminal mode, screens redesign Task 12), and set 1 again after.
+   */
+  setRenderScale(s: number): void;
   /** Shows the open and bidding jobs on the exchange's tote board. */
   setBoard(jobs: ReadonlyArray<BoardJob>): void;
   /** The engine's kill switch: the exchange's fountain runs only while it is off. */
@@ -407,7 +413,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   // 1.75 on retina keeps 60 fps at full window size on the M5 Pro; the difference from 2 is not visible through the post chain.
-  renderer.setPixelRatio(Math.min(devicePixelRatio, quality === 'high' ? 1.75 : 1));
+  // The screens may lower it while the city stands blurred behind them (setRenderScale).
+  let renderScale = 1;
+  renderer.setPixelRatio(renderRatio(quality, devicePixelRatio, renderScale));
   renderer.setSize(width(), height());
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = EXPOSURE;
@@ -2072,7 +2080,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const fromHome = camera.position.distanceTo(toV(limits.home.eye)) < Math.max(1, limits.homeDistance * 0.05);
     const saw: QualityDrop = { ...reading, fromHome };
     quality = 'medium';
-    renderer.setPixelRatio(1);
+    renderer.setPixelRatio(renderRatio(quality, devicePixelRatio, renderScale));
     renderer.setSize(width(), height());
     post.dispose();
     river.setQuality('medium');
@@ -2286,6 +2294,17 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     onFrame: (fn) => frameHooks.add(fn),
     frameHooks: () => frameHooks.size(),
     districts: () => occNow.districts.map((d) => d.repo),
+    setRenderScale(s) {
+      const ratio = renderRatio(quality, devicePixelRatio, s);
+      renderScale = s;
+      if (ratio === renderer.getPixelRatio()) return;
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(width(), height());
+      // The post chain takes its ratio when it is built, so it is built again at the new one, as the quality drop
+      // does; its programs are already compiled and cached. The lens starts again from rest.
+      post.dispose();
+      post = createPost(renderer, scene, camera, quality, [river.pass(camera)]);
+    },
     agentFrame,
     setInset(px) {
       insetTarget = Math.max(0, Math.min(px, width() * 0.6));

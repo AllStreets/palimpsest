@@ -226,3 +226,40 @@ Change: the hover ticks are now drawn in the dim ink, not amber.
 
 - The stone mark is the old bronze PNG, in a thin amber ring. A mark redrawn for the new language would sit better, but that is brand work, not this task.
 - Over the city, the backing's right fade passes over the sky as a soft edge. It cannot be shorter, because Find must stay on the full-strength ground.
+
+## Task 12: terminal mode
+
+Stills in `stills/task-12/`: `terminal`, `terminal-1280` and `terminal-reduced-motion` (round 2, final), and `terminal-round1`, all from `tools/os-stills.ts terminal` with the GPU lock held. The kind opens the terminal from its "Run log" look key over the screens framing, with an 80-line sample run log.
+
+### Round 1
+
+- The city is far behind but present: a dark, soft skyline with the tall tower's line still readable at the right. It reads as the place you came from, not as noise.
+- The words are crisp. Azeret Mono in amber on a near-black ground, the times in dim figures, no glow, no scanlines, no curvature. It reads as a log, not a CRT.
+- The panel stands 64 px under the top, so the running head stays whole above it, and 16 px over the foot.
+
+Weakness: the filler batch lines took the "ok" green every ninth line, so a run of identical lines flickered green at random and the eye looked for a reason. And the title, in amber-hi at the body's weight, barely separated from the log.
+
+Changes: filler lines carry no tone (only the steps that pass or fail are toned), and the title is set at 600.
+
+### Round 2 (final)
+
+- The tones now mark only the six lines that mean something: the tests that pass, the one that fails on purpose. The title reads as the head of the log.
+- 1280 holds: the 880 px column leaves the opener clear at the left.
+- Reduced motion: the panel and the blur are there at once, the title whole.
+
+### Frames (uncapped, same sitting, `tools/redesign-brief.ts frames`, 1512 x 890 at 2x)
+
+| | main Brief | branch Brief | terminal, full scale | terminal, half scale |
+|---|---|---|---|---|
+| high, pair 1 | 8.00 | 8.40 | 9.10 (+13.8%) | |
+| high, pair 2 | 7.80 | 7.80 | | 9.10 (+16.7%) |
+| medium, pair 1 | 4.60 | 4.80 | 6.60 (+43.5%) | |
+| medium, pair 2 | 4.60 | 4.60 | | 6.20 (+34.8%) |
+
+Medians in ms, percentages against main's Brief row of the same pair. A third branch run between the pairs gave 9.50 high and 6.00 medium at half scale.
+
+The gate fails at both tiers, with the named fallback in. A probe (high, screens framing) showed why: any filter on the city host costs the same, blur or not (12.5 ms with the full filter, 11.2 ms with only brightness and saturate, against 7.7 to 8.0 ms with none). The cost is the compositor drawing the full-window layer through a filter at device resolution, not the blur kernel and not the city's own drawing, so halving the render scale wins back only 0.4 to 1 ms. The half scale is kept (the 6px blur hides it, and it is the cheaper of the two), and the gate is handed back to the controller: the next lever would be holding the city's frames while the terminal stands over it, so the filtered layer is drawn once.
+
+### Left, below the anti-goal level
+
+- The log's last visible line is cut by the panel's foot. It is a scroller, so it is honest, but a short fade would read softer.

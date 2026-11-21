@@ -19,6 +19,7 @@ import { scanOnce, typeIn } from './motion.js';
 import { dressPanel } from './panel.js';
 import { createPins, type OsCity, type PinTarget } from './pins.js';
 import { agreementScales, figure, rangefinder, readoutRow, segmentBar } from './readout.js';
+import { createTerminal } from './terminal.js';
 import { COLOUR, GROUND, type ColourToken } from './tokens.js';
 
 export type GalleryKind = 'type' | 'panel' | 'controls' | 'readouts' | 'pins' | 'terminal';
@@ -364,12 +365,72 @@ function pinsSpecimen(host: HTMLElement, city?: OsCity): () => void {
   };
 }
 
+/** What a run's log says, step by step: a time, the words, and a tone where it passed or failed. */
+const RUN_STEPS: Array<[string, string?]> = [
+  ['run 41 starts on harbor-ledger, tier standard'],
+  ['reading the issue: the nightly export drops rows past midnight UTC'],
+  ['cloning harbor-ledger at 3f2a91c'],
+  ['installing: 214 packages in 6.2 s'],
+  ['reading src/export/nightly.ts (188 lines)'],
+  ['reading src/export/window.ts (64 lines)'],
+  ['the window is built from local midnight, not UTC'],
+  ['running the export tests: 31 of 31 pass', 'ok'],
+  ['writing a failing test: rows at 23:59 UTC go missing'],
+  ['running it: 1 fails, as it should', 'fail'],
+  ['changing window.ts: the day starts at UTC midnight'],
+  ['running the export tests: 32 of 32 pass', 'ok'],
+  ['running the whole suite: 412 of 412 pass', 'ok'],
+  ['typecheck is clean', 'ok'],
+  ['the diff: 2 files, 19 lines in, 6 out'],
+  ['reviewing its own diff against the issue'],
+];
+
+/**
+ * 80 lines of a sample run's log, each a time in dim figures and its words, built as nodes with textContent:
+ * the terminal is handed nodes, never a string to parse. The times are fixed, so stills compare.
+ */
+function runLog(): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  for (let i = 0; i < 80; i++) {
+    const [said, tone] = i < RUN_STEPS.length ? RUN_STEPS[i] : [`checking export batch ${i - RUN_STEPS.length + 1} of 64: ${(i * 37) % 900 + 100} rows, all in their day`];
+    const s = 6 * 3600 + 40 * 60 + i * 7;
+    const at = [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map((n) => String(n).padStart(2, '0')).join(':');
+    const line = el('div', 'os-terminal-line');
+    if (tone) line.dataset.tone = tone;
+    line.append(el('span', 'os-terminal-at os-figs', at), el('span', 'os-terminal-said', said));
+    out.push(line);
+  }
+  return out;
+}
+
+/**
+ * Terminal mode: a look key that opens it, and the terminal open over the city with a sample run's 80-line log.
+ * Escape and Close close it and hand focus back to the key; the key opens it again. Unmounting closes it. The city
+ * is handed in, so it draws at half scale while the terminal is open.
+ */
+function terminalSpecimen(host: HTMLElement, city?: OsCity): () => void {
+  host.classList.add('is-terminal');
+  // The city draws at half scale while the terminal stands over it: the frames gate's fallback (Task 12).
+  const term = createTerminal(document.body, () => term.close(), city);
+  const open = (): void => term.open('Run 41 on harbor-ledger: the nightly export', runLog());
+  const opener = osKey('Run log', 'look', open, { className: 'os-gallery-opener' });
+  opener.dataset.terminalOpener = '';
+  host.append(opener);
+  opener.focus({ preventScroll: true });
+  open();
+  return () => {
+    term.close();
+    term.el.remove();
+  };
+}
+
 const BUILT: Partial<Record<GalleryKind, (host: HTMLElement, city?: OsCity) => void | (() => void)>> = {
   type: typeSpecimen,
   panel: panelSpecimen,
   controls: controlsSpecimen,
   readouts: readoutsSpecimen,
   pins: pinsSpecimen,
+  terminal: terminalSpecimen,
 };
 
 /** Shows one kind of the gallery over the city, and returns its unmount. The pins kind stands on `city`. */

@@ -622,6 +622,8 @@ export async function everyScreenChecks(page: Page, errors: string[]): Promise<v
   });
   // The screens' city pins and lock-on (screens redesign Task 10), from the gallery's pins kind.
   await pinsChecks(page, errors);
+  // Terminal mode (screens redesign Task 12), from the gallery's terminal kind.
+  await terminalChecks(page, errors);
 }
 
 // ---------------------------------------------------------------- the city pins (screens redesign Task 10)
@@ -691,6 +693,84 @@ export async function pinsChecks(page: Page, errors: string[]): Promise<void> {
   check((await frameHooks(page)) === 0 && (await platesOpacity(page)) === '1' && (await page.locator('.os-pin').count()) === 0, `five opens and closes in two seconds leave no hook, no pin and the plates whole (${await frameHooks(page)} hooks, plates ${await platesOpacity(page)})`);
   const fresh = errors.slice(before);
   check(fresh.length === 0, `the pins raised no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+}
+
+// ---------------------------------------------------------------- terminal mode (screens redesign Task 12)
+
+/** What terminal mode shows: the mode on <html>, the city host's drawn filter, where focus is, and the panel's edges. */
+async function terminalState(page: Page): Promise<{ mode: string | null; filter: string; focus: string; top: number; bottom: number; lines: number; shown: boolean }> {
+  return page.evaluate(() => {
+    const term = document.querySelector<HTMLElement>('.os-terminal');
+    const r = term?.getBoundingClientRect();
+    const a = document.activeElement as HTMLElement | null;
+    const focus = !a || a === document.body ? 'body' : a.closest('.os-terminal') ? 'terminal' : a.matches('[data-terminal-opener]') ? 'opener' : a.className;
+    return {
+      mode: document.documentElement.getAttribute('data-os-mode'),
+      filter: getComputedStyle(document.getElementById('city')!).filter,
+      focus,
+      top: r ? Math.round(r.top) : -1,
+      bottom: r ? Math.round(innerHeight - r.bottom) : -1,
+      lines: term?.querySelectorAll('.os-terminal-body > *').length ?? 0,
+      shown: !!term && !term.hidden && getComputedStyle(term).display !== 'none',
+    };
+  });
+}
+
+/**
+ * Terminal mode over the sample city (Task 12): the gallery's terminal kind opens it from its opener, so html
+ * carries data-os-mode="terminal", the city host is blurred and dimmed, and the panel stands 64 px under the top
+ * and 16 px over the foot with its 80 lines; Escape and Close each take the mode off, hand focus back to the
+ * opener and leave the city host with no filter; unmounted while open, the mode goes with it. Shot: terminal.png.
+ */
+export async function terminalChecks(page: Page, errors: string[]): Promise<void> {
+  const before = errors.length;
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+  await page.waitForSelector('body[data-route="city"]', { timeout: 8000 });
+  await gallery(page, 'terminal');
+  const mounted = await page
+    .waitForSelector('.os-terminal', { state: 'visible', timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  check(mounted, 'the gallery\'s terminal kind opens the terminal over the city');
+  if (!mounted) return;
+  // The city's filter eases in over MOTION.slow.
+  await page.waitForTimeout(700);
+  let s = await terminalState(page);
+  check(s.mode === 'terminal', `terminal mode is set on html (data-os-mode=${s.mode})`);
+  check(/blur\(6px\)/.test(s.filter) && /brightness\(0\.3\)/.test(s.filter) && /saturate\(0\.6\)/.test(s.filter), `the city host is blurred and dimmed behind it (${s.filter})`);
+  check(s.top === 64 && s.bottom === 16, `the panel stands 64 px under the top and 16 px over the foot (${s.top}, ${s.bottom})`);
+  check(s.lines === 80, `the sample run log shows its 80 lines (${s.lines})`);
+  check(s.focus === 'terminal', `focus is in the terminal while it is open (${s.focus})`);
+  await page.screenshot({ path: join(SHOTS, 'terminal.png') });
+
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(100);
+  s = await terminalState(page);
+  check(s.mode === null && !s.shown, `Escape takes terminal mode off (data-os-mode=${s.mode}, shown ${s.shown})`);
+  check(s.focus === 'opener', `Escape hands focus back to the opener (${s.focus})`);
+  check(s.filter === 'none', `closed, the city host has no filter (${s.filter})`);
+
+  // Opened again from its opener, and closed with the Close key.
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  s = await terminalState(page);
+  check(s.mode === 'terminal' && s.shown, `the opener opens it again (data-os-mode=${s.mode})`);
+  await page.locator('.os-terminal .os-terminal-close').click();
+  await page.waitForTimeout(100);
+  s = await terminalState(page);
+  check(s.mode === null && s.focus === 'opener' && s.filter === 'none', `Close takes it off and hands focus back (data-os-mode=${s.mode}, focus ${s.focus}, ${s.filter})`);
+
+  // Unmounted while open: the mode leaves with it.
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(200);
+  await gallery(page, null);
+  await page.waitForTimeout(100);
+  s = await terminalState(page);
+  check(s.mode === null && s.filter === 'none' && (await page.locator('.os-terminal').count()) === 0, `unmounted while open, no mode, filter or panel is left (data-os-mode=${s.mode}, ${s.filter})`);
+  const fresh = errors.slice(before);
+  check(fresh.length === 0, `the terminal raised no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
 }
 
 // ---------------------------------------------------------------- the running head's lighting

@@ -33,6 +33,8 @@ export interface OsCity {
   onFrame(fn: () => void): () => void;
   /** The repos of the districts standing now (the city's last occupancy). */
   districts(): string[];
+  /** Draws the city at `s` of its pixel ratio (terminal mode's half-resolution fallback, Task 12); 1 is full. */
+  setRenderScale(s: number): void;
 }
 
 /** One item the pins track: its number in the list, its district, the district's short name and its figure. */

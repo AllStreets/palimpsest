@@ -1,0 +1,120 @@
+/*
+ * Terminal mode (terminal.ts): the city falls far behind, and a full-height
+ * panel stands over it for deep reading, amber on the ground in the mono face.
+ * Made today: no glow on the words, no scanlines, no curvature. Crisp type on
+ * a near-black ground is the whole effect.
+ */
+
+/*
+ * The city host, blurred and dimmed while the terminal is open. The one
+ * filter the os layer sets, and the one transition on anything but transform
+ * and opacity (test/os-css.test.ts holds it to this rule). It eases in;
+ * closing drops it at once, so the city comes back sharp.
+ */
+html[data-os-mode='terminal'] #city {
+  filter: blur(6px) brightness(0.3) saturate(0.6);
+  transition: filter var(--os-slow) var(--os-ease); /* os: city-filter */
+}
+
+/* ---------------------------------------------------------------- the panel */
+
+.os-terminal {
+  position: fixed;
+  top: 64px;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 7;
+  box-sizing: border-box;
+  width: min(880px, calc(100vw - 32px));
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  /* Near opaque: the words hold 4.5:1 even were the city behind it white. */
+  background: rgba(var(--os-ground-rgb), 0.94);
+  border: 1px solid rgba(var(--os-amber-rgb), 0.22);
+  box-shadow: var(--os-shadow-near);
+  color: var(--os-amber);
+  font-family: var(--os-mono);
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  animation: os-terminal-in var(--os-base) var(--os-ease);
+}
+.os-terminal[hidden] {
+  display: none;
+}
+
+@keyframes os-terminal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.os-terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 18px 12px 24px;
+  border-bottom: 1px solid rgba(var(--os-amber-rgb), 0.22);
+}
+
+.os-terminal-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--os-amber-hi);
+  font: 600 14px var(--os-mono);
+  letter-spacing: -0.02em;
+}
+
+/* The log: lines as the caller made them, set whole, scrolled by the keys once focused. */
+.os-terminal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px 24px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-color: rgba(var(--os-amber-rgb), 0.35) transparent;
+  scrollbar-width: thin;
+}
+/* The log has the keyboard: the panel's edge lights, in the focus ring's amber. */
+.os-terminal-body:focus-visible {
+  outline: none;
+}
+.os-terminal:has(> .os-terminal-body:focus-visible) {
+  border-color: rgba(var(--os-amber-rgb), 0.7);
+}
+
+/* A line of a log the caller sets out: its time in dim figures, then its words. */
+.os-terminal-line {
+  display: grid;
+  grid-template-columns: 9ch 1fr;
+  gap: 16px;
+}
+.os-terminal-at {
+  color: var(--os-dim);
+  font-variant-numeric: tabular-nums;
+}
+.os-terminal-line[data-tone='ok'] .os-terminal-said {
+  color: var(--os-ok);
+}
+.os-terminal-line[data-tone='fail'] .os-terminal-said {
+  color: var(--os-fail);
+}
+
+/* Still: the panel stands at once, and the city goes far behind at once. */
+@media (prefers-reduced-motion: reduce) {
+  .os-terminal {
+    animation: none;
+  }
+  html[data-os-mode='terminal'] #city {
+    transition: none;
+  }
+}

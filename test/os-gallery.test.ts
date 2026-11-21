@@ -66,3 +66,13 @@ test('the harness shares the Brief tool\'s helpers, launch and guards', async ()
     assert.ok(!/startServer|chromium\.launch|4770/.test(src), `${tool} launches or guards on its own`);
   }
 });
+
+test('terminal mode is a built kind, shot by the stills and timed by the frames gate (Task 12)', () => {
+  const gallery = uncomment(read('app/src/ui/os/gallery.ts'));
+  assert.match(gallery, /terminal:\s*terminalSpecimen/, 'the gallery builds its terminal kind');
+  const stills = /const BUILT = \[([^\]]*)\]/.exec(uncomment(read('tools/os-stills.ts')));
+  assert.ok(stills && /'terminal'/.test(stills[1]), 'os-stills shoots terminal');
+  const frames = uncomment(read('tools/redesign-brief.ts'));
+  assert.match(frames, /\['city', 'brief', 'terminal'\]/, 'the frames gate times terminal mode beside the Brief');
+  assert.match(frames, /osGallery\('terminal'\)/);
+});

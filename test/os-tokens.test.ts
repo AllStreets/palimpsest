@@ -304,3 +304,49 @@ test('pins.css holds the plates\' handoff: they fade over MOTION.slow while pins
   assert.equal(on[1].opacity, '0');
   assert.equal(MOTION.slow, 450);
 });
+
+// ---------------------------------------------------------------- the terminal's words on its ground (Task 12)
+
+const TERMINAL_CSS = readFileSync(new URL('../app/src/ui/os/terminal.css', import.meta.url), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '')
+  .replace(/@keyframes[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '');
+const terminalRules = (): Array<[string, Record<string, string>]> =>
+  [...TERMINAL_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => {
+    const out: Record<string, string> = {};
+    for (const d of m[2].split(';')) {
+      const i = d.indexOf(':');
+      if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim().replace(/\s+/g, ' ');
+    }
+    return [m[1].trim(), out];
+  });
+
+test("every word in the terminal holds 4.5:1 on the panel's ground, laid over the brightest city", () => {
+  const panel = terminalRules().find(([s]) => s === '.os-terminal');
+  assert.ok(panel?.[1].background, 'the terminal sets its ground');
+  // Conservative: the city behind is dimmed to 0.3, but the ground is measured over a white pixel all the same.
+  const ground = lay(BRIGHTEST, paint(panel[1].background));
+  const inks = new Set<string>();
+  for (const [s, d] of terminalRules()) {
+    // No rule lays another fill under the words.
+    const bg = d.background ?? d['background-color'];
+    if (s !== '.os-terminal') assert.ok(bg === undefined, `${s} lays ${bg} under the words`);
+    if (!d.color) continue;
+    assert.match(d.color, /^var\(--os-[\w-]+\)$/, `${s} sets its words in ${d.color}, not a token`);
+    const r = contrast(paint(d.color).rgb, ground);
+    assert.ok(r >= 4.5, `${s}: ${d.color} is ${r.toFixed(2)}:1 on the terminal`);
+    inks.add(d.color);
+  }
+  // The phosphor (amber body, amber-hi title) and the dim times are among those measured, so this is not vacuous.
+  for (const ink of ['var(--os-amber)', 'var(--os-amber-hi)', 'var(--os-dim)']) assert.ok(inks.has(ink), `${ink} is measured`);
+  // Nothing in the terminal fades its words below full.
+  for (const [s, d] of terminalRules()) if (d.opacity !== undefined) assert.equal(Number(d.opacity), 1, `${s} fades to ${d.opacity}`);
+});
+
+test("the Close key's words hold 4.5:1 on the terminal, as a look key", () => {
+  const panel = terminalRules().find(([s]) => s === '.os-terminal');
+  const ground = lay(BRIGHTEST, paint(panel![1].background));
+  const d = cascade(KEY, W('look'));
+  const { ratio } = { ratio: Math.min(...grounds(d.background).map((f) => contrast(lay(lay(ground, f), paint(d.color)), lay(ground, f)))) };
+  assert.ok(ratio >= 4.5, `Close (${d.color}) is ${ratio.toFixed(2)}:1 on the terminal`);
+});

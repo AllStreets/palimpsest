@@ -254,3 +254,63 @@ test('only the grant weight is red', () => {
     }
   }
 });
+
+// ---------------------------------------------------------------- the terminal's one filter (Task 12)
+
+/**
+ * Every rule in the os sheets that blurs with a filter or transitions one, with its file. A still drop-shadow on
+ * a small mark (the grant's ticks) is neither, and stays allowed.
+ */
+function filterRules(): Array<{ file: string; sel: string; raw: string }> {
+  const out: Array<{ file: string; sel: string; raw: string }> = [];
+  for (const f of css) {
+    for (const [sel, raw] of rules(read(f))) {
+      const body = uncomment(raw);
+      const sets = /(?:^|;|\s)filter\s*:[^;]*blur\(/.test(body);
+      const moves = [...body.matchAll(/(?:^|;|\s)transition(?:-property)?\s*:\s*([^;]+)/g)].some((m) => topLevel(m[1]).some((e) => /^filter\b/.test(e)));
+      if (sets || moves || raw.includes(CITY_FILTER)) out.push({ file: name(f), sel, raw });
+    }
+  }
+  return out;
+}
+
+test('the only blur and the only moving filter in the os layer are the terminal\'s, on the city host, in the one marked rule', () => {
+  const found = filterRules();
+  const marked = found.filter((r) => r.raw.includes(CITY_FILTER));
+  assert.equal(marked.length, 1, `one rule carries ${CITY_FILTER}: ${marked.map((r) => `${r.file} ${r.sel}`).join(', ')}`);
+  const [rule] = marked;
+  assert.equal(rule.file, join('os', 'terminal.css'));
+  assert.equal(rule.sel, "html[data-os-mode='terminal'] #city", 'the filter sits on the city host in terminal mode, not on a panel');
+  const body = uncomment(rule.raw);
+  assert.match(body, /(?:^|;|\s)filter:\s*blur\(6px\) brightness\(0\.3\) saturate\(0\.6\);/);
+  // The marker rides on the transition line alone, and that transition moves the filter and nothing else.
+  const line = rule.raw.split('\n').find((l) => l.includes(CITY_FILTER)) ?? '';
+  assert.match(line, /^\s*transition:\s*filter\s/, `the marker is on the transition line: ${line.trim()}`);
+  for (const m of body.matchAll(/(?:^|;|\s)transition(?:-property)?\s*:\s*([^;]+)/g)) {
+    for (const e of topLevel(m[1])) assert.ok(/^filter\b/.test(e) || cheap(e), `the marked rule transitions "${e}"`);
+  }
+  // No other rule sets a filter or transitions one.
+  for (const r of found) if (r !== rule) assert.fail(`${r.file} ${r.sel} blurs or transitions a filter outside the marked rule`);
+  for (const f of ts) assert.ok(!/\.style\.filter\b|setProperty\(\s*['"`]filter/.test(uncomment(read(f))), `${name(f)} sets a filter from script`);
+});
+
+test('reduced motion takes the city filter\'s transition off: the still equivalent', () => {
+  const sheet = uncomment(read(join(OS, 'terminal.css')));
+  const reduced = blocks(sheet, /@media[^{]*prefers-reduced-motion:\s*reduce[^{]*\{/).map((b) => b.body).join('\n');
+  const still = rules(reduced).find(([sel]) => sel === "html[data-os-mode='terminal'] #city");
+  assert.ok(still, 'terminal.css answers the city filter under reduced motion');
+  assert.match(still[1], /transition:\s*none/);
+});
+
+test('the terminal stands full height in the mono face, and index.css loads it', () => {
+  const sheet = uncomment(read(join(OS, 'terminal.css')));
+  const panel = rules(sheet).find(([sel]) => sel === '.os-terminal');
+  assert.ok(panel, 'terminal.css has an .os-terminal rule');
+  assert.match(panel[1], /top:\s*64px/);
+  assert.match(panel[1], /bottom:\s*16px/);
+  assert.match(panel[1], /font-family:\s*var\(--os-mono\)/);
+  assert.match(panel[1], /color:\s*var\(--os-amber\)/);
+  // Made today: no glow on the words, no scanlines.
+  assert.ok(!/text-shadow|repeating-linear-gradient/.test(sheet), 'terminal.css draws a CRT glow or scanlines');
+  assert.match(uncomment(read(join(OS, 'index.css'))), /@import '\.\/terminal\.css';/);
+});

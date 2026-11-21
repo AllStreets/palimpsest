@@ -467,6 +467,7 @@ async function main(): Promise<void> {
     towerFrame: (repo) => city.towerFrame(repo),
     onFrame: (fn) => city.onFrame(fn),
     districts: () => city.districts(),
+    setRenderScale: (s) => city.setRenderScale(s),
   };
 
   /**

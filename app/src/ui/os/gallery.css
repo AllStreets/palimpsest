@@ -313,3 +313,15 @@
   grid-template-columns: 1fr 1fr;
   gap: 40px;
 }
+
+/* Terminal mode's kind: only its opener, low at the left, clear of the terminal's column. */
+.os-gallery.is-terminal {
+  top: auto;
+  right: auto;
+  bottom: 28px;
+  left: 28px;
+  width: auto;
+  padding: 0;
+  overflow: visible;
+  background: none;
+}

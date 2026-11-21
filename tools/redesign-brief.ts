@@ -21,6 +21,7 @@
  *
  * frames, at perf's 1512 x 890 window and 2x, on high and on medium with
  * the governor held: the city alone from home, then the Brief open over it,
+ * then terminal mode open over the screens framing (the gallery's terminal kind, Task 12),
  * each over REDESIGN_RUNS (3) runs of 5 s after a settle, through the debug
  * handle's frameLog. Writes frames.json with every frame's median and p95.
  * REDESIGN_UNCAPPED=1 measures with vsync and the frame-rate limit lifted
@@ -47,6 +48,19 @@ async function openBrief(page: Page, f: Frame): Promise<void> {
   await page.mouse.move(STILL_VIEW.width - 8, STILL_VIEW.height - 8);
   // Long enough for any type-in or entrance to finish.
   await page.waitForTimeout(4500);
+  await view(page, f);
+  await settle(page);
+}
+
+/** Terminal mode open over the screens framing (Task 12): the gallery's terminal kind, over the city alone. */
+async function openTerminal(page: Page, f: Frame): Promise<void> {
+  await toCity(page);
+  await view(page, f);
+  await page.evaluate(() => (window as unknown as { __palimpsest: { osGallery(k: string): void } }).__palimpsest.osGallery('terminal'));
+  await page.waitForSelector('.os-terminal:not([hidden])', { timeout: 15_000 });
+  await page.mouse.move(STILL_VIEW.width - 8, STILL_VIEW.height - 8);
+  // Long enough for the title to type and the city's filter to ease in.
+  await page.waitForTimeout(2000);
   await view(page, f);
   await settle(page);
 }
@@ -129,12 +143,14 @@ async function frames(out: string, browser: Browser): Promise<void> {
     if (stands !== tier) throw new Error(`frames: the city opened at ${stands}, not ${tier}`);
     const f = await framings(page, PERF_VIEW.width, PERF_VIEW.height);
     result[tier] = {};
-    for (const mode of ['city', 'brief'] as const) {
+    for (const mode of ['city', 'brief', 'terminal'] as const) {
       if (mode === 'city') {
         await toCity(page);
         await view(page, f.overview);
-      } else {
+      } else if (mode === 'brief') {
         await openBrief(page, f.screens);
+      } else {
+        await openTerminal(page, f.screens);
       }
       await page.waitForTimeout(1500);
       const all: number[] = [];
