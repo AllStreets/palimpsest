@@ -119,6 +119,8 @@ interface CoolState {
   rounds: number;
   until: number | null;
   budgetHeld: boolean;
+  /** Empty rounds in a row, held ones included: what a held round's wait grows by. */
+  streak: number;
   /** The agents the budget held out of the latest empty round. */
   held: string[];
 }
@@ -136,6 +138,7 @@ function coolState(jobId: string): CoolState {
   let rounds = 0;
   let until: number | null = null;
   let budgetHeld = false;
+  let streak = 0;
   let held: string[] = [];
   let seen = false;
   let lastId = 0;
@@ -159,10 +162,9 @@ function coolState(jobId: string): CoolState {
       lastId = Number(r.id);
       budgetHeld = isHeld;
       held = heldHere.map((x) => String(x.agentId));
-      const at = typeof r.at === 'string' ? Date.parse(r.at) : NaN;
-      if (isHeld && Number.isFinite(at)) until = at + BID_COOL_OFF_MS;
-      else if (typeof r.until === 'string' && Number.isFinite(Date.parse(r.until))) until = Date.parse(r.until);
+      if (typeof r.until === 'string' && Number.isFinite(Date.parse(r.until))) until = Date.parse(r.until);
     }
+    streak++;
     if (!isHeld) rounds++;
   }
   // The budget opened up (the caps changed through Settings) after the latest empty round: the wait is over, the count stays.
@@ -170,7 +172,7 @@ function coolState(jobId: string): CoolState {
     const opened = db.prepare("SELECT MAX(id) AS id FROM ledger WHERE kind = 'budget.opened'").get() as { id: number | bigint | null };
     if (opened.id !== null && Number(opened.id) > lastId) until = null;
   }
-  return { rounds, until, budgetHeld, held };
+  return { rounds, until, budgetHeld, streak, held };
 }
 
 /**
@@ -179,9 +181,11 @@ function coolState(jobId: string): CoolState {
  * wait). An award, his edit of the job (a `job.changed` that keeps its
  * status: scope, acceptance or tier) or his retry (failed back to open)
  * ends the run of empty rounds, and with it any wait. A round the budget
- * held a firm out of is not counted and waits only the base ten minutes
- * (`budgetHeld`); the budget opening up after the latest round (a
- * `budget.opened` entry) ends the wait but keeps the count.
+ * held a firm out of is not counted (`budgetHeld`), but its wait still grows
+ * with the empty rounds in a row, held ones included, so the firms that can
+ * bid do not pay for a round every ten minutes all night. The budget opening
+ * up after the latest round (a `budget.opened` entry, or a held agent's
+ * model callable again; see openBidding) ends the wait but keeps the count.
  */
 export function coolOff(jobId: string): { rounds: number; until: number | null; budgetHeld?: true } {
   const c = coolState(jobId);
@@ -567,10 +571,14 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
   const chosen = schoolRanked ? (schoolRanked.find((w) => w.ev > 0)?.bid ?? null) : plain;
   const moved = school !== null && (chosen?.id ?? null) !== (plain?.id ?? null);
   // Rounds in a row with no award, this one included, and the wait they earn (economy change A).
-  // A round the budget held a firm out of does not count: the same firms might bid once it opens, so it waits only the base ten minutes.
+  // A round the budget held a firm out of does not count: the same firms might bid once it opens.
+  // Its wait still grows with the empty rounds in a row, held ones included, or the firms that can bid
+  // pay for a round every ten minutes while the others are held (the night of Nov 22). The budget
+  // opening for a held firm ends the wait early (openBidding).
   const budgetHeld = !chosen && satOut.some((s) => heldByBudget(s.reason));
-  const emptyRounds = chosen ? 0 : coolOff(cur.id).rounds + (budgetHeld ? 0 : 1);
-  const wait = chosen ? 0 : budgetHeld ? BID_COOL_OFF_MS : coolOffMs(emptyRounds);
+  const cs = chosen ? null : coolState(cur.id);
+  const emptyRounds = cs ? cs.rounds + (budgetHeld ? 0 : 1) : 0;
+  const wait = cs ? coolOffMs(budgetHeld ? cs.streak + 1 : emptyRounds) : 0;
   const parts: string[] = [];
   if (chosen) {
     const w = schoolRanked?.find((x) => x.bid.id === chosen.id);
@@ -584,7 +592,7 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
   } else {
     const again = `the job goes back on the board and opens again after ${waitWords(wait)}${emptyRounds > 1 && !budgetHeld ? ` (${emptyRounds} rounds in a row with no award)` : ''}.`;
     parts.push(bids.length ? `No bid had a positive expected value, so ${again}` : `No bids came in, so ${again}`);
-    if (budgetHeld) parts.push('The budget held some firms out of this round, so it does not count toward the longer waits.');
+    if (budgetHeld) parts.push('The budget held some firms out of this round, so it does not count toward the run of empty rounds, and the job opens again early once the budget lets those firms bid.');
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
@@ -604,7 +612,7 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     // The wait doubles with each round in a row that awarded nothing, up to a day.
     coolOffUntil: chosen ? null : new Date(now + wait).toISOString(),
     noAwardRounds: emptyRounds,
-    // The budget held a firm out of this empty round: it is not counted and waits the base ten minutes; replay and coolOff read it back.
+    // The budget held a firm out of this empty round: it is not counted, its wait grows with the empty rounds in a row, and it ends early once the budget opens; replay and coolOff read it back.
     budgetHeld,
     // Decision 14: the appraisals the award weighed, and whether they changed the choice (its later rows are then partly its own).
     ...(school ? { appraisals: Object.fromEntries(school.map((w) => [w.bid.id, w.bid.appraisal])) } : {}),
